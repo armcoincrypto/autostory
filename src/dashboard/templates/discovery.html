@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+
+{% block title %}Discovery - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-search"></i> User Discovery</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#scanModal">
+        <i class="bi bi-broadcast"></i> Scan Channel
+    </button>
+</div>
+
+<!-- Stats -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="stat-total">-</h3>
+                <small class="text-muted">Total Discovered</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="stat-mentioned">-</h3>
+                <small class="text-muted">Already Mentioned</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="stat-unmentioned">-</h3>
+                <small class="text-muted">Available for Mention</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="stat-recent">-</h3>
+                <small class="text-muted">This Week</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4">
+                <select class="form-select" id="filter-mentioned" onchange="loadUsers()">
+                    <option value="">All Users</option>
+                    <option value="false">Not Mentioned</option>
+                    <option value="true">Already Mentioned</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <input type="text" class="form-control" id="filter-search" placeholder="Search username..." onkeyup="loadUsers()">
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-outline-primary w-100" onclick="loadUsers()">
+                    <i class="bi bi-funnel"></i> Apply Filters
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Users Table -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between">
+        <h5 class="mb-0">Discovered Users</h5>
+        <span class="badge bg-primary" id="user-count">0</span>
+    </div>
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Username</th>
+                    <th>Name</th>
+                    <th>Source</th>
+                    <th>Times Mentioned</th>
+                    <th>Discovered</th>
+                </tr>
+            </thead>
+            <tbody id="users-table">
+                <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+
+        <nav>
+            <ul class="pagination justify-content-center" id="pagination"></ul>
+        </nav>
+    </div>
+</div>
+
+<!-- Top Sources -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-bar-chart"></i> Top Sources</h5>
+    </div>
+    <div class="card-body">
+        <canvas id="sourcesChart" height="100"></canvas>
+    </div>
+</div>
+
+<!-- Scan Modal -->
+<div class="modal fade" id="scanModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Scan Channel for Users</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Channel Username(s)</label>
+                    <textarea class="form-control" id="scan-channels" rows="3" placeholder="@channel1&#10;@channel2"></textarea>
+                    <small class="text-muted">One channel per line</small>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Users per Channel</label>
+                    <input type="number" class="form-control" id="scan-limit" value="500">
+                </div>
+                <button class="btn btn-primary w-100" onclick="startScan()">
+                    <i class="bi bi-play-circle"></i> Start Scan
+                </button>
+                <div id="scan-progress" class="mt-3" style="display:none;">
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+                    </div>
+                    <p class="text-center mt-2">Scanning...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentPage = 1;
+let sourcesChart = null;
+
+async function loadStats() {
+    try {
+        const response = await fetch('/api/discovery/stats');
+        const stats = await response.json();
+
+        document.getElementById('stat-total').textContent = stats.total_discovered;
+        document.getElementById('stat-mentioned').textContent = stats.mentioned;
+        document.getElementById('stat-unmentioned').textContent = stats.unmentioned;
+        document.getElementById('stat-recent').textContent = stats.discovered_this_week;
+
+        // Update chart
+        if (stats.top_sources && stats.top_sources.length > 0) {
+            updateSourcesChart(stats.top_sources);
+        }
+    } catch (error) {
+        console.error('Failed to load stats:', error);
+    }
+}
+
+function updateSourcesChart(sources) {
+    const ctx = document.getElementById('sourcesChart').getContext('2d');
+
+    if (sourcesChart) {
+        sourcesChart.destroy();
+    }
+
+    sourcesChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: sources.map(s => s.chat),
+            datasets: [{
+                label: 'Users Discovered',
+                data: sources.map(s => s.count),
+                backgroundColor: 'rgba(99, 102, 241, 0.8)',
+                borderColor: 'rgba(99, 102, 241, 1)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' } },
+                x: { grid: { display: false } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+async function loadUsers(page = 1) {
+    currentPage = page;
+    const mentioned = document.getElementById('filter-mentioned').value;
+
+    try {
+        let url = `/api/discovery/users?page=${page}&per_page=50`;
+        if (mentioned) url += `&mentioned=${mentioned}`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        document.getElementById('user-count').textContent = data.total;
+
+        const tbody = document.getElementById('users-table');
+        if (data.users.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No users found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.users.map(u => `
+            <tr>
+                <td>${u.user_id}</td>
+                <td>${u.username ? '@' + u.username : '-'}</td>
+                <td>${u.first_name || '-'}</td>
+                <td>${u.source || '-'}</td>
+                <td>${u.times_mentioned}</td>
+                <td>${new Date(u.discovered_at).toLocaleDateString()}</td>
+            </tr>
+        `).join('');
+
+        const totalPages = Math.ceil(data.total / data.per_page);
+        updatePagination(page, totalPages);
+
+    } catch (error) {
+        console.error('Failed to load users:', error);
+    }
+}
+
+function updatePagination(current, total) {
+    const pagination = document.getElementById('pagination');
+    let html = '';
+
+    for (let i = Math.max(1, current - 2); i <= Math.min(total, current + 2); i++) {
+        html += `<li class="page-item ${i === current ? 'active' : ''}">
+            <a class="page-link" href="#" onclick="loadUsers(${i})">${i}</a>
+        </li>`;
+    }
+
+    pagination.innerHTML = html;
+}
+
+async function startScan() {
+    const channelsText = document.getElementById('scan-channels').value;
+    const channels = channelsText.split('\n').map(c => c.trim()).filter(c => c);
+    const limit = parseInt(document.getElementById('scan-limit').value);
+
+    if (channels.length === 0) {
+        alert('Please enter at least one channel');
+        return;
+    }
+
+    document.getElementById('scan-progress').style.display = 'block';
+
+    try {
+        const response = await fetch('/api/discovery/scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ channels, limit })
+        });
+        const result = await response.json();
+
+        document.getElementById('scan-progress').style.display = 'none';
+
+        if (result.success) {
+            alert(`Scan complete!\nChannels processed: ${result.channels_processed}\nNew users: ${result.total_new_users}`);
+            loadStats();
+            loadUsers();
+        } else {
+            alert('Scan failed: ' + (result.errors?.join(', ') || 'Unknown error'));
+        }
+    } catch (error) {
+        document.getElementById('scan-progress').style.display = 'none';
+        alert('Scan failed: ' + error);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadStats();
+    loadUsers();
+});
+</script>
+{% endblock %}

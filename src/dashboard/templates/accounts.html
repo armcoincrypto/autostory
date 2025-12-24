@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block title %}Accounts - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-people"></i> Accounts</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
+        <i class="bi bi-plus-circle"></i> Add Account
+    </button>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Phone</th>
+                    <th>Username</th>
+                    <th>Status</th>
+                    <th>Stories Today</th>
+                    <th>Last Active</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="accounts-table">
+                <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Add Account Modal -->
+<div class="modal fade" id="addAccountModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Add New Account</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="auth-step-1">
+                    <div class="mb-3">
+                        <label class="form-label">Phone Number (with country code)</label>
+                        <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
+                    </div>
+                    <button class="btn btn-primary w-100" onclick="startAuth()">
+                        <i class="bi bi-send"></i> Send Code
+                    </button>
+                </div>
+                <div id="auth-step-2" style="display:none;">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> Check your Telegram app for the code
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Verification Code</label>
+                        <input type="text" class="form-control" id="auth-code" placeholder="12345">
+                    </div>
+                    <div class="mb-3" id="password-field" style="display:none;">
+                        <label class="form-label">2FA Password</label>
+                        <input type="password" class="form-control" id="auth-password">
+                    </div>
+                    <button class="btn btn-primary w-100" onclick="completeAuth()">
+                        <i class="bi bi-check-circle"></i> Verify
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let authData = {};
+
+async function loadAccounts() {
+    try {
+        const response = await fetch('/api/accounts');
+        const accounts = await response.json();
+
+        const tbody = document.getElementById('accounts-table');
+        if (accounts.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No accounts added yet</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = accounts.map(a => `
+            <tr>
+                <td>${a.id}</td>
+                <td>${a.phone_number}</td>
+                <td>${a.username || '-'}</td>
+                <td><span class="badge badge-${a.status}">${a.status}</span></td>
+                <td>${a.stories_today}</td>
+                <td>${a.last_active ? new Date(a.last_active).toLocaleString() : 'Never'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="viewAccount(${a.id})">
+                        <i class="bi bi-eye"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="toggleAccount(${a.id}, '${a.status}')">
+                        <i class="bi bi-power"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (error) {
+        console.error('Failed to load accounts:', error);
+    }
+}
+
+async function startAuth() {
+    const phone = document.getElementById('phone-number').value;
+    try {
+        const response = await fetch('/api/accounts/auth/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({phone_number: phone})
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            authData = result;
+            document.getElementById('auth-step-1').style.display = 'none';
+            document.getElementById('auth-step-2').style.display = 'block';
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Failed to send code: ' + error);
+    }
+}
+
+async function completeAuth() {
+    const code = document.getElementById('auth-code').value;
+    const password = document.getElementById('auth-password').value;
+
+    try {
+        const response = await fetch('/api/accounts/auth/complete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                phone_number: authData.phone_number,
+                code: code,
+                phone_code_hash: authData.phone_code_hash,
+                session_string: authData.session_string,
+                password: password || null
+            })
+        });
+        const result = await response.json();
+
+        if (result.needs_password) {
+            document.getElementById('password-field').style.display = 'block';
+            authData.session_string = result.session_string;
+            return;
+        }
+
+        if (result.success) {
+            alert('Account added successfully!');
+            location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Failed to verify: ' + error);
+    }
+}
+
+async function toggleAccount(id, currentStatus) {
+    const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+    try {
+        await fetch(`/api/accounts/${id}/status`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({status: newStatus})
+        });
+        loadAccounts();
+    } catch (error) {
+        alert('Failed to update status: ' + error);
+    }
+}
+
+function viewAccount(id) {
+    window.location.href = `/accounts/${id}`;
+}
+
+document.addEventListener('DOMContentLoaded', loadAccounts);
+</script>
+{% endblock %}

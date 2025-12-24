@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+
+{% block title %}Stories - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-collection-play"></i> Stories</h2>
+    <div>
+        <button class="btn btn-outline-primary me-2" data-bs-toggle="modal" data-bs-target="#batchPublishModal">
+            <i class="bi bi-layers"></i> Batch Publish
+        </button>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#publishStoryModal">
+            <i class="bi bi-plus-circle"></i> Publish Story
+        </button>
+    </div>
+</div>
+
+<!-- Stats Row -->
+<div class="row mb-4">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="total-stories">-</h3>
+                <small class="text-muted">Total Stories</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="today-stories">-</h3>
+                <small class="text-muted">Published Today</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 id="total-mentions">-</h3>
+                <small class="text-muted">Total Mentions</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Stories Table -->
+<div class="card">
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Account</th>
+                    <th>Type</th>
+                    <th>Caption</th>
+                    <th>Mentions</th>
+                    <th>Views</th>
+                    <th>Published</th>
+                </tr>
+            </thead>
+            <tbody id="stories-table">
+                <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+
+        <!-- Pagination -->
+        <nav>
+            <ul class="pagination justify-content-center" id="pagination">
+            </ul>
+        </nav>
+    </div>
+</div>
+
+<!-- Publish Story Modal -->
+<div class="modal fade" id="publishStoryModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Publish Story</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label class="form-label">Account</label>
+                            <select class="form-select" id="story-account">
+                                <option>Loading...</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Media Path</label>
+                            <input type="text" class="form-control" id="story-media" placeholder="/path/to/media.jpg">
+                            <small class="text-muted">Supported: JPG, PNG, MP4</small>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label class="form-label">Caption</label>
+                            <textarea class="form-control" id="story-caption" rows="4"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Mentions (user IDs, comma-separated)</label>
+                            <input type="text" class="form-control" id="story-mentions" placeholder="123456, 789012">
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary w-100" onclick="publishStory()">
+                    <i class="bi bi-send"></i> Publish
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Batch Publish Modal -->
+<div class="modal fade" id="batchPublishModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Batch Publish Stories</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> This will publish stories across multiple accounts with auto-selected mentions.
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Media Path</label>
+                    <input type="text" class="form-control" id="batch-media" placeholder="/path/to/media.jpg">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Caption</label>
+                    <textarea class="form-control" id="batch-caption" rows="3"></textarea>
+                </div>
+                <div class="row">
+                    <div class="col-6">
+                        <div class="mb-3">
+                            <label class="form-label">Max Stories</label>
+                            <input type="number" class="form-control" id="batch-max" value="10">
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="mb-3">
+                            <label class="form-label">Mentions per Story</label>
+                            <input type="number" class="form-control" id="batch-mentions" value="5">
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary w-100" onclick="batchPublish()">
+                    <i class="bi bi-layers"></i> Start Batch
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentPage = 1;
+
+async function loadStories(page = 1) {
+    currentPage = page;
+    try {
+        const response = await fetch(`/api/stories?page=${page}&per_page=20`);
+        const data = await response.json();
+
+        document.getElementById('total-stories').textContent = data.total;
+
+        const tbody = document.getElementById('stories-table');
+        if (data.stories.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No stories yet</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.stories.map(s => `
+            <tr>
+                <td>${s.id}</td>
+                <td>Account #${s.account_id}</td>
+                <td><span class="badge bg-secondary">${s.media_type}</span></td>
+                <td>${s.caption || '-'}</td>
+                <td>${s.mentions}</td>
+                <td>${s.views}</td>
+                <td>${new Date(s.published_at).toLocaleString()}</td>
+            </tr>
+        `).join('');
+
+        // Update pagination
+        const totalPages = Math.ceil(data.total / data.per_page);
+        updatePagination(page, totalPages);
+
+    } catch (error) {
+        console.error('Failed to load stories:', error);
+    }
+}
+
+function updatePagination(current, total) {
+    const pagination = document.getElementById('pagination');
+    let html = '';
+
+    for (let i = 1; i <= Math.min(total, 10); i++) {
+        html += `<li class="page-item ${i === current ? 'active' : ''}">
+            <a class="page-link" href="#" onclick="loadStories(${i})">${i}</a>
+        </li>`;
+    }
+
+    pagination.innerHTML = html;
+}
+
+async function loadAccounts() {
+    try {
+        const response = await fetch('/api/accounts');
+        const accounts = await response.json();
+
+        const select = document.getElementById('story-account');
+        select.innerHTML = accounts.map(a =>
+            `<option value="${a.id}">${a.phone_number} (${a.username || 'No username'})</option>`
+        ).join('');
+    } catch (error) {
+        console.error('Failed to load accounts:', error);
+    }
+}
+
+async function publishStory() {
+    const data = {
+        account_id: parseInt(document.getElementById('story-account').value),
+        media_path: document.getElementById('story-media').value,
+        caption: document.getElementById('story-caption').value,
+        mentions: document.getElementById('story-mentions').value.split(',').map(m => m.trim()).filter(m => m)
+    };
+
+    try {
+        const response = await fetch('/api/stories/publish', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Story published!');
+            location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Failed: ' + error);
+    }
+}
+
+async function batchPublish() {
+    const data = {
+        media_path: document.getElementById('batch-media').value,
+        caption: document.getElementById('batch-caption').value,
+        max_stories: parseInt(document.getElementById('batch-max').value),
+        mentions_per_story: parseInt(document.getElementById('batch-mentions').value)
+    };
+
+    try {
+        const response = await fetch('/api/stories/batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+
+        alert(`Batch complete! ${result.successful}/${result.total_attempted} stories published.`);
+        location.reload();
+    } catch (error) {
+        alert('Batch failed: ' + error);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadStories();
+    loadAccounts();
+});
+</script>
+{% endblock %}

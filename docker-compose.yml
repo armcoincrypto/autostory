@@ -1,0 +1,146 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: storyfleet_db
+    environment:
+      POSTGRES_USER: storyfleet
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-storyfleet_secret}
+      POSTGRES_DB: storyfleet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U storyfleet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: storyfleet_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Flask Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: storyfleet_dashboard
+    command: python main.py dashboard
+    environment:
+      - DATABASE_URL=postgresql://storyfleet:${DB_PASSWORD:-storyfleet_secret}@db:5432/storyfleet
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - DASHBOARD_SECRET_KEY=${DASHBOARD_SECRET_KEY:-change-me-in-production}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Celery Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: storyfleet_worker
+    command: celery -A src.queue.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      - DATABASE_URL=postgresql://storyfleet:${DB_PASSWORD:-storyfleet_secret}@db:5432/storyfleet
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Celery Beat Scheduler
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: storyfleet_beat
+    command: celery -A src.queue.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://storyfleet:${DB_PASSWORD:-storyfleet_secret}@db:5432/storyfleet
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - worker
+    restart: unless-stopped
+
+  # Telegram Bot Dashboard (optional)
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: storyfleet_bot
+    command: python main.py bot
+    environment:
+      - DATABASE_URL=postgresql://storyfleet:${DB_PASSWORD:-storyfleet_secret}@db:5432/storyfleet
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - BOT_ADMIN_IDS=${BOT_ADMIN_IDS}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - with-bot
+
+  # Flower - Celery monitoring (optional)
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: storyfleet_flower
+    command: celery -A src.queue.celery_app flower --port=5555
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    ports:
+      - "5555:5555"
+    depends_on:
+      - worker
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+  redis_data:

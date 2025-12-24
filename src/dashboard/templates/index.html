@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-speedometer2"></i> Dashboard</h2>
+    <button class="btn btn-primary" onclick="refreshStats()">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+    </button>
+</div>
+
+<!-- Stats Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 opacity-75">Active Accounts</h6>
+                <div class="stat-value" id="stat-accounts">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 opacity-75">Stories Today</h6>
+                <div class="stat-value" id="stat-stories">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 opacity-75">Discovered Users</h6>
+                <div class="stat-value" id="stat-users">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 opacity-75">Active Campaigns</h6>
+                <div class="stat-value" id="stat-campaigns">-</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-lightning"></i> Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
+                        <i class="bi bi-plus-circle"></i> Add New Account
+                    </button>
+                    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#publishStoryModal">
+                        <i class="bi bi-send"></i> Publish Story
+                    </button>
+                    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#scanChannelModal">
+                        <i class="bi bi-search"></i> Scan Channel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Activity</h5>
+            </div>
+            <div class="card-body" id="recent-activity">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Stories -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-collection-play"></i> Recent Stories</h5>
+        <a href="/stories" class="btn btn-sm btn-outline-primary">View All</a>
+    </div>
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Account</th>
+                    <th>Type</th>
+                    <th>Mentions</th>
+                    <th>Views</th>
+                    <th>Published</th>
+                </tr>
+            </thead>
+            <tbody id="recent-stories">
+                <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Add Account Modal -->
+<div class="modal fade" id="addAccountModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Add New Account</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="auth-step-1">
+                    <div class="mb-3">
+                        <label class="form-label">Phone Number</label>
+                        <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
+                    </div>
+                    <button class="btn btn-primary w-100" onclick="startAuth()">Send Code</button>
+                </div>
+                <div id="auth-step-2" style="display:none;">
+                    <div class="mb-3">
+                        <label class="form-label">Verification Code</label>
+                        <input type="text" class="form-control" id="auth-code" placeholder="12345">
+                    </div>
+                    <button class="btn btn-primary w-100" onclick="completeAuth()">Verify</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Publish Story Modal -->
+<div class="modal fade" id="publishStoryModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Publish Story</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Account</label>
+                    <select class="form-select" id="story-account">
+                        <option>Loading accounts...</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Media Path</label>
+                    <input type="text" class="form-control" id="story-media" placeholder="/path/to/media.jpg">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Caption</label>
+                    <textarea class="form-control" id="story-caption" rows="3"></textarea>
+                </div>
+                <button class="btn btn-primary w-100" onclick="publishStory()">Publish</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Scan Channel Modal -->
+<div class="modal fade" id="scanChannelModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Scan Channel</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Channel Username</label>
+                    <input type="text" class="form-control" id="scan-channel" placeholder="@channelname">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Limit</label>
+                    <input type="number" class="form-control" id="scan-limit" value="500">
+                </div>
+                <button class="btn btn-primary w-100" onclick="scanChannel()">Start Scan</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let authData = {};
+
+async function refreshStats() {
+    try {
+        const response = await fetch('/api/stats');
+        const stats = await response.json();
+
+        document.getElementById('stat-accounts').textContent = stats.accounts.active;
+        document.getElementById('stat-stories').textContent = stats.stories.total;
+        document.getElementById('stat-users').textContent = stats.users.discovered;
+        document.getElementById('stat-campaigns').textContent = stats.campaigns.active;
+    } catch (error) {
+        console.error('Failed to load stats:', error);
+    }
+}
+
+async function loadRecentStories() {
+    try {
+        const response = await fetch('/api/stories?per_page=5');
+        const data = await response.json();
+
+        const tbody = document.getElementById('recent-stories');
+        if (data.stories.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No stories yet</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.stories.map(s => `
+            <tr>
+                <td>Account #${s.account_id}</td>
+                <td><span class="badge bg-secondary">${s.media_type}</span></td>
+                <td>${s.mentions}</td>
+                <td>${s.views}</td>
+                <td>${new Date(s.published_at).toLocaleString()}</td>
+            </tr>
+        `).join('');
+    } catch (error) {
+        console.error('Failed to load stories:', error);
+    }
+}
+
+async function startAuth() {
+    const phone = document.getElementById('phone-number').value;
+    try {
+        const response = await fetch('/api/accounts/auth/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({phone_number: phone})
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            authData = result;
+            document.getElementById('auth-step-1').style.display = 'none';
+            document.getElementById('auth-step-2').style.display = 'block';
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Failed to send code: ' + error);
+    }
+}
+
+async function completeAuth() {
+    const code = document.getElementById('auth-code').value;
+    try {
+        const response = await fetch('/api/accounts/auth/complete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                phone_number: authData.phone_number,
+                code: code,
+                phone_code_hash: authData.phone_code_hash,
+                session_string: authData.session_string
+            })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Account added successfully!');
+            location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Failed to verify: ' + error);
+    }
+}
+
+async function publishStory() {
+    const accountId = document.getElementById('story-account').value;
+    const mediaPath = document.getElementById('story-media').value;
+    const caption = document.getElementById('story-caption').value;
+
+    try {
+        const response = await fetch('/api/stories/publish', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                account_id: parseInt(accountId),
+                media_path: mediaPath,
+                caption: caption
+            })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Story published!');
+            location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Failed to publish: ' + error);
+    }
+}
+
+async function scanChannel() {
+    const channel = document.getElementById('scan-channel').value;
+    const limit = document.getElementById('scan-limit').value;
+
+    try {
+        const response = await fetch('/api/discovery/scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                channels: [channel],
+                limit: parseInt(limit)
+            })
+        });
+        const result = await response.json();
+
+        alert(`Scan complete! Found ${result.total_new_users} new users.`);
+    } catch (error) {
+        alert('Scan failed: ' + error);
+    }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    refreshStats();
+    loadRecentStories();
+});
+</script>
+{% endblock %}
