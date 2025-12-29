@@ -70,6 +70,9 @@ venv.bak/
 data/sessions/*
 data/media/*
 data/logs/*
+data/scrapes/*
+data/temp/*
+data/test_media/*
 !data/sessions/.gitkeep
 !data/media/.gitkeep
 !data/logs/.gitkeep
