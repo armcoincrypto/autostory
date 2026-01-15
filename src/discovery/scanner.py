@@ -1,41 +1,53 @@
 """
-User Discovery - Scan public chats and discover users
+User Discovery - Scan public chats and discover users from messages
+Enhanced version with 1-year scanning and user validation
 """
 import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Set
 
-from telethon import functions
+from telethon import functions, TelegramClient
 from telethon.tl.types import (
     Channel,
     Chat,
     User,
     ChannelParticipantsSearch,
     ChannelParticipantsRecent,
+    UserStatusEmpty,
+    UserStatusOffline,
+    UserStatusOnline,
+    UserStatusRecently,
+    UserStatusLastWeek,
+    UserStatusLastMonth,
 )
-from telethon.errors import ChatAdminRequiredError, ChannelPrivateError
+from telethon.errors import (
+    ChatAdminRequiredError,
+    ChannelPrivateError,
+    FloodWaitError,
+    UserNotParticipantError,
+)
 import structlog
 
 import sys
 sys.path.insert(0, '/home/user/autostory')
 from config.settings import settings
-from src.core.models import DiscoveredUser
+from src.core.models import DiscoveredUser, Account, AccountStatus
 from src.core.database import get_db_context
-from src.clients.manager import TelegramClientWrapper, client_manager
 from src.clients.rate_limiter import AntiDetection
 
 logger = structlog.get_logger(__name__)
 
 
-class ChatScanner:
+class GroupMessageScanner:
     """
-    Scans public chats/channels to discover users
+    Advanced scanner that collects users from group message history
 
     Features:
-    - Scan channel members
-    - Scan message senders
-    - Filter users by criteria
-    - Avoid duplicates
+    - Scan 1 year of message history
+    - Deduplicate users
+    - Validate deleted/deactivated users
+    - Progress tracking
+    - Rate limiting to avoid bans
     """
 
     def __init__(self):
@@ -43,315 +55,354 @@ class ChatScanner:
         self._load_existing_users()
 
     def _load_existing_users(self) -> None:
-        """Load existing user IDs from database"""
-        with get_db_context() as db:
-            users = db.query(DiscoveredUser.user_id).all()
-            self._seen_users = {u[0] for u in users}
-        logger.info("Loaded existing users", count=len(self._seen_users))
+        """Load existing user IDs from database to avoid duplicates"""
+        try:
+            with get_db_context() as db:
+                users = db.query(DiscoveredUser.user_id).all()
+                self._seen_users = {u[0] for u in users}
+            logger.info("Loaded existing users", count=len(self._seen_users))
+        except Exception as e:
+            logger.error("Failed to load existing users", error=str(e))
+            self._seen_users = set()
 
-    async def scan_channel_members(
+    async def get_active_client(self) -> Optional[TelegramClient]:
+        """Get an active Telegram client from database"""
+        from telethon.sessions import StringSession
+
+        with get_db_context() as db:
+            account = db.query(Account).filter(
+                Account.status == AccountStatus.ACTIVE,
+                Account.session_string.isnot(None)
+            ).first()
+
+            if not account:
+                return None
+
+            session_string = account.session_string
+
+        # Create client from session
+        client = TelegramClient(
+            StringSession(session_string),
+            settings.telegram.api_id,
+            settings.telegram.api_hash
+        )
+
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            return None
+
+        return client
+
+    async def scan_group_messages(
         self,
-        client_wrapper: TelegramClientWrapper,
-        channel_username: str,
-        limit: int = 1000,
-        filter_bots: bool = True,
+        group_username: str,
+        days_back: int = 365,
+        progress_callback=None,
     ) -> Dict[str, Any]:
         """
-        Scan channel members
+        Scan group messages for the last N days and collect users
 
         Args:
-            client_wrapper: Telegram client
-            channel_username: Channel @username or ID
-            limit: Maximum members to fetch
-            filter_bots: Exclude bot accounts
+            group_username: Group @username or invite link
+            days_back: Days to look back (default 365 = 1 year)
+            progress_callback: Async function to report progress
 
         Returns:
-            Scan results with discovered users
+            Scan results with statistics
         """
-        client = client_wrapper.client
         results = {
             "success": False,
-            "channel": channel_username,
-            "total_scanned": 0,
-            "new_users": 0,
-            "errors": []
+            "group": group_username,
+            "group_title": "",
+            "messages_scanned": 0,
+            "unique_users_found": 0,
+            "new_users_saved": 0,
+            "deleted_users_skipped": 0,
+            "bots_skipped": 0,
+            "duplicates_skipped": 0,
+            "errors": [],
+            "duration_seconds": 0,
         }
 
-        try:
-            # Get channel entity
-            channel = await client.get_entity(channel_username)
+        start_time = datetime.utcnow()
 
-            if not isinstance(channel, (Channel, Chat)):
-                results["errors"].append("Not a channel or chat")
+        # Get client
+        client = await self.get_active_client()
+        if not client:
+            results["errors"].append("No active Telegram account. Use /login first.")
+            return results
+
+        try:
+            # Get group entity
+            try:
+                group = await client.get_entity(group_username)
+            except Exception as e:
+                results["errors"].append(f"Cannot access group: {str(e)}")
                 return results
 
-            channel_id = channel.id
-            channel_title = getattr(channel, 'title', channel_username)
+            group_id = group.id
+            group_title = getattr(group, 'title', group_username)
+            results["group_title"] = group_title
 
             logger.info(
-                "Scanning channel members",
-                channel=channel_title,
-                limit=limit
-            )
-
-            # Fetch participants
-            new_users = []
-            offset = 0
-            batch_size = 100
-
-            while offset < limit:
-                await AntiDetection.random_pause(1, 3)
-
-                try:
-                    participants = await client(functions.channels.GetParticipantsRequest(
-                        channel=channel,
-                        filter=ChannelParticipantsRecent(),
-                        offset=offset,
-                        limit=min(batch_size, limit - offset),
-                        hash=0
-                    ))
-
-                    if not participants.users:
-                        break
-
-                    for user in participants.users:
-                        if self._should_include_user(user, filter_bots):
-                            if user.id not in self._seen_users:
-                                discovered = self._create_discovered_user(
-                                    user, channel_id, channel_title
-                                )
-                                new_users.append(discovered)
-                                self._seen_users.add(user.id)
-
-                        results["total_scanned"] += 1
-
-                    offset += len(participants.users)
-
-                    if len(participants.users) < batch_size:
-                        break
-
-                except ChatAdminRequiredError:
-                    results["errors"].append("Admin access required")
-                    break
-                except Exception as e:
-                    results["errors"].append(str(e))
-                    break
-
-            # Save to database
-            if new_users:
-                with get_db_context() as db:
-                    db.add_all(new_users)
-                    db.commit()
-
-            results["success"] = True
-            results["new_users"] = len(new_users)
-
-            logger.info(
-                "Channel scan complete",
-                channel=channel_title,
-                scanned=results["total_scanned"],
-                new=results["new_users"]
-            )
-
-        except ChannelPrivateError:
-            results["errors"].append("Channel is private")
-        except Exception as e:
-            results["errors"].append(str(e))
-            logger.error("Channel scan failed", error=str(e))
-
-        return results
-
-    async def scan_chat_messages(
-        self,
-        client_wrapper: TelegramClientWrapper,
-        chat_username: str,
-        days_back: int = 7,
-        limit: int = 500,
-        filter_bots: bool = True,
-    ) -> Dict[str, Any]:
-        """
-        Scan users from chat messages
-
-        Args:
-            client_wrapper: Telegram client
-            chat_username: Chat @username or ID
-            days_back: Look back this many days
-            limit: Maximum messages to scan
-            filter_bots: Exclude bot accounts
-
-        Returns:
-            Scan results
-        """
-        client = client_wrapper.client
-        results = {
-            "success": False,
-            "chat": chat_username,
-            "messages_scanned": 0,
-            "new_users": 0,
-            "errors": []
-        }
-
-        try:
-            # Get chat entity
-            chat = await client.get_entity(chat_username)
-            chat_id = chat.id
-            chat_title = getattr(chat, 'title', chat_username)
-
-            logger.info(
-                "Scanning chat messages",
-                chat=chat_title,
+                "Starting group scan",
+                group=group_title,
                 days_back=days_back
             )
+
+            if progress_callback:
+                await progress_callback(f"🔍 Scanning **{group_title}**...\nThis may take a while for 1 year of messages.")
 
             # Calculate date range
             min_date = datetime.utcnow() - timedelta(days=days_back)
 
+            # Track users found in this scan
+            users_in_scan: Dict[int, User] = {}
+            message_count = 0
+            last_progress = 0
+
             # Iterate through messages
-            new_users = []
             async for message in client.iter_messages(
-                chat,
-                limit=limit,
-                offset_date=datetime.utcnow()
+                group,
+                offset_date=datetime.utcnow(),
+                reverse=False,  # Newest first
             ):
+                # Check if we've gone past our date range
                 if message.date.replace(tzinfo=None) < min_date:
                     break
 
-                results["messages_scanned"] += 1
+                message_count += 1
+                results["messages_scanned"] = message_count
 
-                # Get sender
-                if message.sender and isinstance(message.sender, User):
-                    user = message.sender
-                    if self._should_include_user(user, filter_bots):
-                        if user.id not in self._seen_users:
-                            discovered = self._create_discovered_user(
-                                user, chat_id, chat_title
-                            )
-                            new_users.append(discovered)
-                            self._seen_users.add(user.id)
+                # Extract sender
+                if message.sender_id and message.sender:
+                    sender = message.sender
+                    if isinstance(sender, User):
+                        if sender.id not in users_in_scan:
+                            users_in_scan[sender.id] = sender
 
-                # Rate limit
-                if results["messages_scanned"] % 100 == 0:
-                    await AntiDetection.random_pause(0.5, 1.5)
+                # Also check for forwards
+                if message.forward and message.forward.sender_id:
+                    try:
+                        fwd_sender = await message.forward.get_sender()
+                        if isinstance(fwd_sender, User):
+                            if fwd_sender.id not in users_in_scan:
+                                users_in_scan[fwd_sender.id] = fwd_sender
+                    except:
+                        pass
 
-            # Save to database
+                # Progress update every 1000 messages
+                if progress_callback and message_count - last_progress >= 1000:
+                    last_progress = message_count
+                    await progress_callback(
+                        f"📊 Progress: {message_count:,} messages scanned\n"
+                        f"👥 Unique users found: {len(users_in_scan):,}"
+                    )
+
+                # Rate limiting - pause every 500 messages
+                if message_count % 500 == 0:
+                    await asyncio.sleep(1)
+
+                # Handle flood wait
+
+            results["unique_users_found"] = len(users_in_scan)
+
+            if progress_callback:
+                await progress_callback(
+                    f"✅ Scan complete!\n"
+                    f"📊 {message_count:,} messages scanned\n"
+                    f"👥 {len(users_in_scan):,} unique users found\n\n"
+                    f"🔄 Processing and validating users..."
+                )
+
+            # Process and validate users
+            new_users = []
+            for user_id, user in users_in_scan.items():
+                # Check if deleted
+                if user.deleted:
+                    results["deleted_users_skipped"] += 1
+                    continue
+
+                # Check if bot
+                if user.bot:
+                    results["bots_skipped"] += 1
+                    continue
+
+                # Check if already in database
+                if user_id in self._seen_users:
+                    results["duplicates_skipped"] += 1
+                    continue
+
+                # Validate user is real (has some activity indicator)
+                if not self._is_valid_user(user):
+                    results["deleted_users_skipped"] += 1
+                    continue
+
+                # Create discovered user record
+                discovered = DiscoveredUser(
+                    user_id=user.id,
+                    username=user.username,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    source_chat_id=group_id,
+                    source_chat_title=group_title,
+                    discovered_at=datetime.utcnow(),
+                )
+                new_users.append(discovered)
+                self._seen_users.add(user.id)
+
+            # Save to database in batches
             if new_users:
-                with get_db_context() as db:
-                    db.add_all(new_users)
-                    db.commit()
+                batch_size = 100
+                for i in range(0, len(new_users), batch_size):
+                    batch = new_users[i:i + batch_size]
+                    try:
+                        with get_db_context() as db:
+                            db.add_all(batch)
+                            db.commit()
+                        results["new_users_saved"] += len(batch)
+                    except Exception as e:
+                        logger.error("Failed to save batch", error=str(e))
+                        results["errors"].append(f"Save error: {str(e)}")
 
             results["success"] = True
-            results["new_users"] = len(new_users)
+            results["duration_seconds"] = (datetime.utcnow() - start_time).total_seconds()
 
             logger.info(
-                "Chat message scan complete",
-                chat=chat_title,
+                "Group scan complete",
+                group=group_title,
                 messages=results["messages_scanned"],
-                new_users=results["new_users"]
+                new_users=results["new_users_saved"]
             )
 
+        except FloodWaitError as e:
+            results["errors"].append(f"Rate limited. Wait {e.seconds} seconds.")
+            logger.warning("Flood wait", seconds=e.seconds)
+        except ChannelPrivateError:
+            results["errors"].append("Group is private. Join first.")
         except Exception as e:
             results["errors"].append(str(e))
-            logger.error("Chat message scan failed", error=str(e))
+            logger.error("Scan failed", error=str(e))
+        finally:
+            await client.disconnect()
 
         return results
 
-    def _should_include_user(self, user: User, filter_bots: bool) -> bool:
-        """Check if user should be included"""
+    def _is_valid_user(self, user: User) -> bool:
+        """
+        Validate that a user is real and active
+
+        Checks:
+        - Not deleted
+        - Not a bot
+        - Has some identifier (username or name)
+        - Has been seen recently (if status available)
+        """
         if user.deleted:
             return False
-        if filter_bots and user.bot:
+
+        if user.bot:
             return False
-        if not user.id:
+
+        # Must have at least username or first_name
+        if not user.username and not user.first_name:
             return False
+
+        # Check status if available (indicates real account)
+        if user.status:
+            # These statuses indicate active/real users
+            valid_statuses = (
+                UserStatusOnline,
+                UserStatusOffline,
+                UserStatusRecently,
+                UserStatusLastWeek,
+                UserStatusLastMonth,
+            )
+            if not isinstance(user.status, valid_statuses):
+                # UserStatusEmpty often means deleted/deactivated
+                if isinstance(user.status, UserStatusEmpty):
+                    return False
+
         return True
 
-    def _create_discovered_user(
+    async def scan_multiple_groups(
         self,
-        user: User,
-        source_chat_id: int,
-        source_chat_title: str
-    ) -> DiscoveredUser:
-        """Create DiscoveredUser model from Telegram user"""
-        return DiscoveredUser(
-            user_id=user.id,
-            username=user.username,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            source_chat_id=source_chat_id,
-            source_chat_title=source_chat_title,
-            discovered_at=datetime.utcnow(),
-        )
+        group_usernames: List[str],
+        days_back: int = 365,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        """Scan multiple groups sequentially"""
+        total_results = {
+            "success": False,
+            "groups_scanned": 0,
+            "total_messages": 0,
+            "total_new_users": 0,
+            "group_results": [],
+            "errors": [],
+        }
+
+        for i, group in enumerate(group_usernames):
+            if progress_callback:
+                await progress_callback(
+                    f"📂 Scanning group {i+1}/{len(group_usernames)}: {group}"
+                )
+
+            result = await self.scan_group_messages(
+                group,
+                days_back=days_back,
+                progress_callback=progress_callback,
+            )
+
+            total_results["group_results"].append(result)
+            total_results["groups_scanned"] += 1
+            total_results["total_messages"] += result.get("messages_scanned", 0)
+            total_results["total_new_users"] += result.get("new_users_saved", 0)
+
+            if result.get("errors"):
+                total_results["errors"].extend(result["errors"])
+
+            # Wait between groups to avoid rate limits
+            if i < len(group_usernames) - 1:
+                await asyncio.sleep(10)
+
+        total_results["success"] = total_results["groups_scanned"] > 0
+        return total_results
 
 
 class UserDiscovery:
     """
     High-level user discovery orchestration
-
-    Features:
-    - Multi-channel scanning
-    - Scheduled discovery
-    - Statistics and reporting
     """
 
     def __init__(self):
-        self._scanner = ChatScanner()
+        self._scanner = GroupMessageScanner()
 
-    async def discover_from_channels(
+    async def discover_from_group(
         self,
-        channel_usernames: List[str],
-        limit_per_channel: int = 500,
+        group_username: str,
+        days_back: int = 365,
+        progress_callback=None,
     ) -> Dict[str, Any]:
-        """
-        Discover users from multiple channels
+        """Discover users from a single group"""
+        return await self._scanner.scan_group_messages(
+            group_username,
+            days_back=days_back,
+            progress_callback=progress_callback,
+        )
 
-        Args:
-            channel_usernames: List of channel usernames
-            limit_per_channel: Max users per channel
-
-        Returns:
-            Aggregated results
-        """
-        results = {
-            "success": False,
-            "channels_processed": 0,
-            "total_scanned": 0,
-            "total_new_users": 0,
-            "channel_results": [],
-            "errors": []
-        }
-
-        # Get available client
-        clients = await client_manager.get_available_clients()
-        if not clients:
-            results["errors"].append("No available clients")
-            return results
-
-        client_wrapper = clients[0]
-
-        for channel in channel_usernames:
-            try:
-                scan_result = await self._scanner.scan_channel_members(
-                    client_wrapper,
-                    channel,
-                    limit=limit_per_channel
-                )
-
-                results["channel_results"].append(scan_result)
-                results["channels_processed"] += 1
-                results["total_scanned"] += scan_result.get("total_scanned", 0)
-                results["total_new_users"] += scan_result.get("new_users", 0)
-
-                if scan_result.get("errors"):
-                    results["errors"].extend(scan_result["errors"])
-
-                # Wait between channels
-                await asyncio.sleep(5)
-
-            except Exception as e:
-                results["errors"].append(f"{channel}: {str(e)}")
-
-        results["success"] = results["channels_processed"] > 0
-        return results
+    async def discover_from_groups(
+        self,
+        group_usernames: List[str],
+        days_back: int = 365,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        """Discover users from multiple groups"""
+        return await self._scanner.scan_multiple_groups(
+            group_usernames,
+            days_back=days_back,
+            progress_callback=progress_callback,
+        )
 
     async def get_discovery_stats(self) -> Dict[str, Any]:
         """Get discovery statistics"""
@@ -361,6 +412,10 @@ class UserDiscovery:
                 DiscoveredUser.times_mentioned > 0
             ).count()
             unmentioned = total - mentioned
+
+            with_username = db.query(DiscoveredUser).filter(
+                DiscoveredUser.username.isnot(None)
+            ).count()
 
             # Recent discoveries
             week_ago = datetime.utcnow() - timedelta(days=7)
@@ -379,6 +434,7 @@ class UserDiscovery:
 
         return {
             "total_discovered": total,
+            "with_username": with_username,
             "mentioned": mentioned,
             "unmentioned": unmentioned,
             "discovered_this_week": recent,
@@ -388,16 +444,17 @@ class UserDiscovery:
     async def get_users_for_mention(
         self,
         count: int = 5,
-        exclude_mentioned: bool = True,
+        require_username: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Get users suitable for mentioning"""
+        """Get users suitable for mentioning in stories"""
         with get_db_context() as db:
             query = db.query(DiscoveredUser).filter(
-                DiscoveredUser.is_blocked == False
+                DiscoveredUser.is_blocked == False,
+                DiscoveredUser.times_mentioned == 0,
             )
 
-            if exclude_mentioned:
-                query = query.filter(DiscoveredUser.times_mentioned == 0)
+            if require_username:
+                query = query.filter(DiscoveredUser.username.isnot(None))
 
             users = query.order_by(
                 DiscoveredUser.discovered_at.desc()
@@ -415,5 +472,5 @@ class UserDiscovery:
 
 
 # Global instances
-chat_scanner = ChatScanner()
+group_scanner = GroupMessageScanner()
 user_discovery = UserDiscovery()

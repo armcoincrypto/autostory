@@ -33,6 +33,9 @@ logger = structlog.get_logger(__name__)
 # Store for pending login sessions (user_id -> login state)
 pending_logins: Dict[int, Dict[str, Any]] = {}
 
+# Store for pending scan sessions (user_id -> scan state)
+pending_scans: Dict[int, Dict[str, Any]] = {}
+
 
 def admin_only(func):
     """Decorator to restrict commands to admin users"""
@@ -419,10 +422,12 @@ class StoryFleetBot:
 
         @self.client.on(events.NewMessage(pattern="/cancel"))
         @admin_only
-        async def cancel_login_handler(event):
-            """Cancel ongoing login"""
+        async def cancel_handler(event):
+            """Cancel ongoing operations (login or scan)"""
             sender = await event.get_sender()
             user_id = sender.id
+
+            cancelled = False
 
             if user_id in pending_logins:
                 old_client = pending_logins[user_id].get("client")
@@ -433,8 +438,16 @@ class StoryFleetBot:
                         pass
                 del pending_logins[user_id]
                 await event.respond("❌ Login cancelled.")
-            else:
-                await event.respond("No active login process.")
+                cancelled = True
+
+            if user_id in pending_scans:
+                del pending_scans[user_id]
+                if not cancelled:
+                    await event.respond("❌ Scan cancelled.")
+                cancelled = True
+
+            if not cancelled:
+                await event.respond("No active operation to cancel.")
 
         @self.client.on(events.NewMessage())
         async def message_handler(event):
@@ -546,14 +559,171 @@ class StoryFleetBot:
         @self.client.on(events.NewMessage(pattern="/scan"))
         @admin_only
         async def scan_handler(event):
-            """Handle /scan command"""
+            """Handle /scan command - Start group scanning flow"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if there's an active account
+            with get_db_context() as db:
+                active_account = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).first()
+
+            if not active_account:
+                await event.respond(
+                    "❌ **No active account**\n\n"
+                    "You need to login a Telegram account first.\n"
+                    "Use /login to add an account."
+                )
+                return
+
+            # Set scan state
+            pending_scans[user_id] = {
+                "step": "waiting_group",
+                "groups": [],
+            }
+
             await event.respond(
-                "🔍 **Scan Channel for Users**\n\n"
-                "Send the channel username to scan:\n"
-                "Example: `@channelname`\n\n"
-                "Reply with the channel username:",
+                "🔍 **Scan Group for Users**\n\n"
+                "This will scan 1 year of message history and collect users.\n\n"
+                "**Send the group username or link:**\n"
+                "Examples:\n"
+                "• `@groupname`\n"
+                "• `https://t.me/groupname`\n"
+                "• `https://t.me/+invitecode`\n\n"
+                "Send /cancel to abort.",
                 buttons=[[Button.text("❌ Cancel")]]
             )
+
+        @self.client.on(events.NewMessage(pattern=r"^(@[\w]+|https?://t\.me/.+)$"))
+        @admin_only
+        async def scan_group_input_handler(event):
+            """Handle group input for scanning"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if waiting for scan input
+            if user_id not in pending_scans:
+                return
+
+            if pending_scans[user_id].get("step") != "waiting_group":
+                return
+
+            group = event.text.strip()
+
+            # Clear scan state
+            del pending_scans[user_id]
+
+            # Send processing message
+            progress_msg = await event.respond(
+                f"🔄 **Starting scan of {group}**\n\n"
+                "Scanning 1 year of messages...\n"
+                "This may take several minutes for active groups."
+            )
+
+            # Progress callback function
+            async def update_progress(text):
+                try:
+                    await progress_msg.edit(text)
+                except:
+                    pass
+
+            # Run scanner
+            from src.discovery.scanner import user_discovery
+
+            try:
+                result = await user_discovery.discover_from_group(
+                    group,
+                    days_back=365,
+                    progress_callback=update_progress,
+                )
+
+                # Format result message
+                if result["success"]:
+                    duration = int(result.get("duration_seconds", 0))
+                    mins = duration // 60
+                    secs = duration % 60
+
+                    await event.respond(
+                        f"✅ **Scan Complete!**\n\n"
+                        f"**Group:** {result.get('group_title', group)}\n"
+                        f"**Duration:** {mins}m {secs}s\n\n"
+                        f"📊 **Results:**\n"
+                        f"• Messages scanned: {result['messages_scanned']:,}\n"
+                        f"• Unique users found: {result['unique_users_found']:,}\n"
+                        f"• **New users saved: {result['new_users_saved']:,}**\n"
+                        f"• Deleted users skipped: {result['deleted_users_skipped']:,}\n"
+                        f"• Bots skipped: {result['bots_skipped']:,}\n"
+                        f"• Duplicates skipped: {result['duplicates_skipped']:,}\n\n"
+                        f"Use /users to see available users for mention.",
+                        buttons=[
+                            [Button.text("🔍 Scan Another", resize=True), Button.text("👥 View Users")],
+                            [Button.text("📊 Stats")],
+                        ]
+                    )
+                else:
+                    errors = "\n".join(result.get("errors", ["Unknown error"]))
+                    await event.respond(
+                        f"❌ **Scan Failed**\n\n"
+                        f"**Group:** {group}\n"
+                        f"**Errors:**\n{errors}\n\n"
+                        "Make sure:\n"
+                        "• The logged-in account is a member of the group\n"
+                        "• The group is accessible\n"
+                        "• Try with a different group"
+                    )
+
+            except Exception as e:
+                logger.error("Scan error", error=str(e))
+                await event.respond(
+                    f"❌ **Scan Error**\n\n"
+                    f"Error: {str(e)}\n\n"
+                    "Please try again."
+                )
+
+        @self.client.on(events.NewMessage(pattern="🔍 Scan Another"))
+        @admin_only
+        async def scan_another_handler(event):
+            """Handle Scan Another button"""
+            sender = await event.get_sender()
+            pending_scans[sender.id] = {"step": "waiting_group", "groups": []}
+            await event.respond(
+                "🔍 **Scan Group for Users**\n\n"
+                "Send the group username or link:\n"
+                "Example: `@groupname` or `https://t.me/groupname`\n\n"
+                "Send /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
+            )
+
+        @self.client.on(events.NewMessage(pattern="👥 View Users"))
+        @admin_only
+        async def view_users_handler(event):
+            """Handle View Users button"""
+            with get_db_context() as db:
+                users = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0
+                ).order_by(
+                    DiscoveredUser.discovered_at.desc()
+                ).limit(15).all()
+
+            if not users:
+                await event.respond("No users available for mention yet.")
+                return
+
+            message = "👥 **Users Available for Mention**\n\n"
+            for user in users:
+                username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
+                name = user.first_name or "N/A"
+                message += f"• {username} ({name})\n"
+
+            total = db.query(DiscoveredUser).filter(
+                DiscoveredUser.times_mentioned == 0
+            ).count()
+
+            message += f"\n_Showing 15 of {total} available users_"
+
+            await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/publish"))
         @admin_only
