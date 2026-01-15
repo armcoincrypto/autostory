@@ -6,6 +6,10 @@ from typing import Optional, List
 from pydantic_settings import BaseSettings
 from pydantic import Field
 import os
+from dotenv import load_dotenv
+
+# Load .env file explicitly
+load_dotenv()
 
 
 class TelegramSettings(BaseSettings):
@@ -76,6 +80,19 @@ class BotSettings(BaseSettings):
     class Config:
         env_prefix = "BOT_"
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Fallback to direct env var reading
+        if not self.token:
+            self.token = os.getenv("BOT_TOKEN", "")
+        if not self.admin_ids:
+            admin_str = os.getenv("BOT_ADMIN_IDS", "[]")
+            try:
+                import json
+                self.admin_ids = json.loads(admin_str)
+            except:
+                self.admin_ids = []
+
 
 class StorageSettings(BaseSettings):
     """File storage configuration"""
@@ -93,7 +110,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", description="Environment (development/production)")
     log_level: str = Field(default="INFO", description="Logging level")
 
-    # Sub-configurations
+    # Sub-configurations - load them explicitly
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
