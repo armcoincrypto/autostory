@@ -1,4 +1,4 @@
 """User discovery module"""
-from .scanner import ChatScanner, UserDiscovery
+from .scanner import GroupMessageScanner, UserDiscovery, user_discovery
 
-__all__ = ["ChatScanner", "UserDiscovery"]
+__all__ = ["GroupMessageScanner", "UserDiscovery", "user_discovery"]

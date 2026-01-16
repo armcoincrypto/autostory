@@ -338,7 +338,7 @@ class StoryPublisher:
                 if account:
                     account.stories_today += 1
                     account.total_stories_published += 1
-                    account.last_used = datetime.utcnow()
+                    account.last_active = datetime.utcnow()
 
                 # Create story record
                 story = Story(
@@ -388,7 +388,7 @@ class StoryPublisher:
                 Account.stories_today < settings.telegram.max_stories_per_hour,
             ).order_by(
                 Account.stories_today.asc(),  # Prefer accounts with fewer stories today
-                Account.last_used.asc(),  # Prefer least recently used
+                Account.last_active.asc(),  # Prefer least recently used
             ).first()
 
             if account:

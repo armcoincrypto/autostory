@@ -119,7 +119,7 @@ class SessionManager:
                 account = db.query(Account).filter(Account.id == account_id).first()
                 if account:
                     account.session_string = session_string
-                    account.last_used = datetime.utcnow()
+                    account.last_active = datetime.utcnow()
                     db.commit()
         except Exception as e:
             logger.error("Failed to save session to database", error=str(e))

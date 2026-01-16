@@ -294,7 +294,7 @@ class StoryFleetBot:
                     existing.first_name = me.first_name
                     existing.last_name = me.last_name
                     existing.status = AccountStatus.ACTIVE
-                    existing.last_used = datetime.utcnow()
+                    existing.last_active = datetime.utcnow()
                     db.commit()
                     account_id = existing.id
                     is_new = False
