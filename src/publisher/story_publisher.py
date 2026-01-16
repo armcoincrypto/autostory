@@ -51,10 +51,37 @@ class StoryPublisher:
     - Track published stories
     - Handle rate limits with retry
     - Rotate between multiple accounts
+    - Rate limiting to prevent bans
     """
 
     def __init__(self):
         self._clients: Dict[int, TelegramClient] = {}
+        self._rate_limits: Dict[int, List[datetime]] = {}  # account_id -> [timestamps]
+        self._max_stories_per_hour = 3  # Conservative limit
+
+    def _check_rate_limit(self, account_id: int) -> bool:
+        """Check if account is within rate limits"""
+        now = datetime.utcnow()
+        hour_ago = now - timedelta(hours=1)
+
+        # Get timestamps for this account
+        if account_id not in self._rate_limits:
+            self._rate_limits[account_id] = []
+
+        # Filter out old timestamps
+        self._rate_limits[account_id] = [
+            ts for ts in self._rate_limits[account_id]
+            if ts > hour_ago
+        ]
+
+        # Check if under limit
+        return len(self._rate_limits[account_id]) < self._max_stories_per_hour
+
+    def _record_publish(self, account_id: int):
+        """Record a successful publish for rate limiting"""
+        if account_id not in self._rate_limits:
+            self._rate_limits[account_id] = []
+        self._rate_limits[account_id].append(datetime.utcnow())
 
     async def get_client_for_account(self, account_id: int) -> Optional[TelegramClient]:
         """Get or create a Telegram client for an account"""
@@ -118,6 +145,11 @@ class StoryPublisher:
         }
 
         mention_user_ids = mention_user_ids or []
+
+        # Check rate limit
+        if not self._check_rate_limit(account_id):
+            result["error"] = f"Rate limit: Account #{account_id} already posted {self._max_stories_per_hour} stories this hour"
+            return result
 
         # Validate media file
         if not os.path.exists(media_path):
@@ -222,6 +254,9 @@ class StoryPublisher:
 
                 result["success"] = True
                 result["story_id"] = story_id
+
+                # Record for rate limiting
+                self._record_publish(account_id)
 
                 # Save to database
                 await self._save_story_record(

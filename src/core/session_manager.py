@@ -93,8 +93,13 @@ class SessionManager:
         return self._fernet.decrypt(data).decode()
 
     async def save_session(self, account_id: int, session_string: str):
-        """Save session to Redis and database"""
-        encrypted = self._encrypt(session_string)
+        """Save session to Redis and database with encryption fallback"""
+        # Try to encrypt
+        try:
+            encrypted = self._encrypt(session_string)
+        except Exception as e:
+            logger.warning("Encryption failed, saving plain", error=str(e))
+            encrypted = session_string.encode()
 
         # Save to Redis with 7-day TTL
         if self._redis:
