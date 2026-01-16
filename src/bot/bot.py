@@ -36,6 +36,9 @@ pending_logins: Dict[int, Dict[str, Any]] = {}
 # Store for pending scan sessions (user_id -> scan state)
 pending_scans: Dict[int, Dict[str, Any]] = {}
 
+# Store for pending publish sessions (user_id -> publish state)
+pending_publishes: Dict[int, Dict[str, Any]] = {}
+
 
 def admin_only(func):
     """Decorator to restrict commands to admin users"""
@@ -729,27 +732,44 @@ class StoryFleetBot:
         @admin_only
         async def publish_handler(event):
             """Handle /publish command"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
             with get_db_context() as db:
                 accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
                 ).all()
+
+                users_count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0
+                ).count()
 
             if not accounts:
                 await event.respond(
-                    "No active accounts available.\n\n"
+                    "❌ **No active accounts**\n\n"
                     "Use /login to add an account first."
                 )
                 return
+
+            # Initialize publish state
+            pending_publishes[user_id] = {
+                "step": "select_account",
+                "account_id": None,
+                "mentions": 5,
+                "caption": "",
+            }
 
             buttons = [
                 [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
                 for acc in accounts[:5]
             ]
-            buttons.append([Button.inline("❌ Cancel", data="cancel")])
+            buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
 
             await event.respond(
                 "📤 **Publish Story**\n\n"
-                "Select an account:",
+                f"👥 Available users for mention: {users_count}\n\n"
+                "Select an account to publish from:",
                 buttons=buttons
             )
 
@@ -757,11 +777,148 @@ class StoryFleetBot:
         @admin_only
         async def publish_account_selected(event):
             """Handle account selection for publishing"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
             account_id = int(event.data.decode().split("_")[1])
 
+            # Update state
+            if user_id not in pending_publishes:
+                pending_publishes[user_id] = {}
+
+            pending_publishes[user_id]["account_id"] = account_id
+            pending_publishes[user_id]["step"] = "waiting_media"
+
             await event.edit(
-                f"📤 Publishing from Account #{account_id}\n\n"
-                "Send the media file (photo/video) for the story:"
+                f"📤 **Publishing from Account #{account_id}**\n\n"
+                "📸 **Send the media file now:**\n"
+                "• Photo (JPG, PNG)\n"
+                "• Video (MP4, up to 15 seconds)\n\n"
+                "The story will be published with automatic user mentions.\n\n"
+                "Send /cancel to abort."
+            )
+
+        @self.client.on(events.CallbackQuery(pattern="pub_cancel"))
+        async def publish_cancel_handler(event):
+            """Handle publish cancel"""
+            sender = await event.get_sender()
+            if sender.id in pending_publishes:
+                del pending_publishes[sender.id]
+            await event.edit("❌ Publishing cancelled.")
+
+        @self.client.on(events.NewMessage(func=lambda e: e.media))
+        @admin_only
+        async def media_handler(event):
+            """Handle media upload for story publishing"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if waiting for media
+            if user_id not in pending_publishes:
+                return
+
+            if pending_publishes[user_id].get("step") != "waiting_media":
+                return
+
+            account_id = pending_publishes[user_id].get("account_id")
+            if not account_id:
+                return
+
+            # Clear state
+            del pending_publishes[user_id]
+
+            # Download media
+            await event.respond("⏳ Downloading media...")
+
+            import os
+            os.makedirs("data/media", exist_ok=True)
+            media_path = await event.download_media(file="data/media/")
+
+            if not media_path:
+                await event.respond("❌ Failed to download media. Please try again.")
+                return
+
+            # Publish story
+            await event.respond(
+                "🚀 **Publishing story...**\n\n"
+                "• Uploading media\n"
+                "• Adding mentions\n"
+                "• Publishing to story"
+            )
+
+            try:
+                from src.publisher.story_publisher import story_publisher
+
+                result = await story_publisher.publish_with_auto_mentions(
+                    media_path=media_path,
+                    caption="",
+                    mentions_count=5,
+                    account_id=account_id,
+                )
+
+                # Clean up media file
+                try:
+                    os.remove(media_path)
+                except:
+                    pass
+
+                if result["success"]:
+                    await event.respond(
+                        "✅ **Story Published Successfully!**\n\n"
+                        f"📊 **Details:**\n"
+                        f"• Account: #{result['account_id']}\n"
+                        f"• Story ID: {result.get('story_id', 'N/A')}\n"
+                        f"• Mentions added: {result['mentions_added']}\n\n"
+                        "The story is now live!",
+                        buttons=[
+                            [Button.text("📤 Publish Another", resize=True)],
+                            [Button.text("📊 Stats")],
+                        ]
+                    )
+                else:
+                    await event.respond(
+                        f"❌ **Publish Failed**\n\n"
+                        f"Error: {result.get('error', 'Unknown error')}\n\n"
+                        "Please try again."
+                    )
+
+            except Exception as e:
+                logger.error("Publish error", error=str(e))
+                await event.respond(
+                    f"❌ **Error publishing story**\n\n"
+                    f"{str(e)}\n\n"
+                    "Please try again."
+                )
+
+        @self.client.on(events.NewMessage(pattern="📤 Publish Another"))
+        @admin_only
+        async def publish_another_handler(event):
+            """Handle Publish Another button"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+            if not accounts:
+                await event.respond("No active accounts. Use /login first.")
+                return
+
+            pending_publishes[user_id] = {"step": "select_account"}
+
+            buttons = [
+                [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
+                for acc in accounts[:5]
+            ]
+            buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
+
+            await event.respond(
+                "📤 **Publish Story**\n\n"
+                "Select an account:",
+                buttons=buttons
             )
 
         @self.client.on(events.NewMessage(pattern="/users"))
