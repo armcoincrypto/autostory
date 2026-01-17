@@ -973,6 +973,24 @@ class StoryFleetBot:
             """Handle cancel button"""
             await event.edit("Cancelled.")
 
+        @self.client.on(events.NewMessage(pattern="/monitor"))
+        @admin_only
+        async def monitor_handler(event):
+            """Handle /monitor command - Show detailed analytics"""
+            try:
+                from src.monitoring.story_monitor import story_monitor
+
+                await event.respond("📊 Gathering analytics...")
+
+                stats = story_monitor.get_system_stats()
+                message = story_monitor.format_stats_message(stats)
+
+                await event.respond(message)
+
+            except Exception as e:
+                logger.error("Monitor command error", error=str(e))
+                await event.respond(f"❌ Error: {str(e)}")
+
         @self.client.on(events.NewMessage(pattern="/help"))
         @admin_only
         async def help_handler(event):
@@ -983,8 +1001,9 @@ class StoryFleetBot:
                 "📱 /login - Add new Telegram account\n"
                 "👥 /accounts - List all accounts\n"
                 "/cancel - Cancel current operation\n\n"
-                "**Statistics**\n"
-                "📊 /stats - View overall statistics\n\n"
+                "**Statistics & Monitoring**\n"
+                "📊 /stats - View overall statistics\n"
+                "📈 /monitor - Detailed analytics dashboard\n\n"
                 "**Stories**\n"
                 "📤 /publish - Publish a story\n\n"
                 "**Discovery**\n"
