@@ -528,36 +528,36 @@ class StoryFleetBot:
             with get_db_context() as db:
                 accounts = db.query(Account).all()
 
-            if not accounts:
-                await event.respond(
-                    "No accounts added yet.\n\n"
-                    "Use /login to add your first Telegram account."
-                )
-                return
+                if not accounts:
+                    await event.respond(
+                        "No accounts added yet.\n\n"
+                        "Use /login to add your first Telegram account."
+                    )
+                    return
 
-            message = "👥 **Registered Accounts**\n\n"
-            for acc in accounts[:10]:
-                status_emoji = {
-                    AccountStatus.ACTIVE: "✅",
-                    AccountStatus.INACTIVE: "⏸️",
-                    AccountStatus.BANNED: "🚫",
-                    AccountStatus.FLOOD_WAIT: "⏳",
-                    AccountStatus.AUTH_REQUIRED: "🔑",
-                }.get(acc.status, "❓")
+                message = "👥 **Registered Accounts**\n\n"
+                for acc in accounts[:10]:
+                    status_emoji = {
+                        AccountStatus.ACTIVE: "✅",
+                        AccountStatus.INACTIVE: "⏸️",
+                        AccountStatus.BANNED: "🚫",
+                        AccountStatus.FLOOD_WAIT: "⏳",
+                        AccountStatus.AUTH_REQUIRED: "🔑",
+                    }.get(acc.status, "❓")
 
-                username_str = f"@{acc.username}" if acc.username else "No username"
+                    username_str = f"@{acc.username}" if acc.username else "No username"
 
-                message += (
-                    f"{status_emoji} **{acc.phone_number}**\n"
-                    f"   └ {username_str} | "
-                    f"Stories: {acc.stories_today}\n"
-                )
+                    message += (
+                        f"{status_emoji} **{acc.phone_number}**\n"
+                        f"   └ {username_str} | "
+                        f"Stories: {acc.stories_today}\n"
+                    )
 
-            if len(accounts) > 10:
-                message += f"\n_...and {len(accounts) - 10} more_"
+                if len(accounts) > 10:
+                    message += f"\n_...and {len(accounts) - 10} more_"
 
-            message += "\n\nUse /login to add more accounts."
-            await event.respond(message)
+                message += "\n\nUse /login to add more accounts."
+                await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/scan"))
         @admin_only
@@ -573,13 +573,13 @@ class StoryFleetBot:
                     Account.session_string.isnot(None)
                 ).first()
 
-            if not active_account:
-                await event.respond(
-                    "❌ **No active account**\n\n"
-                    "You need to login a Telegram account first.\n"
-                    "Use /login to add an account."
-                )
-                return
+                if not active_account:
+                    await event.respond(
+                        "❌ **No active account**\n\n"
+                        "You need to login a Telegram account first.\n"
+                        "Use /login to add an account."
+                    )
+                    return
 
             # Set scan state
             pending_scans[user_id] = {
@@ -710,23 +710,23 @@ class StoryFleetBot:
                     DiscoveredUser.discovered_at.desc()
                 ).limit(15).all()
 
-            if not users:
-                await event.respond("No users available for mention yet.")
-                return
+                if not users:
+                    await event.respond("No users available for mention yet.")
+                    return
 
-            message = "👥 **Users Available for Mention**\n\n"
-            for user in users:
-                username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
-                name = user.first_name or "N/A"
-                message += f"• {username} ({name})\n"
+                message = "👥 **Users Available for Mention**\n\n"
+                for user in users:
+                    username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
+                    name = user.first_name or "N/A"
+                    message += f"• {username} ({name})\n"
 
-            total = db.query(DiscoveredUser).filter(
-                DiscoveredUser.times_mentioned == 0
-            ).count()
+                total = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0
+                ).count()
 
-            message += f"\n_Showing 15 of {total} available users_"
+                message += f"\n_Showing 15 of {total} available users_"
 
-            await event.respond(message)
+                await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/publish"))
         @admin_only
@@ -745,33 +745,33 @@ class StoryFleetBot:
                     DiscoveredUser.times_mentioned == 0
                 ).count()
 
-            if not accounts:
+                if not accounts:
+                    await event.respond(
+                        "❌ **No active accounts**\n\n"
+                        "Use /login to add an account first."
+                    )
+                    return
+
+                # Initialize publish state
+                pending_publishes[user_id] = {
+                    "step": "select_account",
+                    "account_id": None,
+                    "mentions": 5,
+                    "caption": "",
+                }
+
+                buttons = [
+                    [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
+                    for acc in accounts[:5]
+                ]
+                buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
+
                 await event.respond(
-                    "❌ **No active accounts**\n\n"
-                    "Use /login to add an account first."
+                    "📤 **Publish Story**\n\n"
+                    f"👥 Available users for mention: {users_count}\n\n"
+                    "Select an account to publish from:",
+                    buttons=buttons
                 )
-                return
-
-            # Initialize publish state
-            pending_publishes[user_id] = {
-                "step": "select_account",
-                "account_id": None,
-                "mentions": 5,
-                "caption": "",
-            }
-
-            buttons = [
-                [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
-                for acc in accounts[:5]
-            ]
-            buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
-
-            await event.respond(
-                "📤 **Publish Story**\n\n"
-                f"👥 Available users for mention: {users_count}\n\n"
-                "Select an account to publish from:",
-                buttons=buttons
-            )
 
         @self.client.on(events.CallbackQuery(pattern=r"pub_(\d+)"))
         @admin_only
@@ -903,23 +903,23 @@ class StoryFleetBot:
                     Account.session_string.isnot(None)
                 ).all()
 
-            if not accounts:
-                await event.respond("No active accounts. Use /login first.")
-                return
+                if not accounts:
+                    await event.respond("No active accounts. Use /login first.")
+                    return
 
-            pending_publishes[user_id] = {"step": "select_account"}
+                pending_publishes[user_id] = {"step": "select_account"}
 
-            buttons = [
-                [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
-                for acc in accounts[:5]
-            ]
-            buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
+                buttons = [
+                    [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
+                    for acc in accounts[:5]
+                ]
+                buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
 
-            await event.respond(
-                "📤 **Publish Story**\n\n"
-                "Select an account:",
-                buttons=buttons
-            )
+                await event.respond(
+                    "📤 **Publish Story**\n\n"
+                    "Select an account:",
+                    buttons=buttons
+                )
 
         @self.client.on(events.NewMessage(pattern="/users"))
         @admin_only
@@ -932,16 +932,16 @@ class StoryFleetBot:
                     DiscoveredUser.discovered_at.desc()
                 ).limit(10).all()
 
-            if not users:
-                await event.respond("No users available for mention.")
-                return
+                if not users:
+                    await event.respond("No users available for mention.")
+                    return
 
-            message = "🔍 **Available Users for Mention**\n\n"
-            for user in users:
-                username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
-                message += f"• {username} | {user.first_name or 'N/A'}\n"
+                message = "🔍 **Available Users for Mention**\n\n"
+                for user in users:
+                    username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
+                    message += f"• {username} | {user.first_name or 'N/A'}\n"
 
-            await event.respond(message)
+                await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/campaigns"))
         @admin_only
@@ -950,23 +950,23 @@ class StoryFleetBot:
             with get_db_context() as db:
                 campaigns = db.query(Campaign).all()
 
-            if not campaigns:
-                await event.respond(
-                    "No campaigns yet.\n\n"
-                    "Use the web dashboard to create campaigns."
-                )
-                return
+                if not campaigns:
+                    await event.respond(
+                        "No campaigns yet.\n\n"
+                        "Use the web dashboard to create campaigns."
+                    )
+                    return
 
-            message = "🎯 **Campaigns**\n\n"
-            for camp in campaigns:
-                status = "✅ Active" if camp.is_active else "⏸️ Paused"
-                message += (
-                    f"**{camp.name}** [{status}]\n"
-                    f"   Stories: {camp.total_stories_published} | "
-                    f"Mentions: {camp.total_users_mentioned}\n\n"
-                )
+                message = "🎯 **Campaigns**\n\n"
+                for camp in campaigns:
+                    status = "✅ Active" if camp.is_active else "⏸️ Paused"
+                    message += (
+                        f"**{camp.name}** [{status}]\n"
+                        f"   Stories: {camp.total_stories_published} | "
+                        f"Mentions: {camp.total_users_mentioned}\n\n"
+                    )
 
-            await event.respond(message)
+                await event.respond(message)
 
         @self.client.on(events.CallbackQuery(pattern="cancel"))
         async def cancel_handler(event):
@@ -1043,35 +1043,35 @@ class StoryFleetBot:
             with get_db_context() as db:
                 accounts = db.query(Account).all()
 
-            if not accounts:
-                await event.respond(
-                    "No accounts added yet.\n\n"
-                    "Use /login to add your first Telegram account."
-                )
-                return
+                if not accounts:
+                    await event.respond(
+                        "No accounts added yet.\n\n"
+                        "Use /login to add your first Telegram account."
+                    )
+                    return
 
-            message = "👥 **Registered Accounts**\n\n"
-            for acc in accounts[:10]:
-                status_emoji = {
-                    AccountStatus.ACTIVE: "✅",
-                    AccountStatus.INACTIVE: "⏸️",
-                    AccountStatus.BANNED: "🚫",
-                    AccountStatus.FLOOD_WAIT: "⏳",
-                    AccountStatus.AUTH_REQUIRED: "🔑",
-                }.get(acc.status, "❓")
+                message = "👥 **Registered Accounts**\n\n"
+                for acc in accounts[:10]:
+                    status_emoji = {
+                        AccountStatus.ACTIVE: "✅",
+                        AccountStatus.INACTIVE: "⏸️",
+                        AccountStatus.BANNED: "🚫",
+                        AccountStatus.FLOOD_WAIT: "⏳",
+                        AccountStatus.AUTH_REQUIRED: "🔑",
+                    }.get(acc.status, "❓")
 
-                username_str = f"@{acc.username}" if acc.username else "No username"
+                    username_str = f"@{acc.username}" if acc.username else "No username"
 
-                message += (
-                    f"{status_emoji} **{acc.phone_number}**\n"
-                    f"   └ {username_str} | "
-                    f"Stories: {acc.stories_today}\n"
-                )
+                    message += (
+                        f"{status_emoji} **{acc.phone_number}**\n"
+                        f"   └ {username_str} | "
+                        f"Stories: {acc.stories_today}\n"
+                    )
 
-            if len(accounts) > 10:
-                message += f"\n_...and {len(accounts) - 10} more_"
+                if len(accounts) > 10:
+                    message += f"\n_...and {len(accounts) - 10} more_"
 
-            await event.respond(message)
+                await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="📊 Stats"))
         @admin_only
