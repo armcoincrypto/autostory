@@ -338,18 +338,13 @@ class StoryPublisher:
                     account.stories_today += 1
                     account.last_active = datetime.utcnow()
 
-                # Create story record
-                story = Story(
-                    account_id=account_id,
-                    story_id=story_id,
-                    caption=caption,
-                    media_path=media_path,
-                    mentions_count=len(mentions),
-                    published_at=datetime.utcnow(),
-                )
-                db.add(story)
+                # Determine media type from file extension
+                ext = Path(media_path).suffix.lower() if media_path else ""
+                is_video = ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']
+                media_type = "video" if is_video else "photo"
 
-                # Update mentioned users
+                # Get usernames for mentioned users
+                mentioned_usernames = []
                 for user_id in mentions:
                     user = db.query(DiscoveredUser).filter(
                         DiscoveredUser.user_id == user_id
@@ -357,8 +352,24 @@ class StoryPublisher:
                     if user:
                         user.times_mentioned += 1
                         user.last_mentioned_at = datetime.utcnow()
+                        if user.username:
+                            mentioned_usernames.append(user.username)
+
+                # Create story record with correct fields
+                story = Story(
+                    account_id=account_id,
+                    story_id=story_id,
+                    caption=caption,
+                    media_path=media_path,
+                    media_type=media_type,
+                    mentioned_user_ids=mentions,
+                    mentioned_usernames=mentioned_usernames,
+                    published_at=datetime.utcnow(),
+                )
+                db.add(story)
 
                 db.commit()
+                logger.info("Story record saved", story_id=story_id, mentions_count=len(mentions))
 
         except Exception as e:
             logger.error("Failed to save story record", error=str(e))

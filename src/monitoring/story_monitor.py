@@ -5,14 +5,15 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 import structlog
+from sqlalchemy import func
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.stories import GetStoriesByIDRequest, GetAllStoriesRequest
 
 from config.settings import settings
-from src.database import get_db_context
-from src.database.models import Account, Story, DiscoveredUser, AccountStatus
+from src.core.database import get_db_context
+from src.core.models import Account, Story, DiscoveredUser, AccountStatus
 
 logger = structlog.get_logger(__name__)
 
@@ -112,7 +113,7 @@ class StoryMonitor:
             ).count()
 
             # View stats
-            total_views = db.query(db.func.sum(Story.views_count)).scalar() or 0
+            total_views = db.query(func.sum(Story.views_count)).scalar() or 0
 
             # Recent stories with views
             recent_stories = db.query(Story).order_by(
