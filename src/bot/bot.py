@@ -876,90 +876,6 @@ _Use /monitor for detailed analytics_"""
                 del pending_publishes[sender.id]
             await event.edit("❌ Publishing cancelled.")
 
-        @self.client.on(events.NewMessage(func=lambda e: e.media))
-        @admin_only
-        async def media_handler(event):
-            """Handle media upload for story publishing"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            # Check if waiting for media
-            if user_id not in pending_publishes:
-                return
-
-            if pending_publishes[user_id].get("step") != "waiting_media":
-                return
-
-            account_id = pending_publishes[user_id].get("account_id")
-            if not account_id:
-                return
-
-            # Clear state
-            del pending_publishes[user_id]
-
-            # Download media
-            await event.respond("⏳ Downloading media...")
-
-            import os
-            os.makedirs("data/media", exist_ok=True)
-            media_path = await event.download_media(file="data/media/")
-
-            if not media_path:
-                await event.respond("❌ Failed to download media. Please try again.")
-                return
-
-            # Publish story
-            await event.respond(
-                "🚀 **Publishing story...**\n\n"
-                "• Uploading media\n"
-                "• Adding mentions\n"
-                "• Publishing to story"
-            )
-
-            try:
-                from src.publisher.story_publisher import story_publisher
-
-                result = await story_publisher.publish_with_auto_mentions(
-                    media_path=media_path,
-                    caption="",
-                    mentions_count=5,
-                    account_id=account_id,
-                )
-
-                # Clean up media file
-                try:
-                    os.remove(media_path)
-                except:
-                    pass
-
-                if result["success"]:
-                    await event.respond(
-                        "✅ **Story Published Successfully!**\n\n"
-                        f"📊 **Details:**\n"
-                        f"• Account: #{result['account_id']}\n"
-                        f"• Story ID: {result.get('story_id', 'N/A')}\n"
-                        f"• Mentions added: {result['mentions_added']}\n\n"
-                        "The story is now live!",
-                        buttons=[
-                            [Button.text("📤 Publish Another", resize=True)],
-                            [Button.text("📊 Stats")],
-                        ]
-                    )
-                else:
-                    await event.respond(
-                        f"❌ **Publish Failed**\n\n"
-                        f"Error: {result.get('error', 'Unknown error')}\n\n"
-                        "Please try again."
-                    )
-
-            except Exception as e:
-                logger.error("Publish error", error=str(e))
-                await event.respond(
-                    f"❌ **Error publishing story**\n\n"
-                    f"{str(e)}\n\n"
-                    "Please try again."
-                )
-
         @self.client.on(events.NewMessage(pattern="📤 Publish Another"))
         @admin_only
         async def publish_another_handler(event):
@@ -1061,6 +977,448 @@ _Use /monitor for detailed analytics_"""
                 logger.error("Monitor command error", error=str(e))
                 await event.respond(f"❌ Error: {str(e)}")
 
+        @self.client.on(events.NewMessage(pattern="/delete_story"))
+        @admin_only
+        async def delete_story_handler(event):
+            """Handle /delete_story command - Delete stories from accounts"""
+            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
+            from telethon.tl.types import InputPeerSelf
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                if not accounts:
+                    await event.respond("❌ No active accounts.")
+                    return
+
+                # Build account data list
+                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
+
+            buttons = [
+                [Button.inline(f"🗑 {phone}", data=f"del_{acc_id}")]
+                for acc_id, phone, _ in account_data[:5]
+            ]
+            buttons.append([Button.inline("🗑 Delete ALL Stories", data="del_all")])
+            buttons.append([Button.inline("❌ Cancel", data="del_cancel")])
+
+            await event.respond(
+                "🗑 **Delete Stories**\n\n"
+                "Select account to delete story from:",
+                buttons=buttons
+            )
+
+        @self.client.on(events.CallbackQuery(pattern=r"del_(\d+)"))
+        @admin_only
+        async def delete_single_story(event):
+            """Delete story from single account"""
+            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
+            from telethon.tl.types import InputPeerSelf
+
+            account_id = int(event.data.decode().split("_")[1])
+
+            await event.edit("🗑 Deleting story...")
+
+            with get_db_context() as db:
+                account = db.query(Account).filter(Account.id == account_id).first()
+                if not account:
+                    await event.edit("❌ Account not found.")
+                    return
+                session_string = account.session_string
+                phone = account.phone_number
+
+            try:
+                client = TelegramClient(
+                    StringSession(session_string),
+                    settings.telegram.api_id,
+                    settings.telegram.api_hash
+                )
+                await client.connect()
+
+                # Get current stories
+                stories = await client(GetAllStoriesRequest(next="", hidden=False, state=""))
+                my_stories = []
+                if hasattr(stories, 'peer_stories'):
+                    for peer_story in stories.peer_stories:
+                        if hasattr(peer_story, 'stories'):
+                            my_stories = [s.id for s in peer_story.stories]
+                            break
+
+                if not my_stories:
+                    await client.disconnect()
+                    await event.edit(f"ℹ️ No active stories on {phone}")
+                    return
+
+                # Delete all stories
+                await client(DeleteStoriesRequest(peer=InputPeerSelf(), id=my_stories))
+                await client.disconnect()
+
+                await event.edit(
+                    f"✅ **Deleted {len(my_stories)} stories from {phone}**"
+                )
+
+            except Exception as e:
+                logger.error("Delete story error", error=str(e))
+                await event.edit(f"❌ Error: {str(e)}")
+
+        @self.client.on(events.CallbackQuery(pattern="del_all"))
+        @admin_only
+        async def delete_all_stories(event):
+            """Delete stories from ALL accounts"""
+            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
+            from telethon.tl.types import InputPeerSelf
+
+            await event.edit("🗑 Deleting stories from all accounts...")
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
+
+            results = []
+            for acc_id, phone, session_string in account_data:
+                try:
+                    client = TelegramClient(
+                        StringSession(session_string),
+                        settings.telegram.api_id,
+                        settings.telegram.api_hash
+                    )
+                    await client.connect()
+
+                    stories = await client(GetAllStoriesRequest(next="", hidden=False, state=""))
+                    my_stories = []
+                    if hasattr(stories, 'peer_stories'):
+                        for peer_story in stories.peer_stories:
+                            if hasattr(peer_story, 'stories'):
+                                my_stories = [s.id for s in peer_story.stories]
+                                break
+
+                    if my_stories:
+                        await client(DeleteStoriesRequest(peer=InputPeerSelf(), id=my_stories))
+                        results.append(f"✅ {phone}: {len(my_stories)} deleted")
+                    else:
+                        results.append(f"ℹ️ {phone}: no stories")
+
+                    await client.disconnect()
+
+                except Exception as e:
+                    results.append(f"❌ {phone}: {str(e)[:30]}")
+
+            await event.edit(
+                "🗑 **Delete Results**\n\n" + "\n".join(results)
+            )
+
+        @self.client.on(events.CallbackQuery(pattern="del_cancel"))
+        async def delete_cancel_handler(event):
+            """Handle delete cancel"""
+            await event.edit("❌ Cancelled.")
+
+        @self.client.on(events.NewMessage(pattern="/publish_all"))
+        @admin_only
+        async def publish_all_handler(event):
+            """Handle /publish_all command - Publish to ALL accounts"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                users_count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0,
+                    DiscoveredUser.username.isnot(None)
+                ).count()
+
+                if not accounts:
+                    await event.respond(
+                        "❌ **No active accounts**\n\n"
+                        "Use /login to add accounts first."
+                    )
+                    return
+
+                account_count = len(accounts)
+
+            pending_publishes[user_id] = {
+                "step": "waiting_caption_all",
+                "mode": "all",
+                "account_count": account_count,
+            }
+
+            await event.respond(
+                f"📤 **Publish to ALL {account_count} Accounts**\n\n"
+                f"👥 Users available for mention: {users_count}\n\n"
+                "📝 **Send the caption text** (or send `-` for no caption):\n\n"
+                "Example: `Check out our new product!`\n\n"
+                "Send /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
+            )
+
+        @self.client.on(events.NewMessage(func=lambda e: e.text and not e.text.startswith("/") and not e.media))
+        @admin_only
+        async def caption_handler(event):
+            """Handle caption input for publish_all"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            if user_id not in pending_publishes:
+                return
+
+            state = pending_publishes[user_id]
+
+            if state.get("step") == "waiting_caption_all":
+                caption = event.text.strip()
+                if caption == "-":
+                    caption = ""
+
+                pending_publishes[user_id]["caption"] = caption
+                pending_publishes[user_id]["step"] = "waiting_media_all"
+
+                await event.respond(
+                    f"✅ Caption set: `{caption if caption else '(no caption)'}`\n\n"
+                    "📸 **Now send the media file:**\n"
+                    "• Photo (JPG, PNG)\n"
+                    "• Video (MP4, up to 15 seconds)\n\n"
+                    "Send /cancel to abort."
+                )
+
+        @self.client.on(events.NewMessage(func=lambda e: e.media))
+        @admin_only
+        async def media_handler_all(event):
+            """Handle media upload for story publishing (single or all)"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            if user_id not in pending_publishes:
+                return
+
+            state = pending_publishes[user_id]
+            step = state.get("step")
+
+            # Handle publish_all flow
+            if step == "waiting_media_all":
+                caption = state.get("caption", "")
+                del pending_publishes[user_id]
+
+                await event.respond("⏳ Downloading media...")
+
+                import os
+                os.makedirs("data/media", exist_ok=True)
+                media_path = await event.download_media(file="data/media/")
+
+                if not media_path:
+                    await event.respond("❌ Failed to download media.")
+                    return
+
+                # Get all active accounts
+                with get_db_context() as db:
+                    accounts = db.query(Account).filter(
+                        Account.status == AccountStatus.ACTIVE,
+                        Account.session_string.isnot(None)
+                    ).all()
+                    account_ids = [acc.id for acc in accounts]
+
+                await event.respond(
+                    f"🚀 **Publishing to {len(account_ids)} accounts...**\n\n"
+                    "This may take a moment..."
+                )
+
+                from src.publisher.story_publisher import story_publisher
+
+                results = []
+                success_count = 0
+
+                for acc_id in account_ids:
+                    try:
+                        result = await story_publisher.publish_with_auto_mentions(
+                            media_path=media_path,
+                            caption=caption,
+                            mentions_count=5,
+                            account_id=acc_id,
+                        )
+
+                        if result["success"]:
+                            success_count += 1
+                            results.append(f"✅ Account #{acc_id}: Story {result.get('story_id')} ({result['mentions_added']} mentions)")
+                        else:
+                            results.append(f"❌ Account #{acc_id}: {result.get('error', 'Failed')[:40]}")
+
+                    except Exception as e:
+                        results.append(f"❌ Account #{acc_id}: {str(e)[:40]}")
+
+                # Clean up
+                try:
+                    os.remove(media_path)
+                except:
+                    pass
+
+                await event.respond(
+                    f"📊 **Publish Results**\n\n"
+                    f"✅ Success: {success_count}/{len(account_ids)}\n\n"
+                    + "\n".join(results[:10]) +
+                    ("\n..." if len(results) > 10 else ""),
+                    buttons=[
+                        [Button.text("📤 Publish Again", resize=True)],
+                        [Button.text("🗑 Delete All Stories")],
+                        [Button.text("📊 Stats")],
+                    ]
+                )
+                return
+
+            # Handle single account publish flow (original)
+            if step == "waiting_media":
+                account_id = state.get("account_id")
+                if not account_id:
+                    return
+
+                del pending_publishes[user_id]
+
+                await event.respond("⏳ Downloading media...")
+
+                import os
+                os.makedirs("data/media", exist_ok=True)
+                media_path = await event.download_media(file="data/media/")
+
+                if not media_path:
+                    await event.respond("❌ Failed to download media. Please try again.")
+                    return
+
+                await event.respond(
+                    "🚀 **Publishing story...**\n\n"
+                    "• Uploading media\n"
+                    "• Adding mentions\n"
+                    "• Publishing to story"
+                )
+
+                try:
+                    from src.publisher.story_publisher import story_publisher
+
+                    result = await story_publisher.publish_with_auto_mentions(
+                        media_path=media_path,
+                        caption="",
+                        mentions_count=5,
+                        account_id=account_id,
+                    )
+
+                    try:
+                        os.remove(media_path)
+                    except:
+                        pass
+
+                    if result["success"]:
+                        await event.respond(
+                            "✅ **Story Published Successfully!**\n\n"
+                            f"📊 **Details:**\n"
+                            f"• Account: #{result['account_id']}\n"
+                            f"• Story ID: {result.get('story_id', 'N/A')}\n"
+                            f"• Mentions added: {result['mentions_added']}\n\n"
+                            "The story is now live!",
+                            buttons=[
+                                [Button.text("📤 Publish Another", resize=True)],
+                                [Button.text("📊 Stats")],
+                            ]
+                        )
+                    else:
+                        await event.respond(
+                            f"❌ **Publish Failed**\n\n"
+                            f"Error: {result.get('error', 'Unknown error')}\n\n"
+                            "Please try again."
+                        )
+
+                except Exception as e:
+                    logger.error("Publish error", error=str(e))
+                    await event.respond(
+                        f"❌ **Error publishing story**\n\n"
+                        f"{str(e)}\n\n"
+                        "Please try again."
+                    )
+
+        @self.client.on(events.NewMessage(pattern="🗑 Delete All Stories"))
+        @admin_only
+        async def delete_all_button_handler(event):
+            """Handle Delete All Stories button"""
+            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
+            from telethon.tl.types import InputPeerSelf
+
+            await event.respond("🗑 Deleting stories from all accounts...")
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
+
+            results = []
+            for acc_id, phone, session_string in account_data:
+                try:
+                    client = TelegramClient(
+                        StringSession(session_string),
+                        settings.telegram.api_id,
+                        settings.telegram.api_hash
+                    )
+                    await client.connect()
+
+                    stories = await client(GetAllStoriesRequest(next="", hidden=False, state=""))
+                    my_stories = []
+                    if hasattr(stories, 'peer_stories'):
+                        for peer_story in stories.peer_stories:
+                            if hasattr(peer_story, 'stories'):
+                                my_stories = [s.id for s in peer_story.stories]
+                                break
+
+                    if my_stories:
+                        await client(DeleteStoriesRequest(peer=InputPeerSelf(), id=my_stories))
+                        results.append(f"✅ {phone}: {len(my_stories)} deleted")
+                    else:
+                        results.append(f"ℹ️ {phone}: no stories")
+
+                    await client.disconnect()
+
+                except Exception as e:
+                    results.append(f"❌ {phone}: {str(e)[:30]}")
+
+            await event.respond(
+                "🗑 **Delete Results**\n\n" + "\n".join(results)
+            )
+
+        @self.client.on(events.NewMessage(pattern="📤 Publish Again"))
+        @admin_only
+        async def publish_again_handler(event):
+            """Handle Publish Again button"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+                account_count = len(accounts)
+                users_count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0,
+                    DiscoveredUser.username.isnot(None)
+                ).count()
+
+            pending_publishes[user_id] = {
+                "step": "waiting_caption_all",
+                "mode": "all",
+                "account_count": account_count,
+            }
+
+            await event.respond(
+                f"📤 **Publish to ALL {account_count} Accounts**\n\n"
+                f"👥 Users available for mention: {users_count}\n\n"
+                "📝 **Send the caption text** (or send `-` for no caption):\n\n"
+                "Send /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
+            )
+
         @self.client.on(events.NewMessage(pattern="/help"))
         @admin_only
         async def help_handler(event):
@@ -1076,7 +1434,9 @@ _Use /monitor for detailed analytics_"""
                 "📈 /monitor - Detailed analytics dashboard\n"
                 "🖥 /status - System health check\n\n"
                 "**Stories**\n"
-                "📤 /publish - Publish a story\n\n"
+                "📤 /publish - Publish story (single account)\n"
+                "📤 /publish_all - Publish to ALL accounts\n"
+                "🗑 /delete_story - Delete stories from accounts\n\n"
                 "**Discovery**\n"
                 "🔍 /scan - Scan channel for users\n"
                 "/users - View available users\n\n"
