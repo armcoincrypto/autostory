@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  storyfleet:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: storyfleet-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./autostory.db:/app/autostory.db
+    depends_on:
+      - redis
+    networks:
+      - storyfleet-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: storyfleet-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - storyfleet-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: storyfleet-dashboard
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./autostory.db:/app/autostory.db:ro
+      - ./logs:/app/logs:ro
+    depends_on:
+      - storyfleet
+    networks:
+      - storyfleet-network
+
+networks:
+  storyfleet-network:
+    driver: bridge
+
+volumes:
+  redis-data:

@@ -521,6 +521,76 @@ class StoryFleetBot:
 
             await event.respond(message)
 
+        @self.client.on(events.NewMessage(pattern="/status"))
+        @admin_only
+        async def status_handler(event):
+            """Handle /status command - Detailed system health"""
+            import psutil
+            from datetime import datetime
+
+            with get_db_context() as db:
+                # Account health
+                active = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).count()
+                banned = db.query(Account).filter(Account.status == AccountStatus.BANNED).count()
+                flood = db.query(Account).filter(Account.status == AccountStatus.FLOOD_WAIT).count()
+                auth_req = db.query(Account).filter(Account.status == AccountStatus.AUTH_REQUIRED).count()
+
+                # Recent activity
+                now = datetime.utcnow()
+                from datetime import timedelta
+                hour_ago = now - timedelta(hours=1)
+                day_ago = now - timedelta(days=1)
+
+                stories_hour = db.query(Story).filter(Story.published_at >= hour_ago).count()
+                stories_day = db.query(Story).filter(Story.published_at >= day_ago).count()
+
+                # Get last error
+                last_account_error = db.query(Account).filter(
+                    Account.last_error.isnot(None)
+                ).order_by(Account.last_active.desc()).first()
+
+                last_error_msg = "None"
+                if last_account_error and last_account_error.last_error:
+                    last_error_msg = last_account_error.last_error[:50] + "..."
+
+            # System health
+            try:
+                cpu_percent = psutil.cpu_percent()
+                memory = psutil.virtual_memory()
+                disk = psutil.disk_usage('/')
+                system_info = (
+                    f"├ CPU: {cpu_percent}%\n"
+                    f"├ RAM: {memory.percent}%\n"
+                    f"└ Disk: {disk.percent}%"
+                )
+            except:
+                system_info = "└ Unable to get system info"
+
+            message = f"""🖥 **SYSTEM STATUS**
+
+**Bot Status**: ✅ Online
+**Uptime**: Running
+
+**Accounts Health**
+├ Active: {active} ✅
+├ Banned: {banned} 🚫
+├ Flood Wait: {flood} ⏳
+└ Auth Required: {auth_req} 🔑
+
+**Activity**
+├ Stories (1h): {stories_hour}
+└ Stories (24h): {stories_day}
+
+**System Resources**
+{system_info}
+
+**Last Error**
+└ {last_error_msg}
+
+_Use /monitor for detailed analytics_"""
+
+            await event.respond(message)
+
         @self.client.on(events.NewMessage(pattern="/accounts"))
         @admin_only
         async def accounts_handler(event):
@@ -1003,7 +1073,8 @@ class StoryFleetBot:
                 "/cancel - Cancel current operation\n\n"
                 "**Statistics & Monitoring**\n"
                 "📊 /stats - View overall statistics\n"
-                "📈 /monitor - Detailed analytics dashboard\n\n"
+                "📈 /monitor - Detailed analytics dashboard\n"
+                "🖥 /status - System health check\n\n"
                 "**Stories**\n"
                 "📤 /publish - Publish a story\n\n"
                 "**Discovery**\n"
