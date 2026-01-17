@@ -23,6 +23,7 @@ from telethon.tl.types import (
     MessageEntityMentionName,
     DocumentAttributeVideo,
     User,
+    InputPeerSelf,
 )
 from telethon.errors import (
     FloodWaitError,
@@ -236,6 +237,7 @@ class StoryPublisher:
 
                 # Send story
                 story_result = await client(SendStoryRequest(
+                    peer=InputPeerSelf(),
                     media=media,
                     caption=final_caption if final_caption else None,
                     entities=entities if entities else None,
