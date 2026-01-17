@@ -365,21 +365,28 @@ class StoryFleetBot:
             sender = await event.get_sender()
             is_admin = sender.id in settings.bot.admin_ids
 
+            # Get quick stats
+            with get_db_context() as db:
+                accounts_count = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).count()
+                users_count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0,
+                    DiscoveredUser.username.isnot(None)
+                ).count()
+
             welcome = (
-                "🚀 **Welcome to STORYFLEET**\n\n"
-                "Multi-Account Telegram Story Orchestration Platform\n\n"
+                "🚀 **STORYFLEET**\n\n"
+                "Multi-Account Story Publisher\n\n"
             )
 
             if is_admin:
                 welcome += (
-                    "**Admin Commands:**\n"
-                    "📱 /login - Add a new Telegram account\n"
-                    "👥 /accounts - View all accounts\n"
-                    "📊 /stats - View statistics\n"
-                    "📤 /publish - Publish a story\n"
-                    "🔍 /scan - Scan channel for users\n"
-                    "🎯 /campaigns - View campaigns\n"
-                    "❓ /help - Full command list"
+                    f"📊 **Status:** {accounts_count} accounts | {users_count} users ready\n\n"
+                    "**Quick Actions:**\n"
+                    "📤 /publish_all - Publish to ALL accounts\n"
+                    "🗑 /delete_story - Delete stories\n"
+                    "📱 /login - Add account\n"
+                    "🔍 /scan - Scan for users\n\n"
+                    "Use /help for full command list"
                 )
             else:
                 welcome += "⛔ You are not authorized to use this bot."
@@ -387,7 +394,8 @@ class StoryFleetBot:
             await event.respond(
                 welcome,
                 buttons=[
-                    [Button.text("📱 Login Account", resize=True), Button.text("👥 Accounts")],
+                    [Button.text("📤 Publish All", resize=True), Button.text("🗑 Delete Stories")],
+                    [Button.text("📱 Login Account"), Button.text("🔍 Scan Users")],
                     [Button.text("📊 Stats"), Button.text("❓ Help")],
                 ] if is_admin else None
             )
@@ -1550,13 +1558,123 @@ _Use /monitor for detailed analytics_"""
             """Handle Help button"""
             await event.respond(
                 "📖 **STORYFLEET Commands**\n\n"
-                "📱 /login - Add new Telegram account\n"
-                "👥 /accounts - List all accounts\n"
-                "📊 /stats - View statistics\n"
-                "📤 /publish - Publish a story\n"
-                "🔍 /scan - Scan for users\n"
-                "🎯 /campaigns - View campaigns\n"
-                "/help - Full command list"
+                "**Publishing:**\n"
+                "📤 /publish_all - Publish to ALL accounts\n"
+                "📤 /publish - Publish to single account\n"
+                "🗑 /delete_story - Delete stories\n\n"
+                "**Accounts:**\n"
+                "📱 /login - Add new account\n"
+                "👥 /accounts - View accounts\n\n"
+                "**Discovery:**\n"
+                "🔍 /scan - Scan channel for users\n"
+                "/users - View available users\n\n"
+                "**Monitoring:**\n"
+                "📊 /stats - Statistics\n"
+                "📈 /monitor - Detailed analytics\n"
+                "🖥 /status - System health"
+            )
+
+        @self.client.on(events.NewMessage(pattern="📤 Publish All"))
+        @admin_only
+        async def publish_all_button_handler(event):
+            """Handle Publish All button"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+                account_count = len(accounts)
+                users_count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0,
+                    DiscoveredUser.username.isnot(None)
+                ).count()
+
+            if not accounts:
+                await event.respond("❌ No active accounts. Use /login first.")
+                return
+
+            pending_publishes[user_id] = {
+                "step": "waiting_caption_all",
+                "mode": "all",
+                "account_count": account_count,
+            }
+
+            await event.respond(
+                f"📤 **Publish to ALL {account_count} Accounts**\n\n"
+                f"👥 Users available for mention: {users_count}\n\n"
+                "📝 **Send the caption text** (or send `-` for no caption):\n\n"
+                "Send /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
+            )
+
+        @self.client.on(events.NewMessage(pattern="🗑 Delete Stories"))
+        @admin_only
+        async def delete_stories_button_handler(event):
+            """Handle Delete Stories button"""
+            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
+            from telethon.tl.types import InputPeerSelf
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                if not accounts:
+                    await event.respond("❌ No active accounts.")
+                    return
+
+                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
+
+            buttons = [
+                [Button.inline(f"🗑 {phone}", data=f"del_{acc_id}")]
+                for acc_id, phone, _ in account_data[:5]
+            ]
+            buttons.append([Button.inline("🗑 Delete ALL Stories", data="del_all")])
+            buttons.append([Button.inline("❌ Cancel", data="del_cancel")])
+
+            await event.respond(
+                "🗑 **Delete Stories**\n\n"
+                "Select account to delete story from:",
+                buttons=buttons
+            )
+
+        @self.client.on(events.NewMessage(pattern="🔍 Scan Users"))
+        @admin_only
+        async def scan_users_button_handler(event):
+            """Handle Scan Users button"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            with get_db_context() as db:
+                active_account = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).first()
+
+                if not active_account:
+                    await event.respond(
+                        "❌ **No active account**\n\n"
+                        "You need to login a Telegram account first.\n"
+                        "Use /login to add an account."
+                    )
+                    return
+
+            pending_scans[user_id] = {
+                "step": "waiting_group",
+                "groups": [],
+            }
+
+            await event.respond(
+                "🔍 **Scan Group for Users**\n\n"
+                "Send the group username or link:\n"
+                "• `@groupname`\n"
+                "• `https://t.me/groupname`\n\n"
+                "Send /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
             )
 
         logger.info("Event handlers registered")
