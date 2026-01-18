@@ -68,45 +68,99 @@ class TdataAnalyzer:
         }
 
     def discover_accounts(self) -> List[TdataAccount]:
-        """Find and analyze all tdata accounts"""
+        """
+        SMART tdata discovery - recursively finds ALL tdata structures
+
+        Searches for:
+        - key_datas / key_data files (essential)
+        - tdata folders at any depth
+        - Session files (D877F783D5D3EF8C pattern)
+        - Phone number folders (+1234567890)
+        """
         if not self.root_path.exists():
             self.report['errors'].append(f"Path does not exist: {self.root_path}")
             return []
 
-        logger.info(f"Scanning for tdata accounts in: {self.root_path}")
+        logger.info(f"🔍 Smart scanning for tdata in: {self.root_path}")
 
         discovered = []
+        found_paths = set()
 
-        # Pattern 1: Root is tdata folder itself
-        if self._is_tdata_folder(self.root_path):
+        # Method 1: Find all key_datas/key_data files recursively
+        for key_file in self.root_path.rglob('key_data*'):
+            tdata_path = key_file.parent
+            if str(tdata_path) not in found_paths:
+                found_paths.add(str(tdata_path))
+                folder_name = self._get_account_name(tdata_path)
+                account = self._analyze_tdata_folder(tdata_path, folder_name)
+                discovered.append(account)
+
+        # Method 2: Find all 'tdata' folders
+        for tdata_folder in self.root_path.rglob('tdata'):
+            if tdata_folder.is_dir() and str(tdata_folder) not in found_paths:
+                if self._is_tdata_folder(tdata_folder):
+                    found_paths.add(str(tdata_folder))
+                    folder_name = self._get_account_name(tdata_folder)
+                    account = self._analyze_tdata_folder(tdata_folder, folder_name)
+                    discovered.append(account)
+
+        # Method 3: Find session pattern files (D877F783D5D3EF8C)
+        for item in self.root_path.rglob('*'):
+            if item.is_file() and re.match(r'^[A-F0-9]{16}s?$', item.name):
+                tdata_path = item.parent
+                if str(tdata_path) not in found_paths:
+                    if self._is_tdata_folder(tdata_path):
+                        found_paths.add(str(tdata_path))
+                        folder_name = self._get_account_name(tdata_path)
+                        account = self._analyze_tdata_folder(tdata_path, folder_name)
+                        discovered.append(account)
+
+        # Method 4: Check root directly
+        if not discovered and self._is_tdata_folder(self.root_path):
             account = self._analyze_tdata_folder(self.root_path, self.root_path.name)
             discovered.append(account)
 
-        # Pattern 2: Root contains tdata folder
-        tdata_direct = self.root_path / 'tdata'
-        if tdata_direct.exists() and self._is_tdata_folder(tdata_direct):
-            account = self._analyze_tdata_folder(tdata_direct, self.root_path.name)
-            discovered.append(account)
-
-        # Pattern 3: Root contains multiple account folders
+        # Method 5: Check for phone number folders
+        phone_pattern = re.compile(r'^\+?\d{10,15}$')
         for item in self.root_path.iterdir():
-            if item.is_dir() and item.name not in ['tdata', '.', '..']:
-                # Check for tdata subfolder
-                tdata_path = item / 'tdata'
-                if tdata_path.exists() and self._is_tdata_folder(tdata_path):
-                    account = self._analyze_tdata_folder(tdata_path, item.name)
-                    discovered.append(account)
-                # Check if folder itself is tdata
-                elif self._is_tdata_folder(item):
-                    account = self._analyze_tdata_folder(item, item.name)
-                    discovered.append(account)
+            if item.is_dir() and phone_pattern.match(item.name.replace(' ', '').replace('-', '')):
+                # Check inside for tdata
+                for subitem in item.rglob('*'):
+                    if subitem.name in ['key_datas', 'key_data']:
+                        tdata_path = subitem.parent
+                        if str(tdata_path) not in found_paths:
+                            found_paths.add(str(tdata_path))
+                            account = self._analyze_tdata_folder(tdata_path, item.name)
+                            discovered.append(account)
+                        break
 
         self.accounts = discovered
         self.report['total_folders_scanned'] = len(discovered)
         self.report['valid_accounts'] = sum(1 for a in discovered if a.is_valid)
         self.report['invalid_accounts'] = sum(1 for a in discovered if not a.is_valid)
+        self.report['search_depth'] = 'recursive'
 
         return discovered
+
+    def _get_account_name(self, tdata_path: Path) -> str:
+        """Extract meaningful account name from path"""
+        # Try parent folder name
+        parent = tdata_path.parent
+
+        # If parent is 'tdata', go up one more level
+        if parent.name == 'tdata':
+            parent = parent.parent
+
+        # Check for phone number in path
+        for part in tdata_path.parts:
+            if re.match(r'^\+?\d{10,15}$', part.replace(' ', '').replace('-', '')):
+                return part
+
+        # Use parent folder name if meaningful
+        if parent.name and parent.name not in ['.', '..', 'tdata']:
+            return parent.name
+
+        return tdata_path.name
 
     def _is_tdata_folder(self, path: Path) -> bool:
         """Check if folder looks like a tdata folder"""

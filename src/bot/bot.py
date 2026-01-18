@@ -1131,71 +1131,121 @@ _Use /monitor for detailed analytics_"""
         @self.client.on(events.NewMessage(pattern="/tdata"))
         @admin_only
         async def tdata_handler(event):
-            """Handle /tdata command - Import tdata accounts"""
+            """Handle /tdata command - Smart tdata import"""
             args = event.text.split(maxsplit=1)
 
             if len(args) < 2:
                 await event.respond(
-                    "📁 **TDATA IMPORT**\n\n"
-                    "Import Telegram Desktop sessions (tdata folders).\n\n"
+                    "📁 **SMART TDATA IMPORT**\n\n"
+                    "Automatically finds ALL Telegram Desktop sessions.\n\n"
                     "**Usage:**\n"
-                    "`/tdata /path/to/tdata/folder`\n\n"
+                    "`/tdata /path/to/folder`\n\n"
                     "**Example:**\n"
-                    "`/tdata /opt/tdata_accounts`\n\n"
-                    "**Supported structures:**\n"
-                    "• Single: `/path/tdata/`\n"
-                    "• Multiple: `/path/account1/tdata/`, `/path/account2/tdata/`\n\n"
-                    "The tool will analyze and validate all tdata folders."
+                    "`/tdata /root/accounts`\n"
+                    "`/tdata /tmp/tdata_backup`\n\n"
+                    "🔍 **Smart Search finds:**\n"
+                    "• `key_datas` files (anywhere)\n"
+                    "• `tdata` folders (any depth)\n"
+                    "• Session files (D877F783...)\n"
+                    "• Phone number folders (+123...)\n\n"
+                    "Just point to ANY folder - it searches recursively!"
                 )
                 return
 
             tdata_path = args[1].strip()
 
-            await event.respond(f"🔍 Analyzing tdata folder: `{tdata_path}`...")
+            progress_msg = await event.respond(
+                f"🔍 **Smart scanning:** `{tdata_path}`\n\n"
+                "Searching recursively for tdata structures..."
+            )
 
             try:
                 import sys
-                sys.path.insert(0, '/home/user/autostory')
+                sys.path.insert(0, '/opt/autostory')
                 from tools.tdata_analyzer import TdataAnalyzer
 
                 analyzer = TdataAnalyzer(tdata_path)
                 accounts = analyzer.discover_accounts()
-                report = analyzer.format_report_text()
 
-                await event.respond(report)
-
-                # If valid accounts found, offer to import
+                # Build detailed report
                 valid_accounts = [a for a in accounts if a.is_valid]
+                invalid_accounts = [a for a in accounts if not a.is_valid]
+
+                report_lines = [
+                    "📊 **TDATA SCAN RESULTS**\n",
+                    f"📁 Path: `{tdata_path}`",
+                    f"🔍 Search: Recursive (all depths)\n",
+                    f"**Found:** {len(accounts)} tdata structure(s)",
+                    f"✅ Valid: {len(valid_accounts)}",
+                    f"❌ Invalid: {len(invalid_accounts)}\n",
+                ]
 
                 if valid_accounts:
-                    # Store for import
+                    report_lines.append("**✅ Valid Accounts:**")
+                    for acc in valid_accounts[:15]:
+                        phone = acc.phone_number or "No phone"
+                        size_kb = round(acc.total_size / 1024, 1)
+                        report_lines.append(f"• `{acc.folder_name}` - {phone} ({size_kb}KB)")
+
+                    if len(valid_accounts) > 15:
+                        report_lines.append(f"  _...and {len(valid_accounts) - 15} more_")
+
+                if invalid_accounts:
+                    report_lines.append("\n**❌ Invalid (skipped):**")
+                    for acc in invalid_accounts[:5]:
+                        error = acc.validation_error or "Unknown error"
+                        report_lines.append(f"• `{acc.folder_name}`: {error[:40]}")
+
+                await progress_msg.edit("\n".join(report_lines))
+
+                # If valid accounts found, offer to import
+                if valid_accounts:
                     pending_tdata_imports[event.sender_id] = {
                         'accounts': valid_accounts,
                         'path': tdata_path,
                     }
 
-                    phones_list = "\n".join([
-                        f"• {a.phone_number or a.folder_name}"
-                        for a in valid_accounts[:10]
-                    ])
+                    # List phones for quick login
+                    phones_with_numbers = [a for a in valid_accounts if a.phone_number]
 
+                    if phones_with_numbers:
+                        phones_list = "\n".join([
+                            f"• `{a.phone_number}`"
+                            for a in phones_with_numbers[:10]
+                        ])
+
+                        await event.respond(
+                            f"📱 **{len(phones_with_numbers)} accounts with phone numbers:**\n\n"
+                            f"{phones_list}\n\n"
+                            "Click **Start Bulk Login** to login all accounts sequentially.\n"
+                            "Or use `/login` manually with each phone.",
+                            buttons=[
+                                [Button.inline(f"📱 Start Bulk Login ({len(phones_with_numbers)})", data="tdata_bulk_login")],
+                                [Button.inline("❌ Cancel", data="tdata_cancel")]
+                            ]
+                        )
+                    else:
+                        await event.respond(
+                            "⚠️ Valid tdata found but no phone numbers extracted.\n\n"
+                            "The tdata files don't contain readable phone numbers.\n"
+                            "You'll need to login manually with `/login`."
+                        )
+                else:
                     await event.respond(
-                        f"**Found {len(valid_accounts)} valid accounts:**\n\n"
-                        f"{phones_list}\n\n"
-                        "These accounts need manual login (tdata → Telethon conversion).\n\n"
-                        "**Quick Login:** Use /login with the phone numbers above.\n\n"
-                        "Or send `/tdata_login` to start bulk login process.",
-                        buttons=[
-                            [Button.inline("📱 Start Bulk Login", data="tdata_bulk_login")],
-                            [Button.inline("❌ Cancel", data="tdata_cancel")]
-                        ]
+                        "❌ **No valid tdata found**\n\n"
+                        "Make sure the folder contains:\n"
+                        "• `key_datas` or `key_data` file\n"
+                        "• `map` file\n"
+                        "• Session files (D877F783... pattern)"
                     )
 
             except FileNotFoundError:
-                await event.respond(f"❌ Path not found: `{tdata_path}`")
+                await progress_msg.edit(f"❌ Path not found: `{tdata_path}`")
+            except PermissionError:
+                await progress_msg.edit(f"❌ Permission denied: `{tdata_path}`")
             except Exception as e:
                 logger.error("Tdata analysis error", error=str(e))
-                await event.respond(f"❌ Error: {str(e)}")
+                await progress_msg.edit(f"❌ Error: {str(e)}")
 
         @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
         @admin_only
