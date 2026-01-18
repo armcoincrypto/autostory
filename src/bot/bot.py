@@ -1132,28 +1132,117 @@ _Use /monitor for detailed analytics_"""
         @admin_only
         async def tdata_handler(event):
             """Handle /tdata command - Smart tdata import"""
+            sender = await event.get_sender()
+            user_id = sender.id
             args = event.text.split(maxsplit=1)
 
             if len(args) < 2:
+                # Set state to wait for file upload
+                pending_tdata_imports[user_id] = {
+                    'step': 'waiting_file',
+                }
+
                 await event.respond(
                     "📁 **SMART TDATA IMPORT**\n\n"
-                    "Automatically finds ALL Telegram Desktop sessions.\n\n"
-                    "**Usage:**\n"
+                    "**Option 1: Upload ZIP file**\n"
+                    "Send a `.zip` file containing your tdata folders now.\n\n"
+                    "**Option 2: Server path**\n"
                     "`/tdata /path/to/folder`\n\n"
-                    "**Example:**\n"
-                    "`/tdata /root/accounts`\n"
-                    "`/tdata /tmp/tdata_backup`\n\n"
                     "🔍 **Smart Search finds:**\n"
                     "• `key_datas` files (anywhere)\n"
                     "• `tdata` folders (any depth)\n"
                     "• Session files (D877F783...)\n"
                     "• Phone number folders (+123...)\n\n"
-                    "Just point to ANY folder - it searches recursively!"
+                    "📤 **Send your ZIP file now!**",
+                    buttons=[[Button.text("❌ Cancel")]]
                 )
                 return
 
             tdata_path = args[1].strip()
 
+            # Use shared function to process tdata path
+            await process_tdata_folder(event, tdata_path)
+
+        @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
+        @admin_only
+        async def tdata_bulk_login_handler(event):
+            """Start bulk login for tdata accounts"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            if user_id not in pending_tdata_imports:
+                await event.edit("❌ No tdata accounts pending. Use /tdata first.")
+                return
+
+            accounts = pending_tdata_imports[user_id]['accounts']
+
+            # Find accounts with phone numbers
+            accounts_with_phone = [a for a in accounts if a.phone_number]
+
+            if not accounts_with_phone:
+                await event.edit(
+                    "❌ No phone numbers found in tdata.\n\n"
+                    "Please use /login manually with each phone number."
+                )
+                return
+
+            # Start login queue
+            pending_tdata_imports[user_id]['login_queue'] = accounts_with_phone.copy()
+            pending_tdata_imports[user_id]['current_index'] = 0
+            pending_tdata_imports[user_id]['results'] = []
+
+            # Start first login
+            first_account = accounts_with_phone[0]
+            phone = first_account.phone_number
+
+            await event.edit(
+                f"📱 **Bulk Login Progress: 1/{len(accounts_with_phone)}**\n\n"
+                f"Starting login for: `{phone}`\n\n"
+                "A verification code will be sent to this number.\n"
+                "Please enter the code when received."
+            )
+
+            # Start login process
+            try:
+                user_client = TelegramClient(
+                    StringSession(),
+                    settings.telegram.api_id,
+                    settings.telegram.api_hash
+                )
+
+                await user_client.connect()
+                result = await user_client.send_code_request(phone)
+
+                pending_logins[user_id] = {
+                    "step": "code",
+                    "client": user_client,
+                    "phone": phone,
+                    "phone_code_hash": result.phone_code_hash,
+                    "is_tdata_bulk": True,
+                }
+
+                await self.client.send_message(
+                    event.chat_id,
+                    f"✅ Code sent to `{phone}`\n\n"
+                    "Enter the verification code:"
+                )
+
+            except Exception as e:
+                await self.client.send_message(
+                    event.chat_id,
+                    f"❌ Failed to send code to {phone}: {str(e)}"
+                )
+
+        @self.client.on(events.CallbackQuery(pattern="tdata_cancel"))
+        async def tdata_cancel_handler(event):
+            """Cancel tdata import"""
+            sender = await event.get_sender()
+            if sender.id in pending_tdata_imports:
+                del pending_tdata_imports[sender.id]
+            await event.edit("❌ Tdata import cancelled.")
+
+        async def process_tdata_folder(event, tdata_path: str):
+            """Common function to process tdata folder and show results"""
             progress_msg = await event.respond(
                 f"🔍 **Smart scanning:** `{tdata_path}`\n\n"
                 "Searching recursively for tdata structures..."
@@ -1247,83 +1336,79 @@ _Use /monitor for detailed analytics_"""
                 logger.error("Tdata analysis error", error=str(e))
                 await progress_msg.edit(f"❌ Error: {str(e)}")
 
-        @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
+        @self.client.on(events.NewMessage(func=lambda e: e.document))
         @admin_only
-        async def tdata_bulk_login_handler(event):
-            """Start bulk login for tdata accounts"""
+        async def tdata_file_upload_handler(event):
+            """Handle file upload for tdata import"""
             sender = await event.get_sender()
             user_id = sender.id
 
+            # Check if user is in tdata upload mode
             if user_id not in pending_tdata_imports:
-                await event.edit("❌ No tdata accounts pending. Use /tdata first.")
                 return
 
-            accounts = pending_tdata_imports[user_id]['accounts']
-
-            # Find accounts with phone numbers
-            accounts_with_phone = [a for a in accounts if a.phone_number]
-
-            if not accounts_with_phone:
-                await event.edit(
-                    "❌ No phone numbers found in tdata.\n\n"
-                    "Please use /login manually with each phone number."
-                )
+            state = pending_tdata_imports[user_id]
+            if state.get('step') != 'waiting_file':
                 return
 
-            # Start login queue
-            pending_tdata_imports[user_id]['login_queue'] = accounts_with_phone.copy()
-            pending_tdata_imports[user_id]['current_index'] = 0
-            pending_tdata_imports[user_id]['results'] = []
+            # Get file info
+            doc = event.document
+            file_name = None
+            for attr in doc.attributes:
+                if hasattr(attr, 'file_name'):
+                    file_name = attr.file_name
+                    break
 
-            # Start first login
-            first_account = accounts_with_phone[0]
-            phone = first_account.phone_number
+            if not file_name:
+                file_name = "uploaded_file"
 
-            await event.edit(
-                f"📱 **Bulk Login Progress: 1/{len(accounts_with_phone)}**\n\n"
-                f"Starting login for: `{phone}`\n\n"
-                "A verification code will be sent to this number.\n"
-                "Please enter the code when received."
-            )
+            # Check if it's a zip or folder-like file
+            is_zip = file_name.lower().endswith('.zip')
 
-            # Start login process
+            await event.respond(f"📥 Downloading `{file_name}`...")
+
             try:
-                user_client = TelegramClient(
-                    StringSession(),
-                    settings.telegram.api_id,
-                    settings.telegram.api_hash
-                )
+                import os
+                import zipfile
+                import shutil
+                import tempfile
 
-                await user_client.connect()
-                result = await user_client.send_code_request(phone)
+                # Create temp directory for extraction
+                temp_dir = tempfile.mkdtemp(prefix="tdata_")
+                download_path = os.path.join(temp_dir, file_name)
 
-                pending_logins[user_id] = {
-                    "step": "code",
-                    "client": user_client,
-                    "phone": phone,
-                    "phone_code_hash": result.phone_code_hash,
-                    "is_tdata_bulk": True,
-                }
+                # Download file
+                await event.download_media(file=download_path)
 
-                await self.client.send_message(
-                    event.chat_id,
-                    f"✅ Code sent to `{phone}`\n\n"
-                    "Enter the verification code:"
-                )
+                if is_zip:
+                    await event.respond("📦 Extracting ZIP file...")
 
+                    extract_dir = os.path.join(temp_dir, "extracted")
+                    os.makedirs(extract_dir, exist_ok=True)
+
+                    with zipfile.ZipFile(download_path, 'r') as zip_ref:
+                        zip_ref.extractall(extract_dir)
+
+                    tdata_path = extract_dir
+                else:
+                    # For non-zip files, use the temp directory
+                    tdata_path = temp_dir
+
+                # Clear waiting state
+                del pending_tdata_imports[user_id]
+
+                # Process the tdata folder
+                await process_tdata_folder(event, tdata_path)
+
+            except zipfile.BadZipFile:
+                await event.respond("❌ Invalid ZIP file. Please send a valid ZIP archive.")
+                if user_id in pending_tdata_imports:
+                    del pending_tdata_imports[user_id]
             except Exception as e:
-                await self.client.send_message(
-                    event.chat_id,
-                    f"❌ Failed to send code to {phone}: {str(e)}"
-                )
-
-        @self.client.on(events.CallbackQuery(pattern="tdata_cancel"))
-        async def tdata_cancel_handler(event):
-            """Cancel tdata import"""
-            sender = await event.get_sender()
-            if sender.id in pending_tdata_imports:
-                del pending_tdata_imports[sender.id]
-            await event.edit("❌ Tdata import cancelled.")
+                logger.error("Tdata file upload error", error=str(e))
+                await event.respond(f"❌ Error processing file: {str(e)}")
+                if user_id in pending_tdata_imports:
+                    del pending_tdata_imports[user_id]
 
         @self.client.on(events.NewMessage(pattern="/publish_all"))
         @admin_only
