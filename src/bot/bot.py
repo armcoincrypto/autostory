@@ -1166,7 +1166,7 @@ _Use /monitor for detailed analytics_"""
         @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
         @admin_only
         async def tdata_bulk_login_handler(event):
-            """Start bulk login for tdata accounts"""
+            """Direct session import from tdata - NO verification codes needed"""
             sender = await event.get_sender()
             user_id = sender.id
 
@@ -1176,62 +1176,97 @@ _Use /monitor for detailed analytics_"""
 
             accounts = pending_tdata_imports[user_id]['accounts']
 
-            # Find accounts with phone numbers
-            accounts_with_phone = [a for a in accounts if a.phone_number]
-
-            if not accounts_with_phone:
-                await event.edit(
-                    "❌ No phone numbers found in tdata.\n\n"
-                    "Please use /login manually with each phone number."
-                )
+            if not accounts:
+                await event.edit("❌ No valid tdata accounts found.")
                 return
 
-            # Start login queue
-            pending_tdata_imports[user_id]['login_queue'] = accounts_with_phone.copy()
-            pending_tdata_imports[user_id]['current_index'] = 0
-            pending_tdata_imports[user_id]['results'] = []
-
-            # Start first login
-            first_account = accounts_with_phone[0]
-            phone = first_account.phone_number
-
             await event.edit(
-                f"📱 **Bulk Login Progress: 1/{len(accounts_with_phone)}**\n\n"
-                f"Starting login for: `{phone}`\n\n"
-                "A verification code will be sent to this number.\n"
-                "Please enter the code when received."
+                f"🔄 **Converting {len(accounts)} tdata sessions...**\n\n"
+                "Extracting sessions directly - NO verification codes needed!\n"
+                "This may take a moment..."
             )
 
-            # Start login process
-            try:
-                user_client = TelegramClient(
-                    StringSession(),
-                    settings.telegram.api_id,
-                    settings.telegram.api_hash
-                )
+            # Import session converter
+            import sys
+            sys.path.insert(0, '/opt/autostory')
+            from tools.tdata_session import convert_and_validate
 
-                await user_client.connect()
-                result = await user_client.send_code_request(phone)
+            results = []
+            success_count = 0
+            failed_count = 0
 
-                pending_logins[user_id] = {
-                    "step": "code",
-                    "client": user_client,
-                    "phone": phone,
-                    "phone_code_hash": result.phone_code_hash,
-                    "is_tdata_bulk": True,
-                }
+            for i, account in enumerate(accounts):
+                try:
+                    phone = account.phone_number or account.folder_name
+                    tdata_path = str(account.path)
 
-                await self.client.send_message(
-                    event.chat_id,
-                    f"✅ Code sent to `{phone}`\n\n"
-                    "Enter the verification code:"
-                )
+                    # Convert tdata to Telethon session
+                    result = await convert_and_validate(
+                        tdata_path,
+                        settings.telegram.api_id,
+                        settings.telegram.api_hash
+                    )
 
-            except Exception as e:
-                await self.client.send_message(
-                    event.chat_id,
-                    f"❌ Failed to send code to {phone}: {str(e)}"
-                )
+                    if result['success'] and result['session_string']:
+                        # Save to database
+                        with get_db_context() as db:
+                            # Check if account exists
+                            existing = db.query(Account).filter(
+                                Account.phone_number == result['phone']
+                            ).first()
+
+                            if existing:
+                                existing.session_string = result['session_string']
+                                existing.user_id = result['user_id']
+                                existing.username = result.get('username')
+                                existing.first_name = result.get('first_name')
+                                existing.status = AccountStatus.ACTIVE
+                                results.append(f"✅ {result['phone']}: Updated")
+                            else:
+                                new_account = Account(
+                                    phone_number=result['phone'] or phone,
+                                    session_string=result['session_string'],
+                                    user_id=result['user_id'],
+                                    username=result.get('username'),
+                                    first_name=result.get('first_name'),
+                                    status=AccountStatus.ACTIVE,
+                                )
+                                db.add(new_account)
+                                results.append(f"✅ {result['phone'] or phone}: Added")
+
+                            db.commit()
+
+                        success_count += 1
+                    else:
+                        error = result.get('error', 'Unknown error')[:30]
+                        results.append(f"❌ {phone}: {error}")
+                        failed_count += 1
+
+                except Exception as e:
+                    phone = account.phone_number or account.folder_name
+                    results.append(f"❌ {phone}: {str(e)[:30]}")
+                    failed_count += 1
+
+            # Clean up
+            if user_id in pending_tdata_imports:
+                del pending_tdata_imports[user_id]
+
+            # Send results
+            result_text = "\n".join(results[:20])
+            if len(results) > 20:
+                result_text += f"\n... and {len(results) - 20} more"
+
+            await self.client.send_message(
+                event.chat_id,
+                f"📊 **TDATA IMPORT COMPLETE**\n\n"
+                f"✅ Success: {success_count}\n"
+                f"❌ Failed: {failed_count}\n\n"
+                f"**Results:**\n{result_text}",
+                buttons=[
+                    [Button.text("📤 Publish All", resize=True)],
+                    [Button.text("📊 Stats")],
+                ]
+            )
 
         @self.client.on(events.CallbackQuery(pattern="tdata_cancel"))
         async def tdata_cancel_handler(event):
@@ -1294,31 +1329,24 @@ _Use /monitor for detailed analytics_"""
                         'path': tdata_path,
                     }
 
-                    # List phones for quick login
-                    phones_with_numbers = [a for a in valid_accounts if a.phone_number]
+                    # Show accounts and offer direct import
+                    accounts_list = "\n".join([
+                        f"• `{a.phone_number or a.folder_name}`"
+                        for a in valid_accounts[:10]
+                    ])
+                    if len(valid_accounts) > 10:
+                        accounts_list += f"\n  _...and {len(valid_accounts) - 10} more_"
 
-                    if phones_with_numbers:
-                        phones_list = "\n".join([
-                            f"• `{a.phone_number}`"
-                            for a in phones_with_numbers[:10]
-                        ])
-
-                        await event.respond(
-                            f"📱 **{len(phones_with_numbers)} accounts with phone numbers:**\n\n"
-                            f"{phones_list}\n\n"
-                            "Click **Start Bulk Login** to login all accounts sequentially.\n"
-                            "Or use `/login` manually with each phone.",
-                            buttons=[
-                                [Button.inline(f"📱 Start Bulk Login ({len(phones_with_numbers)})", data="tdata_bulk_login")],
-                                [Button.inline("❌ Cancel", data="tdata_cancel")]
-                            ]
-                        )
-                    else:
-                        await event.respond(
-                            "⚠️ Valid tdata found but no phone numbers extracted.\n\n"
-                            "The tdata files don't contain readable phone numbers.\n"
-                            "You'll need to login manually with `/login`."
-                        )
+                    await event.respond(
+                        f"📱 **{len(valid_accounts)} accounts ready for import:**\n\n"
+                        f"{accounts_list}\n\n"
+                        "🔑 Click **Import Sessions** to extract sessions directly.\n"
+                        "**NO verification codes needed!**",
+                        buttons=[
+                            [Button.inline(f"🔑 Import Sessions ({len(valid_accounts)})", data="tdata_bulk_login")],
+                            [Button.inline("❌ Cancel", data="tdata_cancel")]
+                        ]
+                    )
                 else:
                     await event.respond(
                         "❌ **No valid tdata found**\n\n"
