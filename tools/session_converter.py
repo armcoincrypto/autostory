@@ -188,7 +188,21 @@ async def convert_and_validate_session(
         await client.connect()
 
         if not await client.is_user_authorized():
-            result['error'] = "Session not authorized"
+            # Try to get more info about why
+            try:
+                me = await client.get_me()
+                if me is None:
+                    result['error'] = "Session expired or logged out"
+                else:
+                    result['error'] = f"Unauthorized but got user: {me.id}"
+            except Exception as auth_err:
+                err_str = str(auth_err)
+                if "AUTH_KEY" in err_str.upper():
+                    result['error'] = "Auth key invalid/revoked"
+                elif "SESSION" in err_str.upper():
+                    result['error'] = "Session revoked"
+                else:
+                    result['error'] = f"Not authorized: {err_str[:50]}"
             return result
 
         # Get user info
