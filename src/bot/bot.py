@@ -39,6 +39,9 @@ pending_scans: Dict[int, Dict[str, Any]] = {}
 # Store for pending publish sessions (user_id -> publish state)
 pending_publishes: Dict[int, Dict[str, Any]] = {}
 
+# Store for pending tdata imports (user_id -> import state)
+pending_tdata_imports: Dict[int, Dict[str, Any]] = {}
+
 
 def admin_only(func):
     """Decorator to restrict commands to admin users"""
@@ -1125,6 +1128,153 @@ _Use /monitor for detailed analytics_"""
             """Handle delete cancel"""
             await event.edit("❌ Cancelled.")
 
+        @self.client.on(events.NewMessage(pattern="/tdata"))
+        @admin_only
+        async def tdata_handler(event):
+            """Handle /tdata command - Import tdata accounts"""
+            args = event.text.split(maxsplit=1)
+
+            if len(args) < 2:
+                await event.respond(
+                    "📁 **TDATA IMPORT**\n\n"
+                    "Import Telegram Desktop sessions (tdata folders).\n\n"
+                    "**Usage:**\n"
+                    "`/tdata /path/to/tdata/folder`\n\n"
+                    "**Example:**\n"
+                    "`/tdata /opt/tdata_accounts`\n\n"
+                    "**Supported structures:**\n"
+                    "• Single: `/path/tdata/`\n"
+                    "• Multiple: `/path/account1/tdata/`, `/path/account2/tdata/`\n\n"
+                    "The tool will analyze and validate all tdata folders."
+                )
+                return
+
+            tdata_path = args[1].strip()
+
+            await event.respond(f"🔍 Analyzing tdata folder: `{tdata_path}`...")
+
+            try:
+                import sys
+                sys.path.insert(0, '/home/user/autostory')
+                from tools.tdata_analyzer import TdataAnalyzer
+
+                analyzer = TdataAnalyzer(tdata_path)
+                accounts = analyzer.discover_accounts()
+                report = analyzer.format_report_text()
+
+                await event.respond(report)
+
+                # If valid accounts found, offer to import
+                valid_accounts = [a for a in accounts if a.is_valid]
+
+                if valid_accounts:
+                    # Store for import
+                    pending_tdata_imports[event.sender_id] = {
+                        'accounts': valid_accounts,
+                        'path': tdata_path,
+                    }
+
+                    phones_list = "\n".join([
+                        f"• {a.phone_number or a.folder_name}"
+                        for a in valid_accounts[:10]
+                    ])
+
+                    await event.respond(
+                        f"**Found {len(valid_accounts)} valid accounts:**\n\n"
+                        f"{phones_list}\n\n"
+                        "These accounts need manual login (tdata → Telethon conversion).\n\n"
+                        "**Quick Login:** Use /login with the phone numbers above.\n\n"
+                        "Or send `/tdata_login` to start bulk login process.",
+                        buttons=[
+                            [Button.inline("📱 Start Bulk Login", data="tdata_bulk_login")],
+                            [Button.inline("❌ Cancel", data="tdata_cancel")]
+                        ]
+                    )
+
+            except FileNotFoundError:
+                await event.respond(f"❌ Path not found: `{tdata_path}`")
+            except Exception as e:
+                logger.error("Tdata analysis error", error=str(e))
+                await event.respond(f"❌ Error: {str(e)}")
+
+        @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
+        @admin_only
+        async def tdata_bulk_login_handler(event):
+            """Start bulk login for tdata accounts"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            if user_id not in pending_tdata_imports:
+                await event.edit("❌ No tdata accounts pending. Use /tdata first.")
+                return
+
+            accounts = pending_tdata_imports[user_id]['accounts']
+
+            # Find accounts with phone numbers
+            accounts_with_phone = [a for a in accounts if a.phone_number]
+
+            if not accounts_with_phone:
+                await event.edit(
+                    "❌ No phone numbers found in tdata.\n\n"
+                    "Please use /login manually with each phone number."
+                )
+                return
+
+            # Start login queue
+            pending_tdata_imports[user_id]['login_queue'] = accounts_with_phone.copy()
+            pending_tdata_imports[user_id]['current_index'] = 0
+            pending_tdata_imports[user_id]['results'] = []
+
+            # Start first login
+            first_account = accounts_with_phone[0]
+            phone = first_account.phone_number
+
+            await event.edit(
+                f"📱 **Bulk Login Progress: 1/{len(accounts_with_phone)}**\n\n"
+                f"Starting login for: `{phone}`\n\n"
+                "A verification code will be sent to this number.\n"
+                "Please enter the code when received."
+            )
+
+            # Start login process
+            try:
+                user_client = TelegramClient(
+                    StringSession(),
+                    settings.telegram.api_id,
+                    settings.telegram.api_hash
+                )
+
+                await user_client.connect()
+                result = await user_client.send_code_request(phone)
+
+                pending_logins[user_id] = {
+                    "step": "code",
+                    "client": user_client,
+                    "phone": phone,
+                    "phone_code_hash": result.phone_code_hash,
+                    "is_tdata_bulk": True,
+                }
+
+                await self.client.send_message(
+                    event.chat_id,
+                    f"✅ Code sent to `{phone}`\n\n"
+                    "Enter the verification code:"
+                )
+
+            except Exception as e:
+                await self.client.send_message(
+                    event.chat_id,
+                    f"❌ Failed to send code to {phone}: {str(e)}"
+                )
+
+        @self.client.on(events.CallbackQuery(pattern="tdata_cancel"))
+        async def tdata_cancel_handler(event):
+            """Cancel tdata import"""
+            sender = await event.get_sender()
+            if sender.id in pending_tdata_imports:
+                del pending_tdata_imports[sender.id]
+            await event.edit("❌ Tdata import cancelled.")
+
         @self.client.on(events.NewMessage(pattern="/publish_all"))
         @admin_only
         async def publish_all_handler(event):
@@ -1435,6 +1585,7 @@ _Use /monitor for detailed analytics_"""
                 "📖 **STORYFLEET Commands**\n\n"
                 "**Account Management**\n"
                 "📱 /login - Add new Telegram account\n"
+                "📁 /tdata - Import tdata sessions (bulk)\n"
                 "👥 /accounts - List all accounts\n"
                 "/cancel - Cancel current operation\n\n"
                 "**Statistics & Monitoring**\n"
@@ -1564,6 +1715,7 @@ _Use /monitor for detailed analytics_"""
                 "/delete_story - Delete stories\n\n"
                 "**📱 Account Management:**\n"
                 "/login - Add new Telegram account\n"
+                "/tdata - Import tdata (Telegram Desktop) sessions\n"
                 "/accounts - View all accounts\n"
                 "/cancel - Cancel current operation\n\n"
                 "**🔍 Discovery:**\n"
