@@ -1166,86 +1166,167 @@ _Use /monitor for detailed analytics_"""
         @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
         @admin_only
         async def tdata_bulk_login_handler(event):
-            """Direct session import from tdata - NO verification codes needed"""
+            """Direct session import - NO verification codes needed"""
             sender = await event.get_sender()
             user_id = sender.id
 
             if user_id not in pending_tdata_imports:
-                await event.edit("❌ No tdata accounts pending. Use /tdata first.")
+                await event.edit("❌ No sessions pending. Use /tdata first.")
                 return
 
-            accounts = pending_tdata_imports[user_id]['accounts']
+            import_state = pending_tdata_imports[user_id]
+            import_type = import_state.get('type', 'tdata')
 
-            if not accounts:
-                await event.edit("❌ No valid tdata accounts found.")
-                return
-
-            await event.edit(
-                f"🔄 **Converting {len(accounts)} tdata sessions...**\n\n"
-                "Extracting sessions directly - NO verification codes needed!\n"
-                "This may take a moment..."
-            )
-
-            # Import session converter
             import sys
             sys.path.insert(0, '/opt/autostory')
-            from tools.tdata_session import convert_and_validate
 
             results = []
             success_count = 0
             failed_count = 0
 
-            for i, account in enumerate(accounts):
-                try:
-                    phone = account.phone_number or account.folder_name
-                    tdata_path = str(account.path)
+            if import_type == 'session_files':
+                # Import .session files (Telethon sessions)
+                session_files = import_state.get('session_files', [])
 
-                    # Convert tdata to Telethon session
-                    result = await convert_and_validate(
-                        tdata_path,
-                        settings.telegram.api_id,
-                        settings.telegram.api_hash
-                    )
+                if not session_files:
+                    await event.edit("❌ No session files found.")
+                    return
 
-                    if result['success'] and result['session_string']:
-                        # Save to database
-                        with get_db_context() as db:
-                            # Check if account exists
-                            existing = db.query(Account).filter(
-                                Account.phone_number == result['phone']
-                            ).first()
+                await event.edit(
+                    f"🔄 **Importing {len(session_files)} Telethon sessions...**\n\n"
+                    "Converting and validating sessions...\n"
+                    "This may take a moment..."
+                )
 
-                            if existing:
-                                existing.session_string = result['session_string']
-                                existing.user_id = result['user_id']
-                                existing.username = result.get('username')
-                                existing.first_name = result.get('first_name')
-                                existing.status = AccountStatus.ACTIVE
-                                results.append(f"✅ {result['phone']}: Updated")
-                            else:
-                                new_account = Account(
-                                    phone_number=result['phone'] or phone,
-                                    session_string=result['session_string'],
-                                    user_id=result['user_id'],
-                                    username=result.get('username'),
-                                    first_name=result.get('first_name'),
-                                    status=AccountStatus.ACTIVE,
-                                )
-                                db.add(new_account)
-                                results.append(f"✅ {result['phone'] or phone}: Added")
+                from tools.session_converter import convert_and_validate_session
 
-                            db.commit()
+                for i, session_info in enumerate(session_files):
+                    try:
+                        session_path = session_info['session_path']
+                        phone_hint = session_info.get('phone')
 
-                        success_count += 1
-                    else:
-                        error = result.get('error', 'Unknown error')[:30]
-                        results.append(f"❌ {phone}: {error}")
+                        # Convert .session file to StringSession and validate
+                        result = await convert_and_validate_session(
+                            session_path,
+                            settings.telegram.api_id,
+                            settings.telegram.api_hash,
+                            phone_hint=phone_hint
+                        )
+
+                        if result['success'] and result['session_string']:
+                            # Save to database
+                            with get_db_context() as db:
+                                phone = result['phone'] or phone_hint
+
+                                # Check if account exists
+                                existing = db.query(Account).filter(
+                                    Account.user_id == result['user_id']
+                                ).first()
+
+                                if not existing and phone:
+                                    existing = db.query(Account).filter(
+                                        Account.phone_number == phone
+                                    ).first()
+
+                                if existing:
+                                    existing.session_string = result['session_string']
+                                    existing.user_id = result['user_id']
+                                    existing.username = result.get('username')
+                                    existing.first_name = result.get('first_name')
+                                    existing.phone_number = phone or existing.phone_number
+                                    existing.status = AccountStatus.ACTIVE
+                                    results.append(f"✅ {phone or result['user_id']}: Updated")
+                                else:
+                                    new_account = Account(
+                                        phone_number=phone,
+                                        session_string=result['session_string'],
+                                        user_id=result['user_id'],
+                                        username=result.get('username'),
+                                        first_name=result.get('first_name'),
+                                        status=AccountStatus.ACTIVE,
+                                    )
+                                    db.add(new_account)
+                                    results.append(f"✅ {phone or result['user_id']}: Added")
+
+                                db.commit()
+
+                            success_count += 1
+                        else:
+                            error = result.get('error', 'Unknown error')[:30]
+                            results.append(f"❌ {phone_hint}: {error}")
+                            failed_count += 1
+
+                    except Exception as e:
+                        results.append(f"❌ {session_info.get('phone', 'unknown')}: {str(e)[:30]}")
                         failed_count += 1
 
-                except Exception as e:
-                    phone = account.phone_number or account.folder_name
-                    results.append(f"❌ {phone}: {str(e)[:30]}")
-                    failed_count += 1
+            else:
+                # Import tdata accounts
+                accounts = import_state.get('accounts', [])
+
+                if not accounts:
+                    await event.edit("❌ No valid tdata accounts found.")
+                    return
+
+                await event.edit(
+                    f"🔄 **Converting {len(accounts)} tdata sessions...**\n\n"
+                    "Extracting sessions directly - NO verification codes needed!\n"
+                    "This may take a moment..."
+                )
+
+                from tools.tdata_session import convert_and_validate
+
+                for i, account in enumerate(accounts):
+                    try:
+                        phone = account.phone_number or account.folder_name
+                        tdata_path = str(account.path)
+
+                        # Convert tdata to Telethon session
+                        result = await convert_and_validate(
+                            tdata_path,
+                            settings.telegram.api_id,
+                            settings.telegram.api_hash
+                        )
+
+                        if result['success'] and result['session_string']:
+                            # Save to database
+                            with get_db_context() as db:
+                                # Check if account exists
+                                existing = db.query(Account).filter(
+                                    Account.phone_number == result['phone']
+                                ).first()
+
+                                if existing:
+                                    existing.session_string = result['session_string']
+                                    existing.user_id = result['user_id']
+                                    existing.username = result.get('username')
+                                    existing.first_name = result.get('first_name')
+                                    existing.status = AccountStatus.ACTIVE
+                                    results.append(f"✅ {result['phone']}: Updated")
+                                else:
+                                    new_account = Account(
+                                        phone_number=result['phone'] or phone,
+                                        session_string=result['session_string'],
+                                        user_id=result['user_id'],
+                                        username=result.get('username'),
+                                        first_name=result.get('first_name'),
+                                        status=AccountStatus.ACTIVE,
+                                    )
+                                    db.add(new_account)
+                                    results.append(f"✅ {result['phone'] or phone}: Added")
+
+                                db.commit()
+
+                            success_count += 1
+                        else:
+                            error = result.get('error', 'Unknown error')[:30]
+                            results.append(f"❌ {phone}: {error}")
+                            failed_count += 1
+
+                    except Exception as e:
+                        phone = account.phone_number or account.folder_name
+                        results.append(f"❌ {phone}: {str(e)[:30]}")
+                        failed_count += 1
 
             # Clean up
             if user_id in pending_tdata_imports:
@@ -1258,7 +1339,7 @@ _Use /monitor for detailed analytics_"""
 
             await self.client.send_message(
                 event.chat_id,
-                f"📊 **TDATA IMPORT COMPLETE**\n\n"
+                f"📊 **SESSION IMPORT COMPLETE**\n\n"
                 f"✅ Success: {success_count}\n"
                 f"❌ Failed: {failed_count}\n\n"
                 f"**Results:**\n{result_text}",
@@ -1277,15 +1358,57 @@ _Use /monitor for detailed analytics_"""
             await event.edit("❌ Tdata import cancelled.")
 
         async def process_tdata_folder(event, tdata_path: str):
-            """Common function to process tdata folder and show results"""
+            """Common function to process tdata folder and .session files"""
             progress_msg = await event.respond(
                 f"🔍 **Smart scanning:** `{tdata_path}`\n\n"
-                "Searching recursively for tdata structures..."
+                "Searching for tdata and .session files..."
             )
 
             try:
                 import sys
+                from pathlib import Path
                 sys.path.insert(0, '/opt/autostory')
+
+                # First, check for .session files (Telethon sessions)
+                from tools.session_converter import discover_session_files
+
+                session_files = discover_session_files(tdata_path)
+
+                if session_files:
+                    # Found .session files - use session converter
+                    await progress_msg.edit(
+                        f"📱 **Found {len(session_files)} Telethon session file(s)**\n\n"
+                        "These are ready for direct import!"
+                    )
+
+                    # Store session files for import
+                    pending_tdata_imports[event.sender_id] = {
+                        'session_files': session_files,
+                        'path': tdata_path,
+                        'type': 'session_files',
+                    }
+
+                    # Show session files
+                    files_list = "\n".join([
+                        f"• `{s['phone']}` ({round(s['size']/1024, 1)}KB)"
+                        for s in session_files[:15]
+                    ])
+                    if len(session_files) > 15:
+                        files_list += f"\n  _...and {len(session_files) - 15} more_"
+
+                    await event.respond(
+                        f"📱 **{len(session_files)} session files ready:**\n\n"
+                        f"{files_list}\n\n"
+                        "🔑 Click **Import Sessions** to import directly.\n"
+                        "**NO verification codes needed!**",
+                        buttons=[
+                            [Button.inline(f"🔑 Import Sessions ({len(session_files)})", data="tdata_bulk_login")],
+                            [Button.inline("❌ Cancel", data="tdata_cancel")]
+                        ]
+                    )
+                    return
+
+                # No session files found, try tdata analysis
                 from tools.tdata_analyzer import TdataAnalyzer
 
                 analyzer = TdataAnalyzer(tdata_path)
@@ -1327,6 +1450,7 @@ _Use /monitor for detailed analytics_"""
                     pending_tdata_imports[event.sender_id] = {
                         'accounts': valid_accounts,
                         'path': tdata_path,
+                        'type': 'tdata',
                     }
 
                     # Show accounts and offer direct import
