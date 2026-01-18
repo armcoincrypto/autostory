@@ -1204,13 +1204,17 @@ _Use /monitor for detailed analytics_"""
                     try:
                         session_path = session_info['session_path']
                         phone_hint = session_info.get('phone')
+                        json_path = session_info.get('json_path')
 
                         # Convert .session file to StringSession and validate
+                        # Uses original API credentials from JSON if available
                         result = await convert_and_validate_session(
                             session_path,
                             settings.telegram.api_id,
                             settings.telegram.api_hash,
-                            phone_hint=phone_hint
+                            phone_hint=phone_hint,
+                            json_path=json_path,
+                            use_original_api=True
                         )
 
                         if result['success'] and result['session_string']:

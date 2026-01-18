@@ -66,15 +66,21 @@ def session_file_to_string(session_path: str) -> Optional[str]:
         return None
 
 
-def get_phone_from_json(json_path: str) -> Optional[str]:
-    """Extract phone number from companion .json file"""
+def get_session_info_from_json(json_path: str) -> Dict[str, Any]:
+    """Extract session info from companion .json file"""
     import json
     try:
         with open(json_path, 'r') as f:
             data = json.load(f)
-            return data.get('phone') or data.get('phone_number')
+            return {
+                'phone': data.get('phone') or data.get('phone_number'),
+                'api_id': data.get('app_id') or data.get('api_id'),
+                'api_hash': data.get('app_hash') or data.get('api_hash'),
+                'first_name': data.get('first_name'),
+                'last_name': data.get('last_name'),
+            }
     except:
-        return None
+        return {}
 
 
 def discover_session_files(root_path: str) -> List[Dict[str, Any]]:
@@ -85,6 +91,8 @@ def discover_session_files(root_path: str) -> List[Dict[str, Any]]:
     - session_path: path to .session file
     - phone: phone number (from filename or .json)
     - json_path: path to companion .json if exists
+    - api_id: API ID from .json (if available)
+    - api_hash: API hash from .json (if available)
     """
     root = Path(root_path)
     sessions = []
@@ -92,19 +100,28 @@ def discover_session_files(root_path: str) -> List[Dict[str, Any]]:
     # Find all .session files
     for session_file in root.rglob('*.session'):
         phone = session_file.stem  # Filename without extension
+        api_id = None
+        api_hash = None
+        first_name = None
 
         # Look for companion .json file
         json_path = session_file.with_suffix('.json')
         if json_path.exists():
-            json_phone = get_phone_from_json(str(json_path))
-            if json_phone:
-                phone = json_phone
+            json_info = get_session_info_from_json(str(json_path))
+            if json_info.get('phone'):
+                phone = json_info['phone']
+            api_id = json_info.get('api_id')
+            api_hash = json_info.get('api_hash')
+            first_name = json_info.get('first_name')
 
         sessions.append({
             'session_path': str(session_file),
             'phone': phone,
             'json_path': str(json_path) if json_path.exists() else None,
             'size': session_file.stat().st_size,
+            'api_id': api_id,
+            'api_hash': api_hash,
+            'first_name': first_name,
         })
 
     return sessions
@@ -114,10 +131,15 @@ async def convert_and_validate_session(
     session_path: str,
     api_id: int,
     api_hash: str,
-    phone_hint: Optional[str] = None
+    phone_hint: Optional[str] = None,
+    json_path: Optional[str] = None,
+    use_original_api: bool = True
 ) -> Dict[str, Any]:
     """
     Convert .session file and validate it works
+
+    If use_original_api=True and json_path has API credentials,
+    uses those instead (sessions are bound to their original API ID)
 
     Returns dict with session info
     """
@@ -131,8 +153,21 @@ async def convert_and_validate_session(
         'phone': phone_hint,
         'username': None,
         'first_name': None,
-        'error': None
+        'error': None,
+        'api_id_used': api_id,
     }
+
+    # Try to get original API credentials from JSON
+    actual_api_id = api_id
+    actual_api_hash = api_hash
+
+    if use_original_api and json_path:
+        json_info = get_session_info_from_json(json_path)
+        if json_info.get('api_id') and json_info.get('api_hash'):
+            actual_api_id = json_info['api_id']
+            actual_api_hash = json_info['api_hash']
+            result['api_id_used'] = actual_api_id
+            logger.info(f"Using original API ID {actual_api_id} from JSON")
 
     # Convert to string session
     session_string = session_file_to_string(session_path)
@@ -146,8 +181,8 @@ async def convert_and_validate_session(
     try:
         client = TelegramClient(
             StringSession(session_string),
-            api_id,
-            api_hash
+            actual_api_id,
+            actual_api_hash
         )
 
         await client.connect()
