@@ -1,0 +1,15 @@
+[Unit]
+Description=STORYFLEET Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/autostory
+ExecStart=/opt/autostory/venv/bin/python -m src.bot.bot
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

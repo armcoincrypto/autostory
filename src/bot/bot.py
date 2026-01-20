@@ -1878,6 +1878,7 @@ _Use /monitor for detailed analytics_"""
                 "📱 /login - Add new Telegram account\n"
                 "📁 /tdata - Import tdata sessions (bulk)\n"
                 "👥 /accounts - List all accounts\n"
+                "🖼 /set_photo - Set profile photo for all accounts\n"
                 "/cancel - Cancel current operation\n\n"
                 "**Statistics & Monitoring**\n"
                 "📊 /stats - View overall statistics\n"
@@ -1896,6 +1897,129 @@ _Use /monitor for detailed analytics_"""
                 "/start - Welcome message\n"
                 "/help - This help message"
             )
+
+        # Store for pending photo uploads
+        pending_photo_uploads: Dict[int, bool] = {}
+
+        @self.client.on(events.NewMessage(pattern="/set_photo"))
+        @admin_only
+        async def set_photo_handler(event):
+            """Handle /set_photo command - Set profile photo for all accounts"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            pending_photo_uploads[user_id] = True
+
+            await event.respond(
+                "🖼 **Set Profile Photo**\n\n"
+                "Send me a photo and I'll set it as the profile picture "
+                "for ALL active accounts.\n\n"
+                "📷 **Send a photo now...**\n\n"
+                "_Send /cancel to abort_"
+            )
+
+        @self.client.on(events.NewMessage(func=lambda e: e.photo))
+        @admin_only
+        async def photo_upload_handler(event):
+            """Handle photo upload for profile setting"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if user is in photo upload mode
+            if user_id not in pending_photo_uploads:
+                return
+
+            del pending_photo_uploads[user_id]
+
+            progress_msg = await event.respond("📥 Downloading photo...")
+
+            try:
+                import os
+                import tempfile
+
+                # Download the photo
+                photo_path = await event.download_media(
+                    file=os.path.join(tempfile.gettempdir(), "profile_photo.jpg")
+                )
+
+                if not photo_path:
+                    await progress_msg.edit("❌ Failed to download photo")
+                    return
+
+                await progress_msg.edit("🔄 Setting profile photo for all accounts...")
+
+                # Get all active accounts
+                with get_db_context() as db:
+                    accounts = db.query(Account).filter(
+                        Account.status == AccountStatus.ACTIVE,
+                        Account.session_string.isnot(None)
+                    ).all()
+
+                    if not accounts:
+                        await progress_msg.edit("❌ No active accounts found")
+                        return
+
+                    success_count = 0
+                    failed_count = 0
+                    results = []
+
+                    for account in accounts:
+                        try:
+                            # Connect to account
+                            from telethon import TelegramClient
+                            from telethon.sessions import StringSession
+                            from telethon.tl.functions.photos import UploadProfilePhotoRequest
+
+                            client = TelegramClient(
+                                StringSession(account.session_string),
+                                settings.telegram.api_id,
+                                settings.telegram.api_hash
+                            )
+
+                            await client.connect()
+
+                            if not await client.is_user_authorized():
+                                results.append(f"❌ {account.phone_number}: Not authorized")
+                                failed_count += 1
+                                await client.disconnect()
+                                continue
+
+                            # Upload and set profile photo
+                            uploaded_file = await client.upload_file(photo_path)
+                            await client(UploadProfilePhotoRequest(file=uploaded_file))
+
+                            results.append(f"✅ {account.phone_number}: Photo set")
+                            success_count += 1
+
+                            await client.disconnect()
+
+                        except Exception as e:
+                            error_msg = str(e)[:30]
+                            results.append(f"❌ {account.phone_number}: {error_msg}")
+                            failed_count += 1
+
+                # Clean up temp file
+                try:
+                    os.remove(photo_path)
+                except:
+                    pass
+
+                # Send results
+                result_text = "\n".join(results[:15])
+                if len(results) > 15:
+                    result_text += f"\n... and {len(results) - 15} more"
+
+                await self.client.send_message(
+                    event.chat_id,
+                    f"🖼 **PROFILE PHOTO UPDATE COMPLETE**\n\n"
+                    f"✅ Success: {success_count}\n"
+                    f"❌ Failed: {failed_count}\n\n"
+                    f"**Results:**\n{result_text}"
+                )
+
+            except Exception as e:
+                logger.error("Set photo error", error=str(e))
+                await progress_msg.edit(f"❌ Error: {str(e)}")
 
         # Button handlers
         @self.client.on(events.NewMessage(pattern="📱 Login Account"))
