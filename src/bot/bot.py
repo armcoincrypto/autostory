@@ -988,6 +988,110 @@ _Use /monitor for detailed analytics_"""
                 logger.error("Monitor command error", error=str(e))
                 await event.respond(f"❌ Error: {str(e)}")
 
+        @self.client.on(events.NewMessage(pattern="/stories"))
+        @admin_only
+        async def stories_handler(event):
+            """Handle /stories command - View all published stories with URLs"""
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+            from telethon.tl.functions.stories import GetPeerStoriesRequest
+            from telethon.tl.types import InputPeerSelf
+
+            progress_msg = await event.respond("📖 Fetching stories from all accounts...")
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                if not accounts:
+                    await progress_msg.edit("❌ No active accounts.")
+                    return
+
+                all_stories = []
+                total_stories = 0
+
+                for account in accounts:
+                    try:
+                        client = TelegramClient(
+                            StringSession(account.session_string),
+                            settings.telegram.api_id,
+                            settings.telegram.api_hash
+                        )
+
+                        await client.connect()
+
+                        if not await client.is_user_authorized():
+                            continue
+
+                        # Get user info for username
+                        me = await client.get_me()
+                        username = me.username
+
+                        # Get stories
+                        try:
+                            result = await client(GetPeerStoriesRequest(peer=InputPeerSelf()))
+
+                            if result.stories and result.stories.stories:
+                                stories = result.stories.stories
+                                total_stories += len(stories)
+
+                                for story in stories[:3]:  # Show max 3 per account
+                                    story_id = story.id
+
+                                    # Build URL
+                                    if username:
+                                        url = f"https://t.me/{username}/s/{story_id}"
+                                    else:
+                                        url = f"Story #{story_id}"
+
+                                    # Get story info
+                                    from datetime import datetime
+                                    date_str = story.date.strftime("%Y-%m-%d %H:%M") if hasattr(story, 'date') else "Unknown"
+                                    views = getattr(story, 'views', 0) or 0
+
+                                    all_stories.append({
+                                        'account': account.phone_number or account.first_name,
+                                        'username': username,
+                                        'story_id': story_id,
+                                        'url': url,
+                                        'date': date_str,
+                                        'views': views,
+                                    })
+                        except Exception as se:
+                            logger.debug(f"No stories for {account.phone_number}: {se}")
+
+                        await client.disconnect()
+
+                    except Exception as e:
+                        logger.error(f"Error fetching stories for {account.phone_number}: {e}")
+
+                # Build response
+                if not all_stories:
+                    await progress_msg.edit(
+                        "📖 **No Active Stories**\n\n"
+                        "No stories are currently published on any account."
+                    )
+                    return
+
+                response = f"📖 **Published Stories** ({total_stories} total)\n\n"
+
+                for s in all_stories[:15]:
+                    if s['username']:
+                        response += f"👤 @{s['username']} ({s['account']})\n"
+                        response += f"   🔗 {s['url']}\n"
+                    else:
+                        response += f"👤 {s['account']}\n"
+                        response += f"   📝 Story #{s['story_id']}\n"
+
+                    response += f"   👁 {s['views']} views | 📅 {s['date']}\n\n"
+
+                if len(all_stories) > 15:
+                    response += f"_...and {len(all_stories) - 15} more stories_"
+
+                await progress_msg.edit(response)
+
         @self.client.on(events.NewMessage(pattern="/delete_story"))
         @admin_only
         async def delete_story_handler(event):
@@ -1919,6 +2023,7 @@ _Use /monitor for detailed analytics_"""
                 "**Stories**\n"
                 "📤 /publish - Publish story (single account)\n"
                 "📤 /publish_all - Publish to ALL accounts\n"
+                "📖 /stories - View published stories with URLs\n"
                 "🗑 /delete_story - Delete stories from accounts\n\n"
                 "**Discovery**\n"
                 "🔍 /scan - Scan channel for users\n"
