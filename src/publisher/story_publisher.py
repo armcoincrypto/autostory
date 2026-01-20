@@ -23,6 +23,7 @@ from telethon.tl.types import (
     DocumentAttributeVideo,
     User,
     InputPeerSelf,
+    MessageEntityMention,
 )
 from telethon.errors import (
     FloodWaitError,
@@ -197,12 +198,13 @@ class StoryPublisher:
                 else:
                     media = InputMediaUploadedPhoto(file=file)
 
-                # Build caption with @username mentions
+                # Build caption with @username mentions and entities
                 final_caption = caption
                 mentioned_ids = []
+                entities = []
 
                 if mention_user_ids:
-                    # Build @username mention list
+                    # Build @username mention list with proper entities
                     mention_usernames = []
 
                     for user_data in mention_user_ids[:10]:  # Max 10 mentions per story
@@ -224,20 +226,37 @@ class StoryPublisher:
                         except Exception as e:
                             logger.warning("Failed to process mention", error=str(e))
 
-                    # Add mentions to caption
+                    # Add mentions to caption with proper entities
                     if mention_usernames:
-                        final_caption = caption + "\n\n" + " ".join(mention_usernames)
+                        # Build caption: original caption + newlines + mentions
+                        mentions_text = " ".join(mention_usernames)
+                        if caption:
+                            final_caption = caption + "\n\n" + mentions_text
+                            mentions_start = len(caption) + 2  # +2 for \n\n
+                        else:
+                            final_caption = mentions_text
+                            mentions_start = 0
+
+                        # Build entities for each @mention
+                        current_offset = mentions_start
+                        for username_with_at in mention_usernames:
+                            entities.append(MessageEntityMention(
+                                offset=current_offset,
+                                length=len(username_with_at)
+                            ))
+                            current_offset += len(username_with_at) + 1  # +1 for space
 
                 result["mentioned_user_ids"] = mentioned_ids
 
                 # Set privacy rules
                 privacy_rules = self._get_privacy_rules(privacy)
 
-                # Send story
+                # Send story with caption and entities
                 story_result = await client(SendStoryRequest(
                     peer=InputPeerSelf(),
                     media=media,
                     caption=final_caption if final_caption else None,
+                    entities=entities if entities else None,
                     privacy_rules=privacy_rules,
                     pinned=False,
                     noforwards=False,
