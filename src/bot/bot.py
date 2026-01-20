@@ -1678,12 +1678,25 @@ _Use /monitor for detailed analytics_"""
                 )
 
                 from src.publisher.story_publisher import story_publisher
+                import asyncio
+                import random
 
                 results = []
                 success_count = 0
+                flood_accounts = []
 
-                for acc_id in account_ids:
+                for i, acc_id in enumerate(account_ids):
                     try:
+                        # Check if account is in flood wait
+                        with get_db_context() as db:
+                            acc = db.query(Account).filter(Account.id == acc_id).first()
+                            if acc and acc.flood_wait_until:
+                                from datetime import datetime
+                                if acc.flood_wait_until > datetime.utcnow():
+                                    results.append(f"⏳ Account #{acc_id}: Flood wait until {acc.flood_wait_until}")
+                                    flood_accounts.append(acc_id)
+                                    continue
+
                         result = await story_publisher.publish_with_auto_mentions(
                             media_path=media_path,
                             caption=caption,
@@ -1695,10 +1708,22 @@ _Use /monitor for detailed analytics_"""
                             success_count += 1
                             results.append(f"✅ Account #{acc_id}: Story {result.get('story_id')} ({result['mentions_added']} mentions)")
                         else:
-                            results.append(f"❌ Account #{acc_id}: {result.get('error', 'Failed')[:40]}")
+                            error = result.get('error', 'Failed')
+                            # Check for flood error
+                            if 'FLOOD' in str(error).upper():
+                                flood_accounts.append(acc_id)
+                            results.append(f"❌ Account #{acc_id}: {str(error)[:40]}")
 
                     except Exception as e:
-                        results.append(f"❌ Account #{acc_id}: {str(e)[:40]}")
+                        error_str = str(e)
+                        if 'FLOOD' in error_str.upper():
+                            flood_accounts.append(acc_id)
+                        results.append(f"❌ Account #{acc_id}: {error_str[:40]}")
+
+                    # Rate limit protection - random delay between accounts
+                    if i < len(account_ids) - 1:
+                        delay = random.uniform(3, 8)  # 3-8 seconds between accounts
+                        await asyncio.sleep(delay)
 
                 # Clean up
                 try:
@@ -1706,9 +1731,13 @@ _Use /monitor for detailed analytics_"""
                 except:
                     pass
 
+                flood_warning = ""
+                if flood_accounts:
+                    flood_warning = f"\n⚠️ {len(flood_accounts)} accounts have rate limits\n"
+
                 await event.respond(
                     f"📊 **Publish Results**\n\n"
-                    f"✅ Success: {success_count}/{len(account_ids)}\n\n"
+                    f"✅ Success: {success_count}/{len(account_ids)}{flood_warning}\n\n"
                     + "\n".join(results[:10]) +
                     ("\n..." if len(results) > 10 else ""),
                     buttons=[
@@ -1879,6 +1908,8 @@ _Use /monitor for detailed analytics_"""
                 "📁 /tdata - Import tdata sessions (bulk)\n"
                 "👥 /accounts - List all accounts\n"
                 "🖼 /set_photo - Set profile photo for all accounts\n"
+                "📝 /set_name - Set name for all accounts\n"
+                "📝 /set_username - Set username for all accounts\n"
                 "/cancel - Cancel current operation\n\n"
                 "**Statistics & Monitoring**\n"
                 "📊 /stats - View overall statistics\n"
@@ -2020,6 +2051,243 @@ _Use /monitor for detailed analytics_"""
             except Exception as e:
                 logger.error("Set photo error", error=str(e))
                 await progress_msg.edit(f"❌ Error: {str(e)}")
+
+        # Store for pending name/username updates
+        pending_name_updates: Dict[int, str] = {}
+        pending_username_updates: Dict[int, str] = {}
+
+        @self.client.on(events.NewMessage(pattern="/set_name"))
+        @admin_only
+        async def set_name_handler(event):
+            """Handle /set_name command - Set name for all accounts"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if name provided in command
+            args = event.text.split(maxsplit=1)
+            if len(args) > 1:
+                name = args[1].strip()
+                await process_set_name(event, name)
+            else:
+                pending_name_updates[user_id] = True
+                await event.respond(
+                    "📝 **Set Account Name**\n\n"
+                    "Send me the name to set for ALL accounts.\n\n"
+                    "Example: `John` or `John Smith`\n\n"
+                    "_Send /cancel to abort_"
+                )
+
+        @self.client.on(events.NewMessage(func=lambda e: e.text and not e.text.startswith('/')))
+        @admin_only
+        async def text_input_handler(event):
+            """Handle text input for name/username updates"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check for pending name update
+            if user_id in pending_name_updates:
+                del pending_name_updates[user_id]
+                await process_set_name(event, event.text.strip())
+                return
+
+            # Check for pending username update
+            if user_id in pending_username_updates:
+                del pending_username_updates[user_id]
+                await process_set_username(event, event.text.strip())
+                return
+
+        async def process_set_name(event, name: str):
+            """Process setting name for all accounts"""
+            # Parse first and last name
+            parts = name.split(maxsplit=1)
+            first_name = parts[0]
+            last_name = parts[1] if len(parts) > 1 else ""
+
+            progress_msg = await event.respond(f"🔄 Setting name '{name}' for all accounts...")
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                if not accounts:
+                    await progress_msg.edit("❌ No active accounts found")
+                    return
+
+                success_count = 0
+                failed_count = 0
+                results = []
+
+                for account in accounts:
+                    try:
+                        from telethon import TelegramClient
+                        from telethon.sessions import StringSession
+                        from telethon.tl.functions.account import UpdateProfileRequest
+
+                        client = TelegramClient(
+                            StringSession(account.session_string),
+                            settings.telegram.api_id,
+                            settings.telegram.api_hash
+                        )
+
+                        await client.connect()
+
+                        if not await client.is_user_authorized():
+                            results.append(f"❌ {account.phone_number}: Not authorized")
+                            failed_count += 1
+                            await client.disconnect()
+                            continue
+
+                        # Update profile name
+                        await client(UpdateProfileRequest(
+                            first_name=first_name,
+                            last_name=last_name
+                        ))
+
+                        # Update in database
+                        account.first_name = first_name
+                        account.last_name = last_name
+                        db.commit()
+
+                        results.append(f"✅ {account.phone_number}: {first_name} {last_name}")
+                        success_count += 1
+
+                        await client.disconnect()
+
+                        # Rate limit protection - wait between accounts
+                        import asyncio
+                        await asyncio.sleep(1)
+
+                    except Exception as e:
+                        error_msg = str(e)[:30]
+                        results.append(f"❌ {account.phone_number}: {error_msg}")
+                        failed_count += 1
+
+            result_text = "\n".join(results[:15])
+            if len(results) > 15:
+                result_text += f"\n... and {len(results) - 15} more"
+
+            await self.client.send_message(
+                event.chat_id,
+                f"📝 **NAME UPDATE COMPLETE**\n\n"
+                f"✅ Success: {success_count}\n"
+                f"❌ Failed: {failed_count}\n\n"
+                f"**Results:**\n{result_text}"
+            )
+
+        @self.client.on(events.NewMessage(pattern="/set_username"))
+        @admin_only
+        async def set_username_handler(event):
+            """Handle /set_username command - Set username for all accounts"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if username provided in command
+            args = event.text.split(maxsplit=1)
+            if len(args) > 1:
+                username = args[1].strip().replace("@", "")
+                await process_set_username(event, username)
+            else:
+                pending_username_updates[user_id] = True
+                await event.respond(
+                    "📝 **Set Account Username**\n\n"
+                    "Send me the base username. A random suffix will be added "
+                    "to make each account unique.\n\n"
+                    "Example: `cryptotrader` → cryptotrader_a1b2, cryptotrader_c3d4\n\n"
+                    "_Send /cancel to abort_"
+                )
+
+        async def process_set_username(event, base_username: str):
+            """Process setting username for all accounts"""
+            import random
+            import string
+
+            progress_msg = await event.respond(f"🔄 Setting usernames based on '{base_username}' for all accounts...")
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                if not accounts:
+                    await progress_msg.edit("❌ No active accounts found")
+                    return
+
+                success_count = 0
+                failed_count = 0
+                results = []
+
+                for account in accounts:
+                    try:
+                        from telethon import TelegramClient
+                        from telethon.sessions import StringSession
+                        from telethon.tl.functions.account import UpdateUsernameRequest
+
+                        client = TelegramClient(
+                            StringSession(account.session_string),
+                            settings.telegram.api_id,
+                            settings.telegram.api_hash
+                        )
+
+                        await client.connect()
+
+                        if not await client.is_user_authorized():
+                            results.append(f"❌ {account.phone_number}: Not authorized")
+                            failed_count += 1
+                            await client.disconnect()
+                            continue
+
+                        # Generate unique username with random suffix
+                        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+                        new_username = f"{base_username}_{suffix}"
+
+                        # Try to set username (may fail if taken)
+                        try:
+                            await client(UpdateUsernameRequest(username=new_username))
+
+                            # Update in database
+                            account.username = new_username
+                            db.commit()
+
+                            results.append(f"✅ {account.phone_number}: @{new_username}")
+                            success_count += 1
+                        except Exception as ue:
+                            if "USERNAME_OCCUPIED" in str(ue):
+                                # Try again with different suffix
+                                suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                                new_username = f"{base_username}_{suffix}"
+                                await client(UpdateUsernameRequest(username=new_username))
+                                account.username = new_username
+                                db.commit()
+                                results.append(f"✅ {account.phone_number}: @{new_username}")
+                                success_count += 1
+                            else:
+                                raise ue
+
+                        await client.disconnect()
+
+                        # Rate limit protection - wait between accounts
+                        import asyncio
+                        await asyncio.sleep(2)
+
+                    except Exception as e:
+                        error_msg = str(e)[:30]
+                        results.append(f"❌ {account.phone_number}: {error_msg}")
+                        failed_count += 1
+
+            result_text = "\n".join(results[:15])
+            if len(results) > 15:
+                result_text += f"\n... and {len(results) - 15} more"
+
+            await self.client.send_message(
+                event.chat_id,
+                f"📝 **USERNAME UPDATE COMPLETE**\n\n"
+                f"✅ Success: {success_count}\n"
+                f"❌ Failed: {failed_count}\n\n"
+                f"**Results:**\n{result_text}"
+            )
 
         # Button handlers
         @self.client.on(events.NewMessage(pattern="📱 Login Account"))
