@@ -1910,6 +1910,7 @@ _Use /monitor for detailed analytics_"""
                 "🖼 /set_photo - Set profile photo for all accounts\n"
                 "📝 /set_name - Set name for all accounts\n"
                 "📝 /set_username - Set username for all accounts\n"
+                "📲 /get_code - Get login code for phone login\n"
                 "/cancel - Cancel current operation\n\n"
                 "**Statistics & Monitoring**\n"
                 "📊 /stats - View overall statistics\n"
@@ -2051,6 +2052,174 @@ _Use /monitor for detailed analytics_"""
             except Exception as e:
                 logger.error("Set photo error", error=str(e))
                 await progress_msg.edit(f"❌ Error: {str(e)}")
+
+        # Store for pending code capture
+        pending_code_capture: Dict[int, Dict[str, Any]] = {}
+
+        @self.client.on(events.NewMessage(pattern="/get_code"))
+        @admin_only
+        async def get_code_handler(event):
+            """Handle /get_code command - Capture login codes for phone login"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            with get_db_context() as db:
+                accounts = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE,
+                    Account.session_string.isnot(None)
+                ).all()
+
+                if not accounts:
+                    await event.respond("❌ No active accounts found")
+                    return
+
+                # Create buttons for each account
+                buttons = []
+                for acc in accounts[:10]:
+                    name = acc.first_name or acc.phone_number or f"Account {acc.id}"
+                    buttons.append([Button.inline(
+                        f"📱 {name} ({acc.phone_number})",
+                        data=f"getcode_{acc.id}"
+                    )])
+
+                buttons.append([Button.inline("❌ Cancel", data="getcode_cancel")])
+
+                await event.respond(
+                    "📲 **Get Login Code for Phone**\n\n"
+                    "Select an account to capture its login code.\n"
+                    "Then try to login on your phone with that number.\n\n"
+                    "The code will appear here!",
+                    buttons=buttons
+                )
+
+        @self.client.on(events.CallbackQuery(pattern=r"getcode_(\d+)"))
+        @admin_only
+        async def getcode_select_handler(event):
+            """Handle account selection for code capture"""
+            sender = await event.get_sender()
+            user_id = sender.id
+            account_id = int(event.pattern_match.group(1))
+
+            await event.edit("🔄 Connecting to account...")
+
+            with get_db_context() as db:
+                account = db.query(Account).filter(Account.id == account_id).first()
+
+                if not account:
+                    await event.edit("❌ Account not found")
+                    return
+
+                phone = account.phone_number
+                session_string = account.session_string
+
+            try:
+                from telethon import TelegramClient
+                from telethon.sessions import StringSession
+
+                # Connect to the account
+                user_client = TelegramClient(
+                    StringSession(session_string),
+                    settings.telegram.api_id,
+                    settings.telegram.api_hash
+                )
+
+                await user_client.connect()
+
+                if not await user_client.is_user_authorized():
+                    await event.edit("❌ Account session expired")
+                    await user_client.disconnect()
+                    return
+
+                # Store client for code capture
+                pending_code_capture[user_id] = {
+                    'client': user_client,
+                    'phone': phone,
+                    'account_id': account_id,
+                }
+
+                await self.client.send_message(
+                    event.chat_id,
+                    f"✅ **Ready to capture login code!**\n\n"
+                    f"📱 Account: `{phone}`\n\n"
+                    "**Now on your phone:**\n"
+                    "1. Open Telegram app\n"
+                    "2. Tap 'Start Messaging'\n"
+                    "3. Enter phone: `{phone}`\n"
+                    "4. Wait for code to appear here!\n\n"
+                    "⏳ Listening for codes... (60 seconds timeout)\n\n"
+                    "_Send /cancel_code to stop_"
+                )
+
+                # Listen for messages from Telegram (user 777000)
+                import asyncio
+
+                @user_client.on(events.NewMessage(from_users=777000))
+                async def code_handler(msg_event):
+                    """Capture login code from Telegram"""
+                    text = msg_event.text or ""
+
+                    # Extract code from message
+                    import re
+                    code_match = re.search(r'(\d{5,6})', text)
+
+                    if code_match:
+                        code = code_match.group(1)
+                        await self.client.send_message(
+                            event.chat_id,
+                            f"🔑 **LOGIN CODE RECEIVED!**\n\n"
+                            f"📱 Account: `{phone}`\n"
+                            f"🔢 Code: `{code}`\n\n"
+                            "Enter this code on your phone now!"
+                        )
+
+                # Wait for code with timeout
+                try:
+                    await asyncio.wait_for(
+                        user_client.run_until_disconnected(),
+                        timeout=60.0
+                    )
+                except asyncio.TimeoutError:
+                    await self.client.send_message(
+                        event.chat_id,
+                        "⏰ Timeout - No code received in 60 seconds.\n"
+                        "Try `/get_code` again when ready."
+                    )
+                finally:
+                    if user_id in pending_code_capture:
+                        try:
+                            await pending_code_capture[user_id]['client'].disconnect()
+                        except:
+                            pass
+                        del pending_code_capture[user_id]
+
+            except Exception as e:
+                logger.error("Get code error", error=str(e))
+                await self.client.send_message(
+                    event.chat_id,
+                    f"❌ Error: {str(e)}"
+                )
+
+        @self.client.on(events.CallbackQuery(pattern="getcode_cancel"))
+        async def getcode_cancel_handler(event):
+            """Cancel code capture"""
+            await event.edit("❌ Code capture cancelled")
+
+        @self.client.on(events.NewMessage(pattern="/cancel_code"))
+        @admin_only
+        async def cancel_code_handler(event):
+            """Cancel active code capture"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            if user_id in pending_code_capture:
+                try:
+                    await pending_code_capture[user_id]['client'].disconnect()
+                except:
+                    pass
+                del pending_code_capture[user_id]
+                await event.respond("✅ Code capture stopped")
+            else:
+                await event.respond("No active code capture")
 
         # Store for pending name/username updates
         pending_name_updates: Dict[int, str] = {}
