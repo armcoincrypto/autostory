@@ -756,20 +756,26 @@ class StoryFleetBot:
             pending_publishes[user_id] = {
                 "step": "select_account",
                 "account_id": None,
+                "account_ids": [acc.id for acc in accounts],  # Store all account IDs
                 "mentions": 5,
                 "caption": "",
             }
 
-            buttons = [
-                [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
-                for acc in accounts[:5]
-            ]
+            # Build buttons - show ALL option first if multiple accounts
+            buttons = []
+            if len(accounts) > 1:
+                buttons.append([Button.inline(f"📤 Publish to ALL {len(accounts)} Accounts", data="pub_all")])
+
+            for acc in accounts[:10]:
+                buttons.append([Button.inline(f"📱 {acc.phone_number} (@{acc.username or 'N/A'})", data=f"pub_{acc.id}")])
+
             buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
 
             await event.respond(
                 "📤 **Publish Story**\n\n"
-                f"👥 Available users for mention: {users_count}\n\n"
-                "Select an account to publish from:",
+                f"📱 Active accounts: {len(accounts)}\n"
+                f"👥 Users available for mention: {users_count}\n\n"
+                "Select account(s) to publish from:",
                 buttons=buttons
             )
 
@@ -795,6 +801,31 @@ class StoryFleetBot:
                 "• Photo (JPG, PNG)\n"
                 "• Video (MP4, up to 15 seconds)\n\n"
                 "The story will be published with automatic user mentions.\n\n"
+                "Send /cancel to abort."
+            )
+
+        @self.client.on(events.CallbackQuery(pattern="pub_all"))
+        @admin_only
+        async def publish_all_selected(event):
+            """Handle 'Publish to ALL' selection"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Update state with all account IDs
+            if user_id not in pending_publishes:
+                pending_publishes[user_id] = {}
+
+            account_ids = pending_publishes[user_id].get("account_ids", [])
+            pending_publishes[user_id]["account_id"] = "all"
+            pending_publishes[user_id]["publish_to_all"] = True
+            pending_publishes[user_id]["step"] = "waiting_media"
+
+            await event.edit(
+                f"📤 **Publishing to ALL {len(account_ids)} Accounts**\n\n"
+                "📸 **Send the media file now:**\n"
+                "• Photo (JPG, PNG)\n"
+                "• Video (MP4, up to 15 seconds)\n\n"
+                "The story will be published to all accounts with mentions.\n\n"
                 "Send /cancel to abort."
             )
 
@@ -824,9 +855,6 @@ class StoryFleetBot:
             if not account_id:
                 return
 
-            # Clear state
-            del pending_publishes[user_id]
-
             # Download media
             await event.respond("⏳ Downloading media...")
 
@@ -838,49 +866,167 @@ class StoryFleetBot:
                 await event.respond("❌ Failed to download media. Please try again.")
                 return
 
-            # Publish story
+            # Save media path and wait for caption
+            pending_publishes[user_id]["media_path"] = media_path
+            pending_publishes[user_id]["step"] = "waiting_caption"
+
             await event.respond(
-                "🚀 **Publishing story...**\n\n"
-                "• Uploading media\n"
-                "• Adding mentions\n"
-                "• Publishing to story"
+                "✅ **Media received!**\n\n"
+                "📝 **Now send the caption text:**\n\n"
+                "• Send your caption text\n"
+                "• Or send `-` for no caption\n\n"
+                "Send /cancel to abort."
             )
+
+        @self.client.on(events.NewMessage())
+        async def caption_handler(event):
+            """Handle caption for story publishing"""
+            # Skip commands
+            if event.text and event.text.startswith("/"):
+                return
+
+            # Skip media messages
+            if event.media:
+                return
+
+            sender = await event.get_sender()
+            if not sender:
+                return
+
+            user_id = sender.id
+
+            # Check admin
+            if user_id not in settings.bot.admin_ids:
+                return
+
+            # Check if waiting for caption
+            if user_id not in pending_publishes:
+                return
+
+            if pending_publishes[user_id].get("step") != "waiting_caption":
+                return
+
+            account_id = pending_publishes[user_id].get("account_id")
+            media_path = pending_publishes[user_id].get("media_path")
+            publish_to_all = pending_publishes[user_id].get("publish_to_all", False)
+            account_ids = pending_publishes[user_id].get("account_ids", [])
+
+            if not media_path:
+                del pending_publishes[user_id]
+                await event.respond("❌ Session expired. Please start over with /publish")
+                return
+
+            # Get caption (use empty if "-")
+            caption = "" if event.text == "-" else (event.text or "")
+
+            # Clear state
+            del pending_publishes[user_id]
 
             try:
                 from src.publisher.story_publisher import story_publisher
+                import os
 
-                result = await story_publisher.publish_with_auto_mentions(
-                    media_path=media_path,
-                    caption="",
-                    mentions_count=5,
-                    account_id=account_id,
-                )
-
-                # Clean up media file
-                try:
-                    os.remove(media_path)
-                except:
-                    pass
-
-                if result["success"]:
+                if publish_to_all and account_ids:
+                    # Publish to ALL accounts
                     await event.respond(
-                        "✅ **Story Published Successfully!**\n\n"
-                        f"📊 **Details:**\n"
-                        f"• Account: #{result['account_id']}\n"
-                        f"• Story ID: {result.get('story_id', 'N/A')}\n"
-                        f"• Mentions added: {result['mentions_added']}\n\n"
-                        "The story is now live!",
+                        f"🚀 **Publishing story to {len(account_ids)} accounts...**\n\n"
+                        "This may take a moment..."
+                    )
+
+                    success_count = 0
+                    fail_count = 0
+                    total_mentions = 0
+                    results_detail = []
+
+                    for acc_id in account_ids:
+                        try:
+                            result = await story_publisher.publish_with_auto_mentions(
+                                media_path=media_path,
+                                caption=caption,
+                                mentions_count=5,
+                                account_id=acc_id,
+                            )
+
+                            if result["success"]:
+                                success_count += 1
+                                total_mentions += result.get("mentions_added", 0)
+                                results_detail.append(f"✅ Account #{acc_id}: Published")
+                            else:
+                                fail_count += 1
+                                results_detail.append(f"❌ Account #{acc_id}: {result.get('error', 'Failed')}")
+                        except Exception as e:
+                            fail_count += 1
+                            results_detail.append(f"❌ Account #{acc_id}: {str(e)[:50]}")
+
+                    # Clean up media file
+                    try:
+                        os.remove(media_path)
+                    except:
+                        pass
+
+                    # Show results
+                    details_str = "\n".join(results_detail[:10])
+                    if len(results_detail) > 10:
+                        details_str += f"\n...and {len(results_detail) - 10} more"
+
+                    await event.respond(
+                        f"📊 **Batch Publish Complete!**\n\n"
+                        f"✅ Success: {success_count}/{len(account_ids)}\n"
+                        f"❌ Failed: {fail_count}\n"
+                        f"👥 Total mentions: {total_mentions}\n"
+                        f"📝 Caption: {caption[:30] + '...' if len(caption) > 30 else caption or '(none)'}\n\n"
+                        f"**Details:**\n{details_str}",
                         buttons=[
                             [Button.text("📤 Publish Another", resize=True)],
                             [Button.text("📊 Stats")],
                         ]
                     )
                 else:
+                    # Publish to single account
+                    if not account_id:
+                        await event.respond("❌ No account selected. Please start over with /publish")
+                        return
+
                     await event.respond(
-                        f"❌ **Publish Failed**\n\n"
-                        f"Error: {result.get('error', 'Unknown error')}\n\n"
-                        "Please try again."
+                        "🚀 **Publishing story...**\n\n"
+                        "• Uploading media\n"
+                        "• Adding mentions\n"
+                        "• Publishing to story"
                     )
+
+                    result = await story_publisher.publish_with_auto_mentions(
+                        media_path=media_path,
+                        caption=caption,
+                        mentions_count=5,
+                        account_id=account_id,
+                    )
+
+                    # Clean up media file
+                    try:
+                        os.remove(media_path)
+                    except:
+                        pass
+
+                    if result["success"]:
+                        await event.respond(
+                            "✅ **Story Published Successfully!**\n\n"
+                            f"📊 **Details:**\n"
+                            f"• Account: #{result['account_id']}\n"
+                            f"• Story ID: {result.get('story_id', 'N/A')}\n"
+                            f"• Mentions added: {result['mentions_added']}\n"
+                            f"• Caption: {caption[:50] + '...' if len(caption) > 50 else caption or '(none)'}\n\n"
+                            "The story is now live!",
+                            buttons=[
+                                [Button.text("📤 Publish Another", resize=True)],
+                                [Button.text("📊 Stats")],
+                            ]
+                        )
+                    else:
+                        await event.respond(
+                            f"❌ **Publish Failed**\n\n"
+                            f"Error: {result.get('error', 'Unknown error')}\n\n"
+                            "Please try again."
+                        )
 
             except Exception as e:
                 logger.error("Publish error", error=str(e))
