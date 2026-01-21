@@ -42,6 +42,36 @@ pending_publishes: Dict[int, Dict[str, Any]] = {}
 # Store for pending tdata imports (user_id -> import state)
 pending_tdata_imports: Dict[int, Dict[str, Any]] = {}
 
+# Auto-publish configuration file
+AUTO_PUBLISH_CONFIG_FILE = "/opt/autostory/data/auto_publish_config.json"
+
+def load_auto_publish_config() -> Dict[str, Any]:
+    """Load auto-publish configuration from file"""
+    import json
+    import os
+    os.makedirs(os.path.dirname(AUTO_PUBLISH_CONFIG_FILE), exist_ok=True)
+    try:
+        with open(AUTO_PUBLISH_CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {
+            "enabled": False,
+            "stories_per_day": 2,
+            "caption_template": "Check this out!\n\nFollow for more content",
+            "media_folder": "/opt/autostory/data/auto_media",
+            "interval_hours": 12,  # Hours between stories
+            "last_publish": {},  # account_id -> last publish timestamp
+            "mentions_per_story": 5,
+        }
+
+def save_auto_publish_config(config: Dict[str, Any]):
+    """Save auto-publish configuration to file"""
+    import json
+    import os
+    os.makedirs(os.path.dirname(AUTO_PUBLISH_CONFIG_FILE), exist_ok=True)
+    with open(AUTO_PUBLISH_CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+
 
 def admin_only(func):
     """Decorator to restrict commands to admin users"""
@@ -107,7 +137,128 @@ class StoryFleetBot:
 
         logger.info("Bot running...")
         print("🚀 Bot is running. Press Ctrl+C to stop.")
+
+        # Start auto-publish background task
+        asyncio.create_task(self._auto_publish_loop())
+
         await self.client.run_until_disconnected()
+
+    async def _auto_publish_loop(self):
+        """Background task for auto-publishing stories"""
+        import random
+        import os
+        from datetime import datetime, timedelta
+
+        logger.info("Auto-publish loop started")
+
+        while self._running:
+            try:
+                # Wait 1 hour between checks
+                await asyncio.sleep(3600)
+
+                config = load_auto_publish_config()
+
+                if not config.get("enabled"):
+                    continue
+
+                logger.info("Auto-publish: checking for stories to publish")
+
+                # Get media files
+                media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
+                if not os.path.exists(media_folder):
+                    continue
+
+                media_files = [
+                    os.path.join(media_folder, f)
+                    for f in os.listdir(media_folder)
+                    if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))
+                ]
+
+                if not media_files:
+                    logger.warning("Auto-publish: no media files available")
+                    continue
+
+                # Get active accounts
+                with get_db_context() as db:
+                    accounts = db.query(Account).filter(
+                        Account.status == AccountStatus.ACTIVE,
+                        Account.session_string.isnot(None)
+                    ).all()
+
+                    if not accounts:
+                        continue
+
+                    # Check each account
+                    interval_hours = config.get("interval_hours", 12)
+                    stories_per_day = config.get("stories_per_day", 2)
+                    last_publish = config.get("last_publish", {})
+                    now = datetime.utcnow()
+
+                    published_count = 0
+
+                    for account in accounts:
+                        acc_id = str(account.id)
+
+                        # Check if we can publish for this account
+                        last_time_str = last_publish.get(acc_id)
+                        if last_time_str:
+                            last_time = datetime.fromisoformat(last_time_str)
+                            hours_since = (now - last_time).total_seconds() / 3600
+
+                            if hours_since < interval_hours:
+                                continue  # Not time yet
+
+                        # Pick random media
+                        media_path = random.choice(media_files)
+                        caption = config.get("caption_template", "")
+                        mentions_count = config.get("mentions_per_story", 5)
+
+                        try:
+                            from src.publisher.story_publisher import story_publisher
+
+                            result = await story_publisher.publish_with_auto_mentions(
+                                media_path=media_path,
+                                caption=caption,
+                                mentions_count=mentions_count,
+                                account_id=account.id,
+                            )
+
+                            if result.get("success"):
+                                published_count += 1
+                                last_publish[acc_id] = now.isoformat()
+                                logger.info(f"Auto-publish: published story for account {account.id}")
+
+                                # Notify admin
+                                for admin_id in settings.bot.admin_ids:
+                                    try:
+                                        await self.client.send_message(
+                                            admin_id,
+                                            f"🤖 **Auto-Published Story**\n\n"
+                                            f"Account: {account.phone_number}\n"
+                                            f"Story ID: {result.get('story_id')}\n"
+                                            f"Mentions: {result.get('mentions_added', 0)}"
+                                        )
+                                    except:
+                                        pass
+                            else:
+                                logger.warning(f"Auto-publish failed for {account.id}: {result.get('error')}")
+
+                        except Exception as e:
+                            logger.error(f"Auto-publish error for {account.id}: {e}")
+
+                        # Rate limiting between accounts
+                        await asyncio.sleep(random.uniform(5, 15))
+
+                    # Save updated last_publish times
+                    config["last_publish"] = last_publish
+                    save_auto_publish_config(config)
+
+                    if published_count > 0:
+                        logger.info(f"Auto-publish: published {published_count} stories")
+
+            except Exception as e:
+                logger.error(f"Auto-publish loop error: {e}")
+                await asyncio.sleep(60)  # Wait before retry
 
     async def _get_bot_username(self) -> str:
         """Get bot username"""
@@ -2025,6 +2176,12 @@ _Use /monitor for detailed analytics_"""
                 "📤 /publish_all - Publish to ALL accounts\n"
                 "📖 /stories - View published stories with URLs\n"
                 "🗑 /delete_story - Delete stories from accounts\n\n"
+                "**Auto-Publish**\n"
+                "🤖 /auto_on - Enable auto-publish\n"
+                "⏹ /auto_off - Disable auto-publish\n"
+                "📊 /auto_status - View auto-publish status\n"
+                "⚙️ /auto_config - Configure auto-publish settings\n"
+                "📁 /auto_media - Upload media for auto-publish\n\n"
                 "**Discovery**\n"
                 "🔍 /scan - Scan channel for users\n"
                 "/users - View available users\n\n"
@@ -2034,6 +2191,195 @@ _Use /monitor for detailed analytics_"""
                 "/start - Welcome message\n"
                 "/help - This help message"
             )
+
+        # ============ AUTO-PUBLISH COMMANDS ============
+
+        @self.client.on(events.NewMessage(pattern="/auto_on"))
+        @admin_only
+        async def auto_on_handler(event):
+            """Enable auto-publish"""
+            config = load_auto_publish_config()
+            config["enabled"] = True
+            save_auto_publish_config(config)
+
+            await event.respond(
+                "🤖 **Auto-Publish ENABLED**\n\n"
+                f"📊 Stories per day: {config['stories_per_day']}\n"
+                f"⏰ Interval: Every {config['interval_hours']} hours\n"
+                f"👥 Mentions: {config['mentions_per_story']} per story\n\n"
+                "Use /auto_status to check status\n"
+                "Use /auto_off to disable"
+            )
+
+        @self.client.on(events.NewMessage(pattern="/auto_off"))
+        @admin_only
+        async def auto_off_handler(event):
+            """Disable auto-publish"""
+            config = load_auto_publish_config()
+            config["enabled"] = False
+            save_auto_publish_config(config)
+
+            await event.respond(
+                "⏹ **Auto-Publish DISABLED**\n\n"
+                "Stories will no longer be published automatically.\n"
+                "Use /auto_on to enable again."
+            )
+
+        @self.client.on(events.NewMessage(pattern="/auto_status"))
+        @admin_only
+        async def auto_status_handler(event):
+            """Show auto-publish status"""
+            config = load_auto_publish_config()
+
+            status = "🟢 ENABLED" if config.get("enabled") else "🔴 DISABLED"
+
+            # Count media files
+            import os
+            media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
+            media_count = 0
+            if os.path.exists(media_folder):
+                media_count = len([f for f in os.listdir(media_folder)
+                                  if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))])
+
+            # Get account count
+            with get_db_context() as db:
+                account_count = db.query(Account).filter(
+                    Account.status == AccountStatus.ACTIVE
+                ).count()
+
+            await event.respond(
+                f"📊 **Auto-Publish Status**\n\n"
+                f"**Status:** {status}\n"
+                f"**Stories/day:** {config.get('stories_per_day', 2)}\n"
+                f"**Interval:** Every {config.get('interval_hours', 12)} hours\n"
+                f"**Mentions:** {config.get('mentions_per_story', 5)} per story\n\n"
+                f"**Caption:**\n`{config.get('caption_template', 'No caption')[:100]}`\n\n"
+                f"**Resources:**\n"
+                f"📁 Media files: {media_count}\n"
+                f"👥 Active accounts: {account_count}\n\n"
+                "Use /auto_config to change settings"
+            )
+
+        @self.client.on(events.NewMessage(pattern="/auto_config"))
+        @admin_only
+        async def auto_config_handler(event):
+            """Configure auto-publish settings"""
+            config = load_auto_publish_config()
+
+            await event.respond(
+                "⚙️ **Auto-Publish Configuration**\n\n"
+                "Send command with setting to change:\n\n"
+                "`/auto_caption Your caption text here`\n"
+                "  Set the caption template\n\n"
+                "`/auto_interval 12`\n"
+                "  Hours between stories (default: 12)\n\n"
+                "`/auto_mentions 5`\n"
+                "  Mentions per story (default: 5)\n\n"
+                "`/auto_stories 2`\n"
+                "  Stories per day per account (default: 2)\n\n"
+                f"**Current settings:**\n"
+                f"• Caption: `{config.get('caption_template', '')[:50]}...`\n"
+                f"• Interval: {config.get('interval_hours', 12)} hours\n"
+                f"• Mentions: {config.get('mentions_per_story', 5)}\n"
+                f"• Stories/day: {config.get('stories_per_day', 2)}"
+            )
+
+        @self.client.on(events.NewMessage(pattern=r"/auto_caption\s+(.+)"))
+        @admin_only
+        async def auto_caption_handler(event):
+            """Set auto-publish caption"""
+            caption = event.pattern_match.group(1)
+            config = load_auto_publish_config()
+            config["caption_template"] = caption
+            save_auto_publish_config(config)
+
+            await event.respond(
+                f"✅ **Caption Updated**\n\n"
+                f"New caption:\n`{caption}`"
+            )
+
+        @self.client.on(events.NewMessage(pattern=r"/auto_interval\s+(\d+)"))
+        @admin_only
+        async def auto_interval_handler(event):
+            """Set auto-publish interval"""
+            hours = int(event.pattern_match.group(1))
+            config = load_auto_publish_config()
+            config["interval_hours"] = hours
+            save_auto_publish_config(config)
+
+            await event.respond(f"✅ **Interval set to {hours} hours**")
+
+        @self.client.on(events.NewMessage(pattern=r"/auto_mentions\s+(\d+)"))
+        @admin_only
+        async def auto_mentions_handler(event):
+            """Set mentions per story"""
+            mentions = int(event.pattern_match.group(1))
+            config = load_auto_publish_config()
+            config["mentions_per_story"] = mentions
+            save_auto_publish_config(config)
+
+            await event.respond(f"✅ **Mentions set to {mentions} per story**")
+
+        @self.client.on(events.NewMessage(pattern=r"/auto_stories\s+(\d+)"))
+        @admin_only
+        async def auto_stories_handler(event):
+            """Set stories per day"""
+            stories = int(event.pattern_match.group(1))
+            config = load_auto_publish_config()
+            config["stories_per_day"] = stories
+            save_auto_publish_config(config)
+
+            await event.respond(f"✅ **Stories per day set to {stories}**")
+
+        # Store for pending auto media uploads
+        pending_auto_media: Dict[int, bool] = {}
+
+        @self.client.on(events.NewMessage(pattern="/auto_media"))
+        @admin_only
+        async def auto_media_handler(event):
+            """Upload media for auto-publish"""
+            sender = await event.get_sender()
+            pending_auto_media[sender.id] = True
+
+            config = load_auto_publish_config()
+            media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
+
+            import os
+            os.makedirs(media_folder, exist_ok=True)
+            media_count = len([f for f in os.listdir(media_folder)
+                              if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))])
+
+            await event.respond(
+                "📁 **Upload Auto-Publish Media**\n\n"
+                f"Current media files: {media_count}\n\n"
+                "Send photos or videos to add to auto-publish pool.\n"
+                "These will be used randomly for auto stories.\n\n"
+                "_Send /cancel to stop uploading_"
+            )
+
+        @self.client.on(events.NewMessage(func=lambda e: e.media and not e.photo))
+        @admin_only
+        async def auto_media_upload_handler(event):
+            """Handle media upload for auto-publish (videos)"""
+            sender = await event.get_sender()
+            if sender.id not in pending_auto_media:
+                return
+
+            config = load_auto_publish_config()
+            media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
+
+            import os
+            os.makedirs(media_folder, exist_ok=True)
+
+            # Download media
+            file_path = await event.download_media(file=media_folder)
+
+            if file_path:
+                await event.respond(f"✅ Media saved: `{os.path.basename(file_path)}`\n\nSend more or /cancel")
+            else:
+                await event.respond("❌ Failed to save media")
+
+        # ============ END AUTO-PUBLISH COMMANDS ============
 
         # Store for pending photo uploads
         pending_photo_uploads: Dict[int, bool] = {}
