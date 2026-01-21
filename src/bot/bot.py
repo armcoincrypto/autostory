@@ -20,18 +20,12 @@ from telethon.errors import (
     PhoneNumberBannedError,
 )
 import structlog
-import os
-import zipfile
-from pathlib import Path
 
 import sys
 sys.path.insert(0, '/home/user/autostory')
 from config.settings import settings
 from src.core.models import Account, Story, DiscoveredUser, Campaign, AccountStatus
 from src.core.database import get_db_context
-from src.core.memory_manager import memory_manager
-from src.security.zip_sanitizer import ZipSecurity
-from src.security.path_validator import PathValidator
 
 logger = structlog.get_logger(__name__)
 
@@ -44,39 +38,6 @@ pending_scans: Dict[int, Dict[str, Any]] = {}
 
 # Store for pending publish sessions (user_id -> publish state)
 pending_publishes: Dict[int, Dict[str, Any]] = {}
-
-# Store for pending tdata imports (user_id -> import state)
-pending_tdata_imports: Dict[int, Dict[str, Any]] = {}
-
-# Auto-publish configuration file
-AUTO_PUBLISH_CONFIG_FILE = "/opt/autostory/data/auto_publish_config.json"
-
-def load_auto_publish_config() -> Dict[str, Any]:
-    """Load auto-publish configuration from file"""
-    import json
-    import os
-    os.makedirs(os.path.dirname(AUTO_PUBLISH_CONFIG_FILE), exist_ok=True)
-    try:
-        with open(AUTO_PUBLISH_CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return {
-            "enabled": False,
-            "stories_per_day": 1,
-            "caption_template": "Check this out!\n\nFollow for more content",
-            "media_folder": "/opt/autostory/data/auto_media",
-            "interval_hours": 24,  # Hours between stories (1 per day)
-            "last_publish": {},  # account_id -> last publish timestamp
-            "mentions_per_story": 5,
-        }
-
-def save_auto_publish_config(config: Dict[str, Any]):
-    """Save auto-publish configuration to file"""
-    import json
-    import os
-    os.makedirs(os.path.dirname(AUTO_PUBLISH_CONFIG_FILE), exist_ok=True)
-    with open(AUTO_PUBLISH_CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
 
 
 def admin_only(func):
@@ -143,138 +104,7 @@ class StoryFleetBot:
 
         logger.info("Bot running...")
         print("🚀 Bot is running. Press Ctrl+C to stop.")
-
-        # Start memory manager for cleanup of orphaned pending operations
-        pending_dicts = {
-            'logins': pending_logins,
-            'scans': pending_scans,
-            'publishes': pending_publishes,
-            'tdata_imports': pending_tdata_imports,
-        }
-        await memory_manager.start_cleanup(pending_dicts)
-        logger.info("Memory manager started")
-
-        # Start auto-publish background task
-        asyncio.create_task(self._auto_publish_loop())
-
         await self.client.run_until_disconnected()
-
-    async def _auto_publish_loop(self):
-        """Background task for auto-publishing stories"""
-        import random
-        import os
-        from datetime import datetime, timedelta
-
-        logger.info("Auto-publish loop started")
-
-        while self._running:
-            try:
-                # Wait 1 hour between checks
-                await asyncio.sleep(3600)
-
-                config = load_auto_publish_config()
-
-                if not config.get("enabled"):
-                    continue
-
-                logger.info("Auto-publish: checking for stories to publish")
-
-                # Get media files
-                media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
-                if not os.path.exists(media_folder):
-                    continue
-
-                media_files = [
-                    os.path.join(media_folder, f)
-                    for f in os.listdir(media_folder)
-                    if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))
-                ]
-
-                if not media_files:
-                    logger.warning("Auto-publish: no media files available")
-                    continue
-
-                # Get active accounts
-                with get_db_context() as db:
-                    accounts = db.query(Account).filter(
-                        Account.status == AccountStatus.ACTIVE,
-                        Account.session_string.isnot(None)
-                    ).all()
-
-                    if not accounts:
-                        continue
-
-                    # Check each account
-                    interval_hours = config.get("interval_hours", 12)
-                    stories_per_day = config.get("stories_per_day", 2)
-                    last_publish = config.get("last_publish", {})
-                    now = datetime.utcnow()
-
-                    published_count = 0
-
-                    for account in accounts:
-                        acc_id = str(account.id)
-
-                        # Check if we can publish for this account
-                        last_time_str = last_publish.get(acc_id)
-                        if last_time_str:
-                            last_time = datetime.fromisoformat(last_time_str)
-                            hours_since = (now - last_time).total_seconds() / 3600
-
-                            if hours_since < interval_hours:
-                                continue  # Not time yet
-
-                        # Pick random media
-                        media_path = random.choice(media_files)
-                        caption = config.get("caption_template", "")
-                        mentions_count = config.get("mentions_per_story", 5)
-
-                        try:
-                            from src.publisher.story_publisher import story_publisher
-
-                            result = await story_publisher.publish_with_auto_mentions(
-                                media_path=media_path,
-                                caption=caption,
-                                mentions_count=mentions_count,
-                                account_id=account.id,
-                            )
-
-                            if result.get("success"):
-                                published_count += 1
-                                last_publish[acc_id] = now.isoformat()
-                                logger.info(f"Auto-publish: published story for account {account.id}")
-
-                                # Notify admin
-                                for admin_id in settings.bot.admin_ids:
-                                    try:
-                                        await self.client.send_message(
-                                            admin_id,
-                                            f"🤖 **Auto-Published Story**\n\n"
-                                            f"Account: {account.phone_number}\n"
-                                            f"Story ID: {result.get('story_id')}\n"
-                                            f"Mentions: {result.get('mentions_added', 0)}"
-                                        )
-                                    except:
-                                        pass
-                            else:
-                                logger.warning(f"Auto-publish failed for {account.id}: {result.get('error')}")
-
-                        except Exception as e:
-                            logger.error(f"Auto-publish error for {account.id}: {e}")
-
-                        # Rate limiting between accounts
-                        await asyncio.sleep(random.uniform(5, 15))
-
-                    # Save updated last_publish times
-                    config["last_publish"] = last_publish
-                    save_auto_publish_config(config)
-
-                    if published_count > 0:
-                        logger.info(f"Auto-publish: published {published_count} stories")
-
-            except Exception as e:
-                logger.error(f"Auto-publish loop error: {e}")
-                await asyncio.sleep(60)  # Wait before retry
 
     async def _get_bot_username(self) -> str:
         """Get bot username"""
@@ -307,7 +137,6 @@ class StoryFleetBot:
                 "client": user_client,
                 "phone": phone,
                 "phone_code_hash": result.phone_code_hash,
-                "created_at": datetime.utcnow(),  # For memory manager cleanup
             }
 
             await event.respond(
@@ -536,28 +365,21 @@ class StoryFleetBot:
             sender = await event.get_sender()
             is_admin = sender.id in settings.bot.admin_ids
 
-            # Get quick stats
-            with get_db_context() as db:
-                accounts_count = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).count()
-                users_count = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0,
-                    DiscoveredUser.username.isnot(None)
-                ).count()
-
             welcome = (
-                "🚀 **STORYFLEET**\n\n"
-                "Multi-Account Story Publisher\n\n"
+                "🚀 **Welcome to STORYFLEET**\n\n"
+                "Multi-Account Telegram Story Orchestration Platform\n\n"
             )
 
             if is_admin:
                 welcome += (
-                    f"📊 **Status:** {accounts_count} accounts | {users_count} users ready\n\n"
-                    "**Quick Actions:**\n"
-                    "📤 /publish_all - Publish to ALL accounts\n"
-                    "🗑 /delete_story - Delete stories\n"
-                    "📱 /login - Add account\n"
-                    "🔍 /scan - Scan for users\n\n"
-                    "Use /help for full command list"
+                    "**Admin Commands:**\n"
+                    "📱 /login - Add a new Telegram account\n"
+                    "👥 /accounts - View all accounts\n"
+                    "📊 /stats - View statistics\n"
+                    "📤 /publish - Publish a story\n"
+                    "🔍 /scan - Scan channel for users\n"
+                    "🎯 /campaigns - View campaigns\n"
+                    "❓ /help - Full command list"
                 )
             else:
                 welcome += "⛔ You are not authorized to use this bot."
@@ -565,8 +387,7 @@ class StoryFleetBot:
             await event.respond(
                 welcome,
                 buttons=[
-                    [Button.text("📤 Publish All", resize=True), Button.text("🗑 Delete Stories")],
-                    [Button.text("📱 Login Account"), Button.text("🔍 Scan Users")],
+                    [Button.text("📱 Login Account", resize=True), Button.text("👥 Accounts")],
                     [Button.text("📊 Stats"), Button.text("❓ Help")],
                 ] if is_admin else None
             )
@@ -592,7 +413,6 @@ class StoryFleetBot:
                 "client": None,
                 "phone": None,
                 "phone_code_hash": None,
-                "created_at": datetime.utcnow(),  # For memory manager cleanup
             }
 
             await event.respond(
@@ -701,76 +521,6 @@ class StoryFleetBot:
 
             await event.respond(message)
 
-        @self.client.on(events.NewMessage(pattern="/status"))
-        @admin_only
-        async def status_handler(event):
-            """Handle /status command - Detailed system health"""
-            import psutil
-            from datetime import datetime
-
-            with get_db_context() as db:
-                # Account health
-                active = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).count()
-                banned = db.query(Account).filter(Account.status == AccountStatus.BANNED).count()
-                flood = db.query(Account).filter(Account.status == AccountStatus.FLOOD_WAIT).count()
-                auth_req = db.query(Account).filter(Account.status == AccountStatus.AUTH_REQUIRED).count()
-
-                # Recent activity
-                now = datetime.utcnow()
-                from datetime import timedelta
-                hour_ago = now - timedelta(hours=1)
-                day_ago = now - timedelta(days=1)
-
-                stories_hour = db.query(Story).filter(Story.published_at >= hour_ago).count()
-                stories_day = db.query(Story).filter(Story.published_at >= day_ago).count()
-
-                # Get last error
-                last_account_error = db.query(Account).filter(
-                    Account.last_error.isnot(None)
-                ).order_by(Account.last_active.desc()).first()
-
-                last_error_msg = "None"
-                if last_account_error and last_account_error.last_error:
-                    last_error_msg = last_account_error.last_error[:50] + "..."
-
-            # System health
-            try:
-                cpu_percent = psutil.cpu_percent()
-                memory = psutil.virtual_memory()
-                disk = psutil.disk_usage('/')
-                system_info = (
-                    f"├ CPU: {cpu_percent}%\n"
-                    f"├ RAM: {memory.percent}%\n"
-                    f"└ Disk: {disk.percent}%"
-                )
-            except:
-                system_info = "└ Unable to get system info"
-
-            message = f"""🖥 **SYSTEM STATUS**
-
-**Bot Status**: ✅ Online
-**Uptime**: Running
-
-**Accounts Health**
-├ Active: {active} ✅
-├ Banned: {banned} 🚫
-├ Flood Wait: {flood} ⏳
-└ Auth Required: {auth_req} 🔑
-
-**Activity**
-├ Stories (1h): {stories_hour}
-└ Stories (24h): {stories_day}
-
-**System Resources**
-{system_info}
-
-**Last Error**
-└ {last_error_msg}
-
-_Use /monitor for detailed analytics_"""
-
-            await event.respond(message)
-
         @self.client.on(events.NewMessage(pattern="/accounts"))
         @admin_only
         async def accounts_handler(event):
@@ -778,36 +528,36 @@ _Use /monitor for detailed analytics_"""
             with get_db_context() as db:
                 accounts = db.query(Account).all()
 
-                if not accounts:
-                    await event.respond(
-                        "No accounts added yet.\n\n"
-                        "Use /login to add your first Telegram account."
-                    )
-                    return
+            if not accounts:
+                await event.respond(
+                    "No accounts added yet.\n\n"
+                    "Use /login to add your first Telegram account."
+                )
+                return
 
-                message = "👥 **Registered Accounts**\n\n"
-                for acc in accounts[:10]:
-                    status_emoji = {
-                        AccountStatus.ACTIVE: "✅",
-                        AccountStatus.INACTIVE: "⏸️",
-                        AccountStatus.BANNED: "🚫",
-                        AccountStatus.FLOOD_WAIT: "⏳",
-                        AccountStatus.AUTH_REQUIRED: "🔑",
-                    }.get(acc.status, "❓")
+            message = "👥 **Registered Accounts**\n\n"
+            for acc in accounts[:10]:
+                status_emoji = {
+                    AccountStatus.ACTIVE: "✅",
+                    AccountStatus.INACTIVE: "⏸️",
+                    AccountStatus.BANNED: "🚫",
+                    AccountStatus.FLOOD_WAIT: "⏳",
+                    AccountStatus.AUTH_REQUIRED: "🔑",
+                }.get(acc.status, "❓")
 
-                    username_str = f"@{acc.username}" if acc.username else "No username"
+                username_str = f"@{acc.username}" if acc.username else "No username"
 
-                    message += (
-                        f"{status_emoji} **{acc.phone_number}**\n"
-                        f"   └ {username_str} | "
-                        f"Stories: {acc.stories_today}\n"
-                    )
+                message += (
+                    f"{status_emoji} **{acc.phone_number}**\n"
+                    f"   └ {username_str} | "
+                    f"Stories: {acc.stories_today}\n"
+                )
 
-                if len(accounts) > 10:
-                    message += f"\n_...and {len(accounts) - 10} more_"
+            if len(accounts) > 10:
+                message += f"\n_...and {len(accounts) - 10} more_"
 
-                message += "\n\nUse /login to add more accounts."
-                await event.respond(message)
+            message += "\n\nUse /login to add more accounts."
+            await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/scan"))
         @admin_only
@@ -823,13 +573,13 @@ _Use /monitor for detailed analytics_"""
                     Account.session_string.isnot(None)
                 ).first()
 
-                if not active_account:
-                    await event.respond(
-                        "❌ **No active account**\n\n"
-                        "You need to login a Telegram account first.\n"
-                        "Use /login to add an account."
-                    )
-                    return
+            if not active_account:
+                await event.respond(
+                    "❌ **No active account**\n\n"
+                    "You need to login a Telegram account first.\n"
+                    "Use /login to add an account."
+                )
+                return
 
             # Set scan state
             pending_scans[user_id] = {
@@ -960,23 +710,23 @@ _Use /monitor for detailed analytics_"""
                     DiscoveredUser.discovered_at.desc()
                 ).limit(15).all()
 
-                if not users:
-                    await event.respond("No users available for mention yet.")
-                    return
+            if not users:
+                await event.respond("No users available for mention yet.")
+                return
 
-                message = "👥 **Users Available for Mention**\n\n"
-                for user in users:
-                    username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
-                    name = user.first_name or "N/A"
-                    message += f"• {username} ({name})\n"
+            message = "👥 **Users Available for Mention**\n\n"
+            for user in users:
+                username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
+                name = user.first_name or "N/A"
+                message += f"• {username} ({name})\n"
 
-                total = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0
-                ).count()
+            total = db.query(DiscoveredUser).filter(
+                DiscoveredUser.times_mentioned == 0
+            ).count()
 
-                message += f"\n_Showing 15 of {total} available users_"
+            message += f"\n_Showing 15 of {total} available users_"
 
-                await event.respond(message)
+            await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/publish"))
         @admin_only
@@ -995,33 +745,39 @@ _Use /monitor for detailed analytics_"""
                     DiscoveredUser.times_mentioned == 0
                 ).count()
 
-                if not accounts:
-                    await event.respond(
-                        "❌ **No active accounts**\n\n"
-                        "Use /login to add an account first."
-                    )
-                    return
-
-                # Initialize publish state
-                pending_publishes[user_id] = {
-                    "step": "select_account",
-                    "account_id": None,
-                    "mentions": 5,
-                    "caption": "",
-                }
-
-                buttons = [
-                    [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
-                    for acc in accounts[:5]
-                ]
-                buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
-
+            if not accounts:
                 await event.respond(
-                    "📤 **Publish Story**\n\n"
-                    f"👥 Available users for mention: {users_count}\n\n"
-                    "Select an account to publish from:",
-                    buttons=buttons
+                    "❌ **No active accounts**\n\n"
+                    "Use /login to add an account first."
                 )
+                return
+
+            # Initialize publish state
+            pending_publishes[user_id] = {
+                "step": "select_account",
+                "account_id": None,
+                "account_ids": [acc.id for acc in accounts],  # Store all account IDs
+                "mentions": 5,
+                "caption": "",
+            }
+
+            # Build buttons - show ALL option first if multiple accounts
+            buttons = []
+            if len(accounts) > 1:
+                buttons.append([Button.inline(f"📤 Publish to ALL {len(accounts)} Accounts", data="pub_all")])
+
+            for acc in accounts[:10]:
+                buttons.append([Button.inline(f"📱 {acc.phone_number} (@{acc.username or 'N/A'})", data=f"pub_{acc.id}")])
+
+            buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
+
+            await event.respond(
+                "📤 **Publish Story**\n\n"
+                f"📱 Active accounts: {len(accounts)}\n"
+                f"👥 Users available for mention: {users_count}\n\n"
+                "Select account(s) to publish from:",
+                buttons=buttons
+            )
 
         @self.client.on(events.CallbackQuery(pattern=r"pub_(\d+)"))
         @admin_only
@@ -1048,6 +804,31 @@ _Use /monitor for detailed analytics_"""
                 "Send /cancel to abort."
             )
 
+        @self.client.on(events.CallbackQuery(pattern="pub_all"))
+        @admin_only
+        async def publish_all_selected(event):
+            """Handle 'Publish to ALL' selection"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Update state with all account IDs
+            if user_id not in pending_publishes:
+                pending_publishes[user_id] = {}
+
+            account_ids = pending_publishes[user_id].get("account_ids", [])
+            pending_publishes[user_id]["account_id"] = "all"
+            pending_publishes[user_id]["publish_to_all"] = True
+            pending_publishes[user_id]["step"] = "waiting_media"
+
+            await event.edit(
+                f"📤 **Publishing to ALL {len(account_ids)} Accounts**\n\n"
+                "📸 **Send the media file now:**\n"
+                "• Photo (JPG, PNG)\n"
+                "• Video (MP4, up to 15 seconds)\n\n"
+                "The story will be published to all accounts with mentions.\n\n"
+                "Send /cancel to abort."
+            )
+
         @self.client.on(events.CallbackQuery(pattern="pub_cancel"))
         async def publish_cancel_handler(event):
             """Handle publish cancel"""
@@ -1055,6 +836,205 @@ _Use /monitor for detailed analytics_"""
             if sender.id in pending_publishes:
                 del pending_publishes[sender.id]
             await event.edit("❌ Publishing cancelled.")
+
+        @self.client.on(events.NewMessage(func=lambda e: e.media))
+        @admin_only
+        async def media_handler(event):
+            """Handle media upload for story publishing"""
+            sender = await event.get_sender()
+            user_id = sender.id
+
+            # Check if waiting for media
+            if user_id not in pending_publishes:
+                return
+
+            if pending_publishes[user_id].get("step") != "waiting_media":
+                return
+
+            account_id = pending_publishes[user_id].get("account_id")
+            if not account_id:
+                return
+
+            # Download media
+            await event.respond("⏳ Downloading media...")
+
+            import os
+            os.makedirs("data/media", exist_ok=True)
+            media_path = await event.download_media(file="data/media/")
+
+            if not media_path:
+                await event.respond("❌ Failed to download media. Please try again.")
+                return
+
+            # Save media path and wait for caption
+            pending_publishes[user_id]["media_path"] = media_path
+            pending_publishes[user_id]["step"] = "waiting_caption"
+
+            await event.respond(
+                "✅ **Media received!**\n\n"
+                "📝 **Now send the caption text:**\n\n"
+                "• Send your caption text\n"
+                "• Or send `-` for no caption\n\n"
+                "Send /cancel to abort."
+            )
+
+        @self.client.on(events.NewMessage())
+        async def caption_handler(event):
+            """Handle caption for story publishing"""
+            # Skip commands
+            if event.text and event.text.startswith("/"):
+                return
+
+            # Skip media messages
+            if event.media:
+                return
+
+            sender = await event.get_sender()
+            if not sender:
+                return
+
+            user_id = sender.id
+
+            # Check admin
+            if user_id not in settings.bot.admin_ids:
+                return
+
+            # Check if waiting for caption
+            if user_id not in pending_publishes:
+                return
+
+            if pending_publishes[user_id].get("step") != "waiting_caption":
+                return
+
+            account_id = pending_publishes[user_id].get("account_id")
+            media_path = pending_publishes[user_id].get("media_path")
+            publish_to_all = pending_publishes[user_id].get("publish_to_all", False)
+            account_ids = pending_publishes[user_id].get("account_ids", [])
+
+            if not media_path:
+                del pending_publishes[user_id]
+                await event.respond("❌ Session expired. Please start over with /publish")
+                return
+
+            # Get caption (use empty if "-")
+            caption = "" if event.text == "-" else (event.text or "")
+
+            # Clear state
+            del pending_publishes[user_id]
+
+            try:
+                from src.publisher.story_publisher import story_publisher
+                import os
+
+                if publish_to_all and account_ids:
+                    # Publish to ALL accounts
+                    await event.respond(
+                        f"🚀 **Publishing story to {len(account_ids)} accounts...**\n\n"
+                        "This may take a moment..."
+                    )
+
+                    success_count = 0
+                    fail_count = 0
+                    total_mentions = 0
+                    results_detail = []
+
+                    for acc_id in account_ids:
+                        try:
+                            result = await story_publisher.publish_with_auto_mentions(
+                                media_path=media_path,
+                                caption=caption,
+                                mentions_count=5,
+                                account_id=acc_id,
+                            )
+
+                            if result["success"]:
+                                success_count += 1
+                                total_mentions += result.get("mentions_added", 0)
+                                results_detail.append(f"✅ Account #{acc_id}: Published")
+                            else:
+                                fail_count += 1
+                                results_detail.append(f"❌ Account #{acc_id}: {result.get('error', 'Failed')}")
+                        except Exception as e:
+                            fail_count += 1
+                            results_detail.append(f"❌ Account #{acc_id}: {str(e)[:50]}")
+
+                    # Clean up media file
+                    try:
+                        os.remove(media_path)
+                    except:
+                        pass
+
+                    # Show results
+                    details_str = "\n".join(results_detail[:10])
+                    if len(results_detail) > 10:
+                        details_str += f"\n...and {len(results_detail) - 10} more"
+
+                    await event.respond(
+                        f"📊 **Batch Publish Complete!**\n\n"
+                        f"✅ Success: {success_count}/{len(account_ids)}\n"
+                        f"❌ Failed: {fail_count}\n"
+                        f"👥 Total mentions: {total_mentions}\n"
+                        f"📝 Caption: {caption[:30] + '...' if len(caption) > 30 else caption or '(none)'}\n\n"
+                        f"**Details:**\n{details_str}",
+                        buttons=[
+                            [Button.text("📤 Publish Another", resize=True)],
+                            [Button.text("📊 Stats")],
+                        ]
+                    )
+                else:
+                    # Publish to single account
+                    if not account_id:
+                        await event.respond("❌ No account selected. Please start over with /publish")
+                        return
+
+                    await event.respond(
+                        "🚀 **Publishing story...**\n\n"
+                        "• Uploading media\n"
+                        "• Adding mentions\n"
+                        "• Publishing to story"
+                    )
+
+                    result = await story_publisher.publish_with_auto_mentions(
+                        media_path=media_path,
+                        caption=caption,
+                        mentions_count=5,
+                        account_id=account_id,
+                    )
+
+                    # Clean up media file
+                    try:
+                        os.remove(media_path)
+                    except:
+                        pass
+
+                    if result["success"]:
+                        await event.respond(
+                            "✅ **Story Published Successfully!**\n\n"
+                            f"📊 **Details:**\n"
+                            f"• Account: #{result['account_id']}\n"
+                            f"• Story ID: {result.get('story_id', 'N/A')}\n"
+                            f"• Mentions added: {result['mentions_added']}\n"
+                            f"• Caption: {caption[:50] + '...' if len(caption) > 50 else caption or '(none)'}\n\n"
+                            "The story is now live!",
+                            buttons=[
+                                [Button.text("📤 Publish Another", resize=True)],
+                                [Button.text("📊 Stats")],
+                            ]
+                        )
+                    else:
+                        await event.respond(
+                            f"❌ **Publish Failed**\n\n"
+                            f"Error: {result.get('error', 'Unknown error')}\n\n"
+                            "Please try again."
+                        )
+
+            except Exception as e:
+                logger.error("Publish error", error=str(e))
+                await event.respond(
+                    f"❌ **Error publishing story**\n\n"
+                    f"{str(e)}\n\n"
+                    "Please try again."
+                )
 
         @self.client.on(events.NewMessage(pattern="📤 Publish Another"))
         @admin_only
@@ -1069,23 +1049,23 @@ _Use /monitor for detailed analytics_"""
                     Account.session_string.isnot(None)
                 ).all()
 
-                if not accounts:
-                    await event.respond("No active accounts. Use /login first.")
-                    return
+            if not accounts:
+                await event.respond("No active accounts. Use /login first.")
+                return
 
-                pending_publishes[user_id] = {"step": "select_account"}
+            pending_publishes[user_id] = {"step": "select_account"}
 
-                buttons = [
-                    [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
-                    for acc in accounts[:5]
-                ]
-                buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
+            buttons = [
+                [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
+                for acc in accounts[:5]
+            ]
+            buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
 
-                await event.respond(
-                    "📤 **Publish Story**\n\n"
-                    "Select an account:",
-                    buttons=buttons
-                )
+            await event.respond(
+                "📤 **Publish Story**\n\n"
+                "Select an account:",
+                buttons=buttons
+            )
 
         @self.client.on(events.NewMessage(pattern="/users"))
         @admin_only
@@ -1098,16 +1078,16 @@ _Use /monitor for detailed analytics_"""
                     DiscoveredUser.discovered_at.desc()
                 ).limit(10).all()
 
-                if not users:
-                    await event.respond("No users available for mention.")
-                    return
+            if not users:
+                await event.respond("No users available for mention.")
+                return
 
-                message = "🔍 **Available Users for Mention**\n\n"
-                for user in users:
-                    username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
-                    message += f"• {username} | {user.first_name or 'N/A'}\n"
+            message = "🔍 **Available Users for Mention**\n\n"
+            for user in users:
+                username = f"@{user.username}" if user.username else f"ID:{user.user_id}"
+                message += f"• {username} | {user.first_name or 'N/A'}\n"
 
-                await event.respond(message)
+            await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="/campaigns"))
         @admin_only
@@ -1116,2117 +1096,52 @@ _Use /monitor for detailed analytics_"""
             with get_db_context() as db:
                 campaigns = db.query(Campaign).all()
 
-                if not campaigns:
-                    await event.respond(
-                        "No campaigns yet.\n\n"
-                        "Use the web dashboard to create campaigns."
-                    )
-                    return
+            if not campaigns:
+                await event.respond(
+                    "No campaigns yet.\n\n"
+                    "Use the web dashboard to create campaigns."
+                )
+                return
 
-                message = "🎯 **Campaigns**\n\n"
-                for camp in campaigns:
-                    status = "✅ Active" if camp.is_active else "⏸️ Paused"
-                    message += (
-                        f"**{camp.name}** [{status}]\n"
-                        f"   Stories: {camp.total_stories_published} | "
-                        f"Mentions: {camp.total_users_mentioned}\n\n"
-                    )
+            message = "🎯 **Campaigns**\n\n"
+            for camp in campaigns:
+                status = "✅ Active" if camp.is_active else "⏸️ Paused"
+                message += (
+                    f"**{camp.name}** [{status}]\n"
+                    f"   Stories: {camp.total_stories_published} | "
+                    f"Mentions: {camp.total_users_mentioned}\n\n"
+                )
 
-                await event.respond(message)
+            await event.respond(message)
 
         @self.client.on(events.CallbackQuery(pattern="cancel"))
         async def cancel_handler(event):
             """Handle cancel button"""
             await event.edit("Cancelled.")
 
-        @self.client.on(events.NewMessage(pattern="/monitor"))
-        @admin_only
-        async def monitor_handler(event):
-            """Handle /monitor command - Show detailed analytics"""
-            try:
-                from src.monitoring.story_monitor import story_monitor
-
-                await event.respond("📊 Gathering analytics...")
-
-                stats = story_monitor.get_system_stats()
-                message = story_monitor.format_stats_message(stats)
-
-                await event.respond(message)
-
-            except Exception as e:
-                logger.error("Monitor command error", error=str(e))
-                await event.respond(f"❌ Error: {str(e)}")
-
-        @self.client.on(events.NewMessage(pattern="/stories"))
-        @admin_only
-        async def stories_handler(event):
-            """Handle /stories command - View all published stories with URLs"""
-            from telethon import TelegramClient
-            from telethon.sessions import StringSession
-            from telethon.tl.functions.stories import GetPeerStoriesRequest
-            from telethon.tl.types import InputPeerSelf
-
-            progress_msg = await event.respond("📖 Fetching stories from all accounts...")
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                if not accounts:
-                    await progress_msg.edit("❌ No active accounts.")
-                    return
-
-                all_stories = []
-                total_stories = 0
-
-                for account in accounts:
-                    try:
-                        client = TelegramClient(
-                            StringSession(account.session_string),
-                            settings.telegram.api_id,
-                            settings.telegram.api_hash
-                        )
-
-                        await client.connect()
-
-                        if not await client.is_user_authorized():
-                            continue
-
-                        # Get user info for username
-                        me = await client.get_me()
-                        username = me.username
-
-                        # Get stories
-                        try:
-                            result = await client(GetPeerStoriesRequest(peer=InputPeerSelf()))
-
-                            if result.stories and result.stories.stories:
-                                stories = result.stories.stories
-                                total_stories += len(stories)
-
-                                for story in stories[:3]:  # Show max 3 per account
-                                    story_id = story.id
-
-                                    # Build URL
-                                    if username:
-                                        url = f"https://t.me/{username}/s/{story_id}"
-                                    else:
-                                        url = f"Story #{story_id}"
-
-                                    # Get story info
-                                    from datetime import datetime
-                                    date_str = story.date.strftime("%Y-%m-%d %H:%M") if hasattr(story, 'date') else "Unknown"
-                                    views = getattr(story, 'views', 0) or 0
-
-                                    all_stories.append({
-                                        'account': account.phone_number or account.first_name,
-                                        'username': username,
-                                        'story_id': story_id,
-                                        'url': url,
-                                        'date': date_str,
-                                        'views': views,
-                                    })
-                        except Exception as se:
-                            logger.debug(f"No stories for {account.phone_number}: {se}")
-
-                        await client.disconnect()
-
-                    except Exception as e:
-                        logger.error(f"Error fetching stories for {account.phone_number}: {e}")
-
-                # Build response
-                if not all_stories:
-                    await progress_msg.edit(
-                        "📖 **No Active Stories**\n\n"
-                        "No stories are currently published on any account."
-                    )
-                    return
-
-                response = f"📖 **Published Stories** ({total_stories} total)\n\n"
-
-                for s in all_stories[:15]:
-                    if s['username']:
-                        response += f"👤 @{s['username']} ({s['account']})\n"
-                        response += f"   🔗 {s['url']}\n"
-                    else:
-                        response += f"👤 {s['account']}\n"
-                        response += f"   📝 Story #{s['story_id']}\n"
-
-                    response += f"   👁 {s['views']} views | 📅 {s['date']}\n\n"
-
-                if len(all_stories) > 15:
-                    response += f"_...and {len(all_stories) - 15} more stories_"
-
-                await progress_msg.edit(response)
-
-        @self.client.on(events.NewMessage(pattern="/delete_story"))
-        @admin_only
-        async def delete_story_handler(event):
-            """Handle /delete_story command - Delete stories from accounts"""
-            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
-            from telethon.tl.types import InputPeerSelf
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                if not accounts:
-                    await event.respond("❌ No active accounts.")
-                    return
-
-                # Build account data list
-                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
-
-            buttons = [
-                [Button.inline(f"🗑 {phone}", data=f"del_{acc_id}")]
-                for acc_id, phone, _ in account_data[:5]
-            ]
-            buttons.append([Button.inline("🗑 Delete ALL Stories", data="del_all")])
-            buttons.append([Button.inline("❌ Cancel", data="del_cancel")])
-
-            await event.respond(
-                "🗑 **Delete Stories**\n\n"
-                "Select account to delete story from:",
-                buttons=buttons
-            )
-
-        @self.client.on(events.CallbackQuery(pattern=r"del_(\d+)"))
-        @admin_only
-        async def delete_single_story(event):
-            """Delete story from single account"""
-            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
-            from telethon.tl.types import InputPeerSelf
-
-            account_id = int(event.data.decode().split("_")[1])
-
-            await event.edit("🗑 Deleting story...")
-
-            with get_db_context() as db:
-                account = db.query(Account).filter(Account.id == account_id).first()
-                if not account:
-                    await event.edit("❌ Account not found.")
-                    return
-                session_string = account.session_string
-                phone = account.phone_number
-
-            try:
-                client = TelegramClient(
-                    StringSession(session_string),
-                    settings.telegram.api_id,
-                    settings.telegram.api_hash
-                )
-                await client.connect()
-
-                # Get current stories
-                stories = await client(GetAllStoriesRequest(next="", hidden=False, state=""))
-                my_stories = []
-                if hasattr(stories, 'peer_stories'):
-                    for peer_story in stories.peer_stories:
-                        if hasattr(peer_story, 'stories'):
-                            my_stories = [s.id for s in peer_story.stories]
-                            break
-
-                if not my_stories:
-                    await client.disconnect()
-                    await event.edit(f"ℹ️ No active stories on {phone}")
-                    return
-
-                # Delete all stories
-                await client(DeleteStoriesRequest(peer=InputPeerSelf(), id=my_stories))
-                await client.disconnect()
-
-                await event.edit(
-                    f"✅ **Deleted {len(my_stories)} stories from {phone}**"
-                )
-
-            except Exception as e:
-                logger.error("Delete story error", error=str(e))
-                await event.edit(f"❌ Error: {str(e)}")
-
-        @self.client.on(events.CallbackQuery(pattern="del_all"))
-        @admin_only
-        async def delete_all_stories(event):
-            """Delete stories from ALL accounts"""
-            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
-            from telethon.tl.types import InputPeerSelf
-
-            await event.edit("🗑 Deleting stories from all accounts...")
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
-
-            results = []
-            for acc_id, phone, session_string in account_data:
-                try:
-                    client = TelegramClient(
-                        StringSession(session_string),
-                        settings.telegram.api_id,
-                        settings.telegram.api_hash
-                    )
-                    await client.connect()
-
-                    stories = await client(GetAllStoriesRequest(next="", hidden=False, state=""))
-                    my_stories = []
-                    if hasattr(stories, 'peer_stories'):
-                        for peer_story in stories.peer_stories:
-                            if hasattr(peer_story, 'stories'):
-                                my_stories = [s.id for s in peer_story.stories]
-                                break
-
-                    if my_stories:
-                        await client(DeleteStoriesRequest(peer=InputPeerSelf(), id=my_stories))
-                        results.append(f"✅ {phone}: {len(my_stories)} deleted")
-                    else:
-                        results.append(f"ℹ️ {phone}: no stories")
-
-                    await client.disconnect()
-
-                except Exception as e:
-                    results.append(f"❌ {phone}: {str(e)[:30]}")
-
-            await event.edit(
-                "🗑 **Delete Results**\n\n" + "\n".join(results)
-            )
-
-        @self.client.on(events.CallbackQuery(pattern="del_cancel"))
-        async def delete_cancel_handler(event):
-            """Handle delete cancel"""
-            await event.edit("❌ Cancelled.")
-
-        @self.client.on(events.NewMessage(pattern="/tdata"))
-        @admin_only
-        async def tdata_handler(event):
-            """Handle /tdata command - Smart tdata import"""
-            sender = await event.get_sender()
-            user_id = sender.id
-            args = event.text.split(maxsplit=1)
-
-            if len(args) < 2:
-                # Set state to wait for file upload
-                pending_tdata_imports[user_id] = {
-                    'step': 'waiting_file',
-                }
-
-                await event.respond(
-                    "📁 **SMART TDATA IMPORT**\n\n"
-                    "**Option 1: Upload ZIP file**\n"
-                    "Send a `.zip` file containing your tdata folders now.\n\n"
-                    "**Option 2: Server path**\n"
-                    "`/tdata /path/to/folder`\n\n"
-                    "🔍 **Smart Search finds:**\n"
-                    "• `key_datas` files (anywhere)\n"
-                    "• `tdata` folders (any depth)\n"
-                    "• Session files (D877F783...)\n"
-                    "• Phone number folders (+123...)\n\n"
-                    "📤 **Send your ZIP file now!**",
-                    buttons=[[Button.text("❌ Cancel")]]
-                )
-                return
-
-            tdata_path = args[1].strip()
-
-            # Use shared function to process tdata path
-            await process_tdata_folder(event, tdata_path)
-
-        @self.client.on(events.CallbackQuery(pattern="tdata_bulk_login"))
-        @admin_only
-        async def tdata_bulk_login_handler(event):
-            """Direct session import - NO verification codes needed"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            if user_id not in pending_tdata_imports:
-                await event.edit("❌ No sessions pending. Use /tdata first.")
-                return
-
-            import_state = pending_tdata_imports[user_id]
-            import_type = import_state.get('type', 'tdata')
-
-            import sys
-            sys.path.insert(0, '/opt/autostory')
-
-            results = []
-            success_count = 0
-            failed_count = 0
-
-            if import_type == 'session_files':
-                # Import .session files (Telethon sessions)
-                session_files = import_state.get('session_files', [])
-
-                if not session_files:
-                    await event.edit("❌ No session files found.")
-                    return
-
-                await event.edit(
-                    f"🔄 **Importing {len(session_files)} Telethon sessions...**\n\n"
-                    "Converting and validating sessions...\n"
-                    "This may take a moment..."
-                )
-
-                from tools.session_converter import convert_and_validate_session
-
-                for i, session_info in enumerate(session_files):
-                    try:
-                        session_path = session_info['session_path']
-                        phone_hint = session_info.get('phone')
-                        json_path = session_info.get('json_path')
-
-                        # Convert .session file to StringSession and validate
-                        # Uses original API credentials from JSON if available
-                        result = await convert_and_validate_session(
-                            session_path,
-                            settings.telegram.api_id,
-                            settings.telegram.api_hash,
-                            phone_hint=phone_hint,
-                            json_path=json_path,
-                            use_original_api=True
-                        )
-
-                        if result['success'] and result['session_string']:
-                            # Save to database
-                            with get_db_context() as db:
-                                phone = result['phone'] or phone_hint
-
-                                # Check if account exists
-                                existing = db.query(Account).filter(
-                                    Account.user_id == result['user_id']
-                                ).first()
-
-                                if not existing and phone:
-                                    existing = db.query(Account).filter(
-                                        Account.phone_number == phone
-                                    ).first()
-
-                                if existing:
-                                    existing.session_string = result['session_string']
-                                    existing.user_id = result['user_id']
-                                    existing.username = result.get('username')
-                                    existing.first_name = result.get('first_name')
-                                    existing.phone_number = phone or existing.phone_number
-                                    existing.status = AccountStatus.ACTIVE
-                                    results.append(f"✅ {phone or result['user_id']}: Updated")
-                                else:
-                                    new_account = Account(
-                                        phone_number=phone,
-                                        session_string=result['session_string'],
-                                        user_id=result['user_id'],
-                                        username=result.get('username'),
-                                        first_name=result.get('first_name'),
-                                        status=AccountStatus.ACTIVE,
-                                    )
-                                    db.add(new_account)
-                                    results.append(f"✅ {phone or result['user_id']}: Added")
-
-                                db.commit()
-
-                            success_count += 1
-                        else:
-                            error = result.get('error', 'Unknown error')[:30]
-                            results.append(f"❌ {phone_hint}: {error}")
-                            failed_count += 1
-
-                    except Exception as e:
-                        results.append(f"❌ {session_info.get('phone', 'unknown')}: {str(e)[:30]}")
-                        failed_count += 1
-
-            else:
-                # Import tdata accounts
-                accounts = import_state.get('accounts', [])
-
-                if not accounts:
-                    await event.edit("❌ No valid tdata accounts found.")
-                    return
-
-                await event.edit(
-                    f"🔄 **Converting {len(accounts)} tdata sessions...**\n\n"
-                    "Extracting sessions directly - NO verification codes needed!\n"
-                    "This may take a moment..."
-                )
-
-                from tools.tdata_session import convert_and_validate
-
-                for i, account in enumerate(accounts):
-                    try:
-                        phone = account.phone_number or account.folder_name
-                        tdata_path = str(account.path)
-
-                        # Convert tdata to Telethon session
-                        result = await convert_and_validate(
-                            tdata_path,
-                            settings.telegram.api_id,
-                            settings.telegram.api_hash
-                        )
-
-                        if result['success'] and result['session_string']:
-                            # Save to database
-                            with get_db_context() as db:
-                                # Check if account exists
-                                existing = db.query(Account).filter(
-                                    Account.phone_number == result['phone']
-                                ).first()
-
-                                if existing:
-                                    existing.session_string = result['session_string']
-                                    existing.user_id = result['user_id']
-                                    existing.username = result.get('username')
-                                    existing.first_name = result.get('first_name')
-                                    existing.status = AccountStatus.ACTIVE
-                                    results.append(f"✅ {result['phone']}: Updated")
-                                else:
-                                    new_account = Account(
-                                        phone_number=result['phone'] or phone,
-                                        session_string=result['session_string'],
-                                        user_id=result['user_id'],
-                                        username=result.get('username'),
-                                        first_name=result.get('first_name'),
-                                        status=AccountStatus.ACTIVE,
-                                    )
-                                    db.add(new_account)
-                                    results.append(f"✅ {result['phone'] or phone}: Added")
-
-                                db.commit()
-
-                            success_count += 1
-                        else:
-                            error = result.get('error', 'Unknown error')[:30]
-                            results.append(f"❌ {phone}: {error}")
-                            failed_count += 1
-
-                    except Exception as e:
-                        phone = account.phone_number or account.folder_name
-                        results.append(f"❌ {phone}: {str(e)[:30]}")
-                        failed_count += 1
-
-            # Clean up
-            if user_id in pending_tdata_imports:
-                del pending_tdata_imports[user_id]
-
-            # Send results
-            result_text = "\n".join(results[:20])
-            if len(results) > 20:
-                result_text += f"\n... and {len(results) - 20} more"
-
-            await self.client.send_message(
-                event.chat_id,
-                f"📊 **SESSION IMPORT COMPLETE**\n\n"
-                f"✅ Success: {success_count}\n"
-                f"❌ Failed: {failed_count}\n\n"
-                f"**Results:**\n{result_text}",
-                buttons=[
-                    [Button.text("📤 Publish All", resize=True)],
-                    [Button.text("📊 Stats")],
-                ]
-            )
-
-        @self.client.on(events.CallbackQuery(pattern="tdata_cancel"))
-        async def tdata_cancel_handler(event):
-            """Cancel tdata import"""
-            sender = await event.get_sender()
-            if sender.id in pending_tdata_imports:
-                del pending_tdata_imports[sender.id]
-            await event.edit("❌ Tdata import cancelled.")
-
-        async def process_tdata_folder(event, tdata_path: str):
-            """Common function to process tdata folder and .session files"""
-            progress_msg = await event.respond(
-                f"🔍 **Smart scanning:** `{tdata_path}`\n\n"
-                "Searching for tdata and .session files..."
-            )
-
-            try:
-                import sys
-                from pathlib import Path
-                sys.path.insert(0, '/opt/autostory')
-
-                # First, check for .session files (Telethon sessions)
-                from tools.session_converter import discover_session_files
-
-                session_files = discover_session_files(tdata_path)
-
-                if session_files:
-                    # Found .session files - use session converter
-                    await progress_msg.edit(
-                        f"📱 **Found {len(session_files)} Telethon session file(s)**\n\n"
-                        "These are ready for direct import!"
-                    )
-
-                    # Store session files for import
-                    pending_tdata_imports[event.sender_id] = {
-                        'session_files': session_files,
-                        'path': tdata_path,
-                        'type': 'session_files',
-                    }
-
-                    # Show session files
-                    files_list = "\n".join([
-                        f"• `{s['phone']}` ({round(s['size']/1024, 1)}KB)"
-                        for s in session_files[:15]
-                    ])
-                    if len(session_files) > 15:
-                        files_list += f"\n  _...and {len(session_files) - 15} more_"
-
-                    await event.respond(
-                        f"📱 **{len(session_files)} session files ready:**\n\n"
-                        f"{files_list}\n\n"
-                        "🔑 Click **Import Sessions** to import directly.\n"
-                        "**NO verification codes needed!**",
-                        buttons=[
-                            [Button.inline(f"🔑 Import Sessions ({len(session_files)})", data="tdata_bulk_login")],
-                            [Button.inline("❌ Cancel", data="tdata_cancel")]
-                        ]
-                    )
-                    return
-
-                # No session files found, try tdata analysis
-                from tools.tdata_analyzer import TdataAnalyzer
-
-                analyzer = TdataAnalyzer(tdata_path)
-                accounts = analyzer.discover_accounts()
-
-                # Build detailed report
-                valid_accounts = [a for a in accounts if a.is_valid]
-                invalid_accounts = [a for a in accounts if not a.is_valid]
-
-                report_lines = [
-                    "📊 **TDATA SCAN RESULTS**\n",
-                    f"📁 Path: `{tdata_path}`",
-                    f"🔍 Search: Recursive (all depths)\n",
-                    f"**Found:** {len(accounts)} tdata structure(s)",
-                    f"✅ Valid: {len(valid_accounts)}",
-                    f"❌ Invalid: {len(invalid_accounts)}\n",
-                ]
-
-                if valid_accounts:
-                    report_lines.append("**✅ Valid Accounts:**")
-                    for acc in valid_accounts[:15]:
-                        phone = acc.phone_number or "No phone"
-                        size_kb = round(acc.total_size / 1024, 1)
-                        report_lines.append(f"• `{acc.folder_name}` - {phone} ({size_kb}KB)")
-
-                    if len(valid_accounts) > 15:
-                        report_lines.append(f"  _...and {len(valid_accounts) - 15} more_")
-
-                if invalid_accounts:
-                    report_lines.append("\n**❌ Invalid (skipped):**")
-                    for acc in invalid_accounts[:5]:
-                        error = acc.validation_error or "Unknown error"
-                        report_lines.append(f"• `{acc.folder_name}`: {error[:40]}")
-
-                await progress_msg.edit("\n".join(report_lines))
-
-                # If valid accounts found, offer to import
-                if valid_accounts:
-                    pending_tdata_imports[event.sender_id] = {
-                        'accounts': valid_accounts,
-                        'path': tdata_path,
-                        'type': 'tdata',
-                    }
-
-                    # Show accounts and offer direct import
-                    accounts_list = "\n".join([
-                        f"• `{a.phone_number or a.folder_name}`"
-                        for a in valid_accounts[:10]
-                    ])
-                    if len(valid_accounts) > 10:
-                        accounts_list += f"\n  _...and {len(valid_accounts) - 10} more_"
-
-                    await event.respond(
-                        f"📱 **{len(valid_accounts)} accounts ready for import:**\n\n"
-                        f"{accounts_list}\n\n"
-                        "🔑 Click **Import Sessions** to extract sessions directly.\n"
-                        "**NO verification codes needed!**",
-                        buttons=[
-                            [Button.inline(f"🔑 Import Sessions ({len(valid_accounts)})", data="tdata_bulk_login")],
-                            [Button.inline("❌ Cancel", data="tdata_cancel")]
-                        ]
-                    )
-                else:
-                    await event.respond(
-                        "❌ **No valid tdata found**\n\n"
-                        "Make sure the folder contains:\n"
-                        "• `key_datas` or `key_data` file\n"
-                        "• `map` file\n"
-                        "• Session files (D877F783... pattern)"
-                    )
-
-            except FileNotFoundError:
-                await progress_msg.edit(f"❌ Path not found: `{tdata_path}`")
-            except PermissionError:
-                await progress_msg.edit(f"❌ Permission denied: `{tdata_path}`")
-            except Exception as e:
-                logger.error("Tdata analysis error", error=str(e))
-                await progress_msg.edit(f"❌ Error: {str(e)}")
-
-        @self.client.on(events.NewMessage(func=lambda e: e.document))
-        @admin_only
-        async def tdata_file_upload_handler(event):
-            """Handle file upload for tdata import"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            # Check if user is in tdata upload mode
-            if user_id not in pending_tdata_imports:
-                return
-
-            state = pending_tdata_imports[user_id]
-            if state.get('step') != 'waiting_file':
-                return
-
-            # Get file info
-            doc = event.document
-            file_name = None
-            for attr in doc.attributes:
-                if hasattr(attr, 'file_name'):
-                    file_name = attr.file_name
-                    break
-
-            if not file_name:
-                file_name = "uploaded_file"
-
-            # Check if it's a zip or folder-like file
-            is_zip = file_name.lower().endswith('.zip')
-
-            await event.respond(f"📥 Downloading `{file_name}`...")
-
-            try:
-                import os
-                import zipfile
-                import shutil
-                import tempfile
-
-                # Create temp directory for extraction
-                temp_dir = tempfile.mkdtemp(prefix="tdata_")
-                download_path = os.path.join(temp_dir, file_name)
-
-                # Download file
-                await event.download_media(file=download_path)
-
-                if is_zip:
-                    await event.respond("📦 Extracting ZIP file securely...")
-
-                    extract_dir = Path(temp_dir) / "extracted"
-                    extract_dir.mkdir(parents=True, exist_ok=True)
-
-                    # SECURITY FIX: Use secure ZIP extraction
-                    try:
-                        extracted = ZipSecurity.safe_extract(
-                            Path(download_path),
-                            extract_dir
-                        )
-                        logger.info("ZIP extracted securely",
-                                  files=len(extracted))
-                    except ValueError as e:
-                        await event.respond(
-                            f"❌ **ZIP file rejected**\n\n"
-                            f"Security check failed: {str(e)}\n\n"
-                            "Please ensure your ZIP file does not contain:\n"
-                            "• Paths with `..` (parent directory)\n"
-                            "• Absolute paths\n"
-                            "• System files"
-                        )
-                        if user_id in pending_tdata_imports:
-                            del pending_tdata_imports[user_id]
-                        return
-
-                    tdata_path = str(extract_dir)
-                else:
-                    # For non-zip files, use the temp directory
-                    tdata_path = temp_dir
-
-                # Clear waiting state
-                del pending_tdata_imports[user_id]
-
-                # Process the tdata folder
-                await process_tdata_folder(event, tdata_path)
-
-            except zipfile.BadZipFile:
-                await event.respond("❌ Invalid ZIP file. Please send a valid ZIP archive.")
-                if user_id in pending_tdata_imports:
-                    del pending_tdata_imports[user_id]
-            except Exception as e:
-                logger.error("Tdata file upload error", error=str(e))
-                await event.respond(f"❌ Error processing file: {str(e)}")
-                if user_id in pending_tdata_imports:
-                    del pending_tdata_imports[user_id]
-
-        @self.client.on(events.NewMessage(pattern="/publish_all"))
-        @admin_only
-        async def publish_all_handler(event):
-            """Handle /publish_all command - Publish to ALL accounts"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                users_count = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0,
-                    DiscoveredUser.username.isnot(None)
-                ).count()
-
-                if not accounts:
-                    await event.respond(
-                        "❌ **No active accounts**\n\n"
-                        "Use /login to add accounts first."
-                    )
-                    return
-
-                account_count = len(accounts)
-
-            pending_publishes[user_id] = {
-                "step": "waiting_caption_all",
-                "mode": "all",
-                "account_count": account_count,
-            }
-
-            await event.respond(
-                f"📤 **Publish to ALL {account_count} Accounts**\n\n"
-                f"👥 Users available for mention: {users_count}\n\n"
-                "📝 **Send the caption text** (or send `-` for no caption):\n\n"
-                "Example: `Check out our new product!`\n\n"
-                "Send /cancel to abort.",
-                buttons=[[Button.text("❌ Cancel")]]
-            )
-
-        @self.client.on(events.NewMessage(func=lambda e: e.text and not e.text.startswith("/") and not e.media))
-        @admin_only
-        async def caption_handler(event):
-            """Handle caption input for publish_all"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            if user_id not in pending_publishes:
-                return
-
-            state = pending_publishes[user_id]
-
-            if state.get("step") == "waiting_caption_all":
-                caption = event.text.strip()
-                if caption == "-":
-                    caption = ""
-
-                pending_publishes[user_id]["caption"] = caption
-                pending_publishes[user_id]["step"] = "waiting_media_all"
-
-                await event.respond(
-                    f"✅ Caption set: `{caption if caption else '(no caption)'}`\n\n"
-                    "📸 **Now send the media file:**\n"
-                    "• Photo (JPG, PNG)\n"
-                    "• Video (MP4, up to 15 seconds)\n\n"
-                    "Send /cancel to abort."
-                )
-
-        @self.client.on(events.NewMessage(func=lambda e: e.media))
-        @admin_only
-        async def media_handler_all(event):
-            """Handle media upload for story publishing (single or all)"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            if user_id not in pending_publishes:
-                return
-
-            state = pending_publishes[user_id]
-            step = state.get("step")
-
-            # Handle publish_all flow
-            if step == "waiting_media_all":
-                caption = state.get("caption", "")
-                del pending_publishes[user_id]
-
-                await event.respond("⏳ Downloading media...")
-
-                import os
-                os.makedirs("data/media", exist_ok=True)
-                media_path = await event.download_media(file="data/media/")
-
-                if not media_path:
-                    await event.respond("❌ Failed to download media.")
-                    return
-
-                # Get all active accounts
-                with get_db_context() as db:
-                    accounts = db.query(Account).filter(
-                        Account.status == AccountStatus.ACTIVE,
-                        Account.session_string.isnot(None)
-                    ).all()
-                    account_ids = [acc.id for acc in accounts]
-
-                await event.respond(
-                    f"🚀 **Publishing to {len(account_ids)} accounts...**\n\n"
-                    "This may take a moment..."
-                )
-
-                from src.publisher.story_publisher import story_publisher
-                import asyncio
-                import random
-
-                results = []
-                success_count = 0
-                flood_accounts = []
-
-                for i, acc_id in enumerate(account_ids):
-                    try:
-                        # Check if account is in flood wait
-                        with get_db_context() as db:
-                            acc = db.query(Account).filter(Account.id == acc_id).first()
-                            if acc and acc.flood_wait_until:
-                                from datetime import datetime
-                                if acc.flood_wait_until > datetime.utcnow():
-                                    results.append(f"⏳ Account #{acc_id}: Flood wait until {acc.flood_wait_until}")
-                                    flood_accounts.append(acc_id)
-                                    continue
-
-                        result = await story_publisher.publish_with_auto_mentions(
-                            media_path=media_path,
-                            caption=caption,
-                            mentions_count=5,
-                            account_id=acc_id,
-                        )
-
-                        if result["success"]:
-                            success_count += 1
-                            results.append(f"✅ Account #{acc_id}: Story {result.get('story_id')} ({result['mentions_added']} mentions)")
-                        else:
-                            error = result.get('error', 'Failed')
-                            # Check for flood error
-                            if 'FLOOD' in str(error).upper():
-                                flood_accounts.append(acc_id)
-                            results.append(f"❌ Account #{acc_id}: {str(error)[:40]}")
-
-                    except Exception as e:
-                        error_str = str(e)
-                        if 'FLOOD' in error_str.upper():
-                            flood_accounts.append(acc_id)
-                        results.append(f"❌ Account #{acc_id}: {error_str[:40]}")
-
-                    # Rate limit protection - random delay between accounts
-                    if i < len(account_ids) - 1:
-                        delay = random.uniform(3, 8)  # 3-8 seconds between accounts
-                        await asyncio.sleep(delay)
-
-                # Save media for auto-publish instead of deleting
-                try:
-                    import shutil
-                    auto_media_dir = "/opt/autostory/data/auto_media"
-                    os.makedirs(auto_media_dir, exist_ok=True)
-
-                    # Copy to auto_media folder with unique name
-                    import time
-                    ext = os.path.splitext(media_path)[1]
-                    auto_media_path = os.path.join(auto_media_dir, f"story_{int(time.time())}{ext}")
-                    shutil.copy2(media_path, auto_media_path)
-
-                    # Clean up original
-                    os.remove(media_path)
-
-                    logger.info("Media saved for auto-publish", path=auto_media_path)
-                except Exception as e:
-                    logger.error("Failed to save auto-publish media", error=str(e))
-                    try:
-                        os.remove(media_path)
-                    except:
-                        pass
-
-                flood_warning = ""
-                if flood_accounts:
-                    flood_warning = f"\n⚠️ {len(flood_accounts)} accounts have rate limits\n"
-
-                # Count auto-publish media
-                auto_media_count = len([f for f in os.listdir("/opt/autostory/data/auto_media")
-                                       if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))]) if os.path.exists("/opt/autostory/data/auto_media") else 0
-
-                await event.respond(
-                    f"📊 **Publish Results**\n\n"
-                    f"✅ Success: {success_count}/{len(account_ids)}{flood_warning}\n"
-                    f"📁 Auto-publish media: {auto_media_count} files\n\n"
-                    + "\n".join(results[:10]) +
-                    ("\n..." if len(results) > 10 else ""),
-                    buttons=[
-                        [Button.text("📤 Publish Again", resize=True)],
-                        [Button.text("🗑 Delete All Stories")],
-                        [Button.text("📊 Stats")],
-                    ]
-                )
-                return
-
-            # Handle single account publish flow (original)
-            if step == "waiting_media":
-                account_id = state.get("account_id")
-                if not account_id:
-                    return
-
-                del pending_publishes[user_id]
-
-                await event.respond("⏳ Downloading media...")
-
-                import os
-                os.makedirs("data/media", exist_ok=True)
-                media_path = await event.download_media(file="data/media/")
-
-                if not media_path:
-                    await event.respond("❌ Failed to download media. Please try again.")
-                    return
-
-                await event.respond(
-                    "🚀 **Publishing story...**\n\n"
-                    "• Uploading media\n"
-                    "• Adding mentions\n"
-                    "• Publishing to story"
-                )
-
-                try:
-                    from src.publisher.story_publisher import story_publisher
-
-                    result = await story_publisher.publish_with_auto_mentions(
-                        media_path=media_path,
-                        caption="",
-                        mentions_count=5,
-                        account_id=account_id,
-                    )
-
-                    try:
-                        os.remove(media_path)
-                    except:
-                        pass
-
-                    if result["success"]:
-                        await event.respond(
-                            "✅ **Story Published Successfully!**\n\n"
-                            f"📊 **Details:**\n"
-                            f"• Account: #{result['account_id']}\n"
-                            f"• Story ID: {result.get('story_id', 'N/A')}\n"
-                            f"• Mentions added: {result['mentions_added']}\n\n"
-                            "The story is now live!",
-                            buttons=[
-                                [Button.text("📤 Publish Another", resize=True)],
-                                [Button.text("📊 Stats")],
-                            ]
-                        )
-                    else:
-                        await event.respond(
-                            f"❌ **Publish Failed**\n\n"
-                            f"Error: {result.get('error', 'Unknown error')}\n\n"
-                            "Please try again."
-                        )
-
-                except Exception as e:
-                    logger.error("Publish error", error=str(e))
-                    await event.respond(
-                        f"❌ **Error publishing story**\n\n"
-                        f"{str(e)}\n\n"
-                        "Please try again."
-                    )
-
-        @self.client.on(events.NewMessage(pattern="🗑 Delete All Stories"))
-        @admin_only
-        async def delete_all_button_handler(event):
-            """Handle Delete All Stories button"""
-            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
-            from telethon.tl.types import InputPeerSelf
-
-            await event.respond("🗑 Deleting stories from all accounts...")
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
-
-            results = []
-            for acc_id, phone, session_string in account_data:
-                try:
-                    client = TelegramClient(
-                        StringSession(session_string),
-                        settings.telegram.api_id,
-                        settings.telegram.api_hash
-                    )
-                    await client.connect()
-
-                    stories = await client(GetAllStoriesRequest(next="", hidden=False, state=""))
-                    my_stories = []
-                    if hasattr(stories, 'peer_stories'):
-                        for peer_story in stories.peer_stories:
-                            if hasattr(peer_story, 'stories'):
-                                my_stories = [s.id for s in peer_story.stories]
-                                break
-
-                    if my_stories:
-                        await client(DeleteStoriesRequest(peer=InputPeerSelf(), id=my_stories))
-                        results.append(f"✅ {phone}: {len(my_stories)} deleted")
-                    else:
-                        results.append(f"ℹ️ {phone}: no stories")
-
-                    await client.disconnect()
-
-                except Exception as e:
-                    results.append(f"❌ {phone}: {str(e)[:30]}")
-
-            await event.respond(
-                "🗑 **Delete Results**\n\n" + "\n".join(results)
-            )
-
-        @self.client.on(events.NewMessage(pattern="📤 Publish Again"))
-        @admin_only
-        async def publish_again_handler(event):
-            """Handle Publish Again button"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-                account_count = len(accounts)
-                users_count = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0,
-                    DiscoveredUser.username.isnot(None)
-                ).count()
-
-            pending_publishes[user_id] = {
-                "step": "waiting_caption_all",
-                "mode": "all",
-                "account_count": account_count,
-            }
-
-            await event.respond(
-                f"📤 **Publish to ALL {account_count} Accounts**\n\n"
-                f"👥 Users available for mention: {users_count}\n\n"
-                "📝 **Send the caption text** (or send `-` for no caption):\n\n"
-                "Send /cancel to abort.",
-                buttons=[[Button.text("❌ Cancel")]]
-            )
-
         @self.client.on(events.NewMessage(pattern="/help"))
         @admin_only
         async def help_handler(event):
             """Handle /help command"""
             await event.respond(
-                "📖 **STORYFLEET - Story Marketing Bot**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📱 **ACCOUNTS**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "/accounts - List all accounts\n"
-                "/login - Add account (phone)\n"
-                "/tdata - Import sessions (ZIP)\n"
-                "/set_photo - Set profile photo\n"
-                "/delete_photo - Remove photos\n"
-                "/set_name - Set display name\n"
-                "/set_username - Set username\n"
-                "/get_code - Get login code\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📤 **PUBLISH STORIES**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "/publish - Publish (1 account)\n"
-                "/publish_all - Publish (ALL)\n"
-                "/stories - View published\n"
-                "/delete_story - Delete stories\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🤖 **AUTO-PUBLISH**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "/auto_on - Enable (1/day)\n"
-                "/auto_off - Disable\n"
-                "/auto_status - View status\n"
-                "/auto_config - Settings\n"
-                "/auto_media - Upload media\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔍 **USERS & STATS**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "/scan - Scan group for users\n"
-                "/users - View user list\n"
-                "/stats - Quick statistics\n"
-                "/monitor - Full analytics\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "/cancel - Cancel operation"
+                "📖 **STORYFLEET Commands**\n\n"
+                "**Account Management**\n"
+                "📱 /login - Add new Telegram account\n"
+                "👥 /accounts - List all accounts\n"
+                "/cancel - Cancel current operation\n\n"
+                "**Statistics**\n"
+                "📊 /stats - View overall statistics\n\n"
+                "**Stories**\n"
+                "📤 /publish - Publish a story\n\n"
+                "**Discovery**\n"
+                "🔍 /scan - Scan channel for users\n"
+                "/users - View available users\n\n"
+                "**Campaigns**\n"
+                "🎯 /campaigns - View campaigns\n\n"
+                "**Other**\n"
+                "/start - Welcome message\n"
+                "/help - This help message"
             )
-
-        # ============ AUTO-PUBLISH COMMANDS ============
-
-        @self.client.on(events.NewMessage(pattern="/auto_on"))
-        @admin_only
-        async def auto_on_handler(event):
-            """Enable auto-publish"""
-            config = load_auto_publish_config()
-            config["enabled"] = True
-            save_auto_publish_config(config)
-
-            await event.respond(
-                "🤖 **Auto-Publish ENABLED**\n\n"
-                f"📊 Stories per day: {config['stories_per_day']}\n"
-                f"⏰ Interval: Every {config['interval_hours']} hours\n"
-                f"👥 Mentions: {config['mentions_per_story']} per story\n\n"
-                "Use /auto_status to check status\n"
-                "Use /auto_off to disable"
-            )
-
-        @self.client.on(events.NewMessage(pattern="/auto_off"))
-        @admin_only
-        async def auto_off_handler(event):
-            """Disable auto-publish"""
-            config = load_auto_publish_config()
-            config["enabled"] = False
-            save_auto_publish_config(config)
-
-            await event.respond(
-                "⏹ **Auto-Publish DISABLED**\n\n"
-                "Stories will no longer be published automatically.\n"
-                "Use /auto_on to enable again."
-            )
-
-        @self.client.on(events.NewMessage(pattern="/auto_status"))
-        @admin_only
-        async def auto_status_handler(event):
-            """Show auto-publish status"""
-            config = load_auto_publish_config()
-
-            status = "🟢 ENABLED" if config.get("enabled") else "🔴 DISABLED"
-
-            # Count media files
-            import os
-            media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
-            media_count = 0
-            if os.path.exists(media_folder):
-                media_count = len([f for f in os.listdir(media_folder)
-                                  if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))])
-
-            # Get account count
-            with get_db_context() as db:
-                account_count = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE
-                ).count()
-
-            await event.respond(
-                f"📊 **Auto-Publish Status**\n\n"
-                f"**Status:** {status}\n"
-                f"**Stories/day:** {config.get('stories_per_day', 2)}\n"
-                f"**Interval:** Every {config.get('interval_hours', 12)} hours\n"
-                f"**Mentions:** {config.get('mentions_per_story', 5)} per story\n\n"
-                f"**Caption:**\n`{config.get('caption_template', 'No caption')[:100]}`\n\n"
-                f"**Resources:**\n"
-                f"📁 Media files: {media_count}\n"
-                f"👥 Active accounts: {account_count}\n\n"
-                "Use /auto_config to change settings"
-            )
-
-        @self.client.on(events.NewMessage(pattern="/auto_config"))
-        @admin_only
-        async def auto_config_handler(event):
-            """Configure auto-publish settings"""
-            config = load_auto_publish_config()
-
-            await event.respond(
-                "⚙️ **Auto-Publish Configuration**\n\n"
-                "Send command with setting to change:\n\n"
-                "`/auto_caption Your caption text here`\n"
-                "  Set the caption template\n\n"
-                "`/auto_interval 12`\n"
-                "  Hours between stories (default: 12)\n\n"
-                "`/auto_mentions 5`\n"
-                "  Mentions per story (default: 5)\n\n"
-                "`/auto_stories 2`\n"
-                "  Stories per day per account (default: 2)\n\n"
-                f"**Current settings:**\n"
-                f"• Caption: `{config.get('caption_template', '')[:50]}...`\n"
-                f"• Interval: {config.get('interval_hours', 12)} hours\n"
-                f"• Mentions: {config.get('mentions_per_story', 5)}\n"
-                f"• Stories/day: {config.get('stories_per_day', 2)}"
-            )
-
-        @self.client.on(events.NewMessage(pattern=r"/auto_caption\s+(.+)"))
-        @admin_only
-        async def auto_caption_handler(event):
-            """Set auto-publish caption"""
-            caption = event.pattern_match.group(1)
-            config = load_auto_publish_config()
-            config["caption_template"] = caption
-            save_auto_publish_config(config)
-
-            await event.respond(
-                f"✅ **Caption Updated**\n\n"
-                f"New caption:\n`{caption}`"
-            )
-
-        @self.client.on(events.NewMessage(pattern=r"/auto_interval\s+(\d+)"))
-        @admin_only
-        async def auto_interval_handler(event):
-            """Set auto-publish interval"""
-            hours = int(event.pattern_match.group(1))
-            config = load_auto_publish_config()
-            config["interval_hours"] = hours
-            save_auto_publish_config(config)
-
-            await event.respond(f"✅ **Interval set to {hours} hours**")
-
-        @self.client.on(events.NewMessage(pattern=r"/auto_mentions\s+(\d+)"))
-        @admin_only
-        async def auto_mentions_handler(event):
-            """Set mentions per story"""
-            mentions = int(event.pattern_match.group(1))
-            config = load_auto_publish_config()
-            config["mentions_per_story"] = mentions
-            save_auto_publish_config(config)
-
-            await event.respond(f"✅ **Mentions set to {mentions} per story**")
-
-        @self.client.on(events.NewMessage(pattern=r"/auto_stories\s+(\d+)"))
-        @admin_only
-        async def auto_stories_handler(event):
-            """Set stories per day"""
-            stories = int(event.pattern_match.group(1))
-            config = load_auto_publish_config()
-            config["stories_per_day"] = stories
-            save_auto_publish_config(config)
-
-            await event.respond(f"✅ **Stories per day set to {stories}**")
-
-        # Store for pending auto media uploads
-        pending_auto_media: Dict[int, bool] = {}
-
-        @self.client.on(events.NewMessage(pattern="/auto_media"))
-        @admin_only
-        async def auto_media_handler(event):
-            """Upload media for auto-publish"""
-            sender = await event.get_sender()
-            pending_auto_media[sender.id] = True
-
-            config = load_auto_publish_config()
-            media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
-
-            import os
-            os.makedirs(media_folder, exist_ok=True)
-            media_count = len([f for f in os.listdir(media_folder)
-                              if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))])
-
-            await event.respond(
-                "📁 **Upload Auto-Publish Media**\n\n"
-                f"Current media files: {media_count}\n\n"
-                "Send photos or videos to add to auto-publish pool.\n"
-                "These will be used randomly for auto stories.\n\n"
-                "_Send /cancel to stop uploading_"
-            )
-
-        @self.client.on(events.NewMessage(func=lambda e: e.media and not e.photo))
-        @admin_only
-        async def auto_media_upload_handler(event):
-            """Handle media upload for auto-publish (videos)"""
-            sender = await event.get_sender()
-            if sender.id not in pending_auto_media:
-                return
-
-            config = load_auto_publish_config()
-            media_folder = config.get("media_folder", "/opt/autostory/data/auto_media")
-
-            import os
-            os.makedirs(media_folder, exist_ok=True)
-
-            # Download media
-            file_path = await event.download_media(file=media_folder)
-
-            if file_path:
-                await event.respond(f"✅ Media saved: `{os.path.basename(file_path)}`\n\nSend more or /cancel")
-            else:
-                await event.respond("❌ Failed to save media")
-
-        # ============ END AUTO-PUBLISH COMMANDS ============
-
-        # Store for pending photo uploads
-        pending_photo_uploads: Dict[int, bool] = {}
-
-        @self.client.on(events.NewMessage(pattern="/set_photo"))
-        @admin_only
-        async def set_photo_handler(event):
-            """Handle /set_photo command - Set profile photo for all accounts"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            pending_photo_uploads[user_id] = True
-
-            await event.respond(
-                "🖼 **Set Profile Photo**\n\n"
-                "Send me a photo and I'll set it as the profile picture "
-                "for ALL active accounts.\n\n"
-                "📷 **Send a photo now...**\n\n"
-                "_Send /cancel to abort_"
-            )
-
-        @self.client.on(events.NewMessage(func=lambda e: e.photo))
-        @admin_only
-        async def photo_upload_handler(event):
-            """Handle photo upload for profile setting"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            # Check if user is in photo upload mode
-            if user_id not in pending_photo_uploads:
-                return
-
-            del pending_photo_uploads[user_id]
-
-            progress_msg = await event.respond("📥 Downloading photo...")
-
-            try:
-                import os
-                import tempfile
-
-                # Download the photo
-                photo_path = await event.download_media(
-                    file=os.path.join(tempfile.gettempdir(), "profile_photo.jpg")
-                )
-
-                if not photo_path:
-                    await progress_msg.edit("❌ Failed to download photo")
-                    return
-
-                await progress_msg.edit("🔄 Setting profile photo for all accounts...")
-
-                # Get all active accounts
-                with get_db_context() as db:
-                    accounts = db.query(Account).filter(
-                        Account.status == AccountStatus.ACTIVE,
-                        Account.session_string.isnot(None)
-                    ).all()
-
-                    if not accounts:
-                        await progress_msg.edit("❌ No active accounts found")
-                        return
-
-                    success_count = 0
-                    failed_count = 0
-                    results = []
-
-                    for account in accounts:
-                        try:
-                            # Connect to account
-                            from telethon import TelegramClient
-                            from telethon.sessions import StringSession
-                            from telethon.tl.functions.photos import UploadProfilePhotoRequest
-
-                            client = TelegramClient(
-                                StringSession(account.session_string),
-                                settings.telegram.api_id,
-                                settings.telegram.api_hash
-                            )
-
-                            await client.connect()
-
-                            if not await client.is_user_authorized():
-                                results.append(f"❌ {account.phone_number}: Not authorized")
-                                failed_count += 1
-                                await client.disconnect()
-                                continue
-
-                            # Upload and set profile photo
-                            uploaded_file = await client.upload_file(photo_path)
-                            await client(UploadProfilePhotoRequest(file=uploaded_file))
-
-                            results.append(f"✅ {account.phone_number}: Photo set")
-                            success_count += 1
-
-                            await client.disconnect()
-
-                        except Exception as e:
-                            error_msg = str(e)[:30]
-                            results.append(f"❌ {account.phone_number}: {error_msg}")
-                            failed_count += 1
-
-                # Clean up temp file
-                try:
-                    os.remove(photo_path)
-                except:
-                    pass
-
-                # Send results
-                result_text = "\n".join(results[:15])
-                if len(results) > 15:
-                    result_text += f"\n... and {len(results) - 15} more"
-
-                await self.client.send_message(
-                    event.chat_id,
-                    f"🖼 **PROFILE PHOTO UPDATE COMPLETE**\n\n"
-                    f"✅ Success: {success_count}\n"
-                    f"❌ Failed: {failed_count}\n\n"
-                    f"**Results:**\n{result_text}"
-                )
-
-            except Exception as e:
-                logger.error("Set photo error", error=str(e))
-                await progress_msg.edit(f"❌ Error: {str(e)}")
-
-        @self.client.on(events.NewMessage(pattern="/delete_photo"))
-        @admin_only
-        async def delete_photo_handler(event):
-            """Handle /delete_photo command - Delete profile photos from all accounts"""
-            progress_msg = await event.respond("🗑 **Deleting profile photos from all accounts...**")
-
-            try:
-                from telethon import TelegramClient
-                from telethon.sessions import StringSession
-                from telethon.tl.functions.photos import DeletePhotosRequest, GetUserPhotosRequest
-                from telethon.tl.types import InputPhoto
-
-                with get_db_context() as db:
-                    accounts = db.query(Account).filter(
-                        Account.status == AccountStatus.ACTIVE,
-                        Account.session_string.isnot(None)
-                    ).all()
-
-                    if not accounts:
-                        await progress_msg.edit("❌ No active accounts found")
-                        return
-
-                    success_count = 0
-                    failed_count = 0
-                    results = []
-
-                    for account in accounts:
-                        try:
-                            client = TelegramClient(
-                                StringSession(account.session_string),
-                                settings.telegram.api_id,
-                                settings.telegram.api_hash
-                            )
-
-                            await client.connect()
-
-                            if not await client.is_user_authorized():
-                                results.append(f"❌ {account.phone_number}: Not authorized")
-                                failed_count += 1
-                                await client.disconnect()
-                                continue
-
-                            # Get all profile photos
-                            photos = await client(GetUserPhotosRequest(
-                                user_id='me',
-                                offset=0,
-                                max_id=0,
-                                limit=100
-                            ))
-
-                            if photos.photos:
-                                # Delete all photos
-                                photo_ids = [
-                                    InputPhoto(
-                                        id=photo.id,
-                                        access_hash=photo.access_hash,
-                                        file_reference=photo.file_reference
-                                    )
-                                    for photo in photos.photos
-                                ]
-
-                                await client(DeletePhotosRequest(id=photo_ids))
-                                results.append(f"✅ {account.phone_number}: Deleted {len(photo_ids)} photos")
-                                success_count += 1
-                            else:
-                                results.append(f"⚪ {account.phone_number}: No photos to delete")
-                                success_count += 1
-
-                            await client.disconnect()
-
-                        except Exception as e:
-                            error_msg = str(e)[:30]
-                            results.append(f"❌ {account.phone_number}: {error_msg}")
-                            failed_count += 1
-
-                # Send results
-                result_text = "\n".join(results[:15])
-                if len(results) > 15:
-                    result_text += f"\n... and {len(results) - 15} more"
-
-                await self.client.send_message(
-                    event.chat_id,
-                    f"🗑 **PROFILE PHOTOS DELETED**\n\n"
-                    f"✅ Success: {success_count}\n"
-                    f"❌ Failed: {failed_count}\n\n"
-                    f"**Results:**\n{result_text}"
-                )
-
-            except Exception as e:
-                logger.error("Delete photo error", error=str(e))
-                await progress_msg.edit(f"❌ Error: {str(e)}")
-
-        # Store for pending code capture
-        pending_code_capture: Dict[int, Dict[str, Any]] = {}
-
-        @self.client.on(events.NewMessage(pattern="/get_code"))
-        @admin_only
-        async def get_code_handler(event):
-            """Handle /get_code command - Capture login codes for phone login"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                if not accounts:
-                    await event.respond("❌ No active accounts found")
-                    return
-
-                # Create buttons for each account
-                buttons = []
-                for acc in accounts[:10]:
-                    name = acc.first_name or acc.phone_number or f"Account {acc.id}"
-                    buttons.append([Button.inline(
-                        f"📱 {name} ({acc.phone_number})",
-                        data=f"getcode_{acc.id}"
-                    )])
-
-                buttons.append([Button.inline("❌ Cancel", data="getcode_cancel")])
-
-                await event.respond(
-                    "📲 **Get Login Code for Phone**\n\n"
-                    "Select an account to capture its login code.\n"
-                    "Then try to login on your phone with that number.\n\n"
-                    "The code will appear here!",
-                    buttons=buttons
-                )
-
-        @self.client.on(events.CallbackQuery(pattern=r"getcode_(\d+)"))
-        @admin_only
-        async def getcode_select_handler(event):
-            """Handle account selection for code capture"""
-            sender = await event.get_sender()
-            user_id = sender.id
-            account_id = int(event.pattern_match.group(1))
-
-            await event.edit("🔄 Connecting to account...")
-
-            with get_db_context() as db:
-                account = db.query(Account).filter(Account.id == account_id).first()
-
-                if not account:
-                    await event.edit("❌ Account not found")
-                    return
-
-                phone = account.phone_number
-                session_string = account.session_string
-
-            try:
-                from telethon import TelegramClient
-                from telethon.sessions import StringSession
-
-                # Connect to the account
-                user_client = TelegramClient(
-                    StringSession(session_string),
-                    settings.telegram.api_id,
-                    settings.telegram.api_hash
-                )
-
-                await user_client.connect()
-
-                if not await user_client.is_user_authorized():
-                    await event.edit("❌ Account session expired")
-                    await user_client.disconnect()
-                    return
-
-                # Store client for code capture
-                pending_code_capture[user_id] = {
-                    'client': user_client,
-                    'phone': phone,
-                    'account_id': account_id,
-                }
-
-                await self.client.send_message(
-                    event.chat_id,
-                    f"✅ **Ready to capture login code!**\n\n"
-                    f"📱 Account: `{phone}`\n\n"
-                    "**Now on your phone:**\n"
-                    "1. Open Telegram app\n"
-                    "2. Tap 'Start Messaging'\n"
-                    "3. Enter phone: `{phone}`\n"
-                    "4. Wait for code to appear here!\n\n"
-                    "⏳ Listening for codes... (60 seconds timeout)\n\n"
-                    "_Send /cancel_code to stop_"
-                )
-
-                # Listen for messages from Telegram (user 777000)
-                import asyncio
-
-                @user_client.on(events.NewMessage(from_users=777000))
-                async def code_handler(msg_event):
-                    """Capture login code from Telegram"""
-                    text = msg_event.text or ""
-
-                    # Extract code from message
-                    import re
-                    code_match = re.search(r'(\d{5,6})', text)
-
-                    if code_match:
-                        code = code_match.group(1)
-                        await self.client.send_message(
-                            event.chat_id,
-                            f"🔑 **LOGIN CODE RECEIVED!**\n\n"
-                            f"📱 Account: `{phone}`\n"
-                            f"🔢 Code: `{code}`\n\n"
-                            "Enter this code on your phone now!"
-                        )
-
-                # Wait for code with timeout
-                try:
-                    await asyncio.wait_for(
-                        user_client.run_until_disconnected(),
-                        timeout=60.0
-                    )
-                except asyncio.TimeoutError:
-                    await self.client.send_message(
-                        event.chat_id,
-                        "⏰ Timeout - No code received in 60 seconds.\n"
-                        "Try `/get_code` again when ready."
-                    )
-                finally:
-                    if user_id in pending_code_capture:
-                        try:
-                            await pending_code_capture[user_id]['client'].disconnect()
-                        except:
-                            pass
-                        del pending_code_capture[user_id]
-
-            except Exception as e:
-                logger.error("Get code error", error=str(e))
-                await self.client.send_message(
-                    event.chat_id,
-                    f"❌ Error: {str(e)}"
-                )
-
-        @self.client.on(events.CallbackQuery(pattern="getcode_cancel"))
-        async def getcode_cancel_handler(event):
-            """Cancel code capture"""
-            await event.edit("❌ Code capture cancelled")
-
-        @self.client.on(events.NewMessage(pattern="/cancel_code"))
-        @admin_only
-        async def cancel_code_handler(event):
-            """Cancel active code capture"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            if user_id in pending_code_capture:
-                try:
-                    await pending_code_capture[user_id]['client'].disconnect()
-                except:
-                    pass
-                del pending_code_capture[user_id]
-                await event.respond("✅ Code capture stopped")
-            else:
-                await event.respond("No active code capture")
-
-        # Store for pending name/username updates
-        pending_name_updates: Dict[int, str] = {}
-        pending_username_updates: Dict[int, str] = {}
-
-        @self.client.on(events.NewMessage(pattern="/set_name"))
-        @admin_only
-        async def set_name_handler(event):
-            """Handle /set_name command - Set name for all accounts"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            # Check if name provided in command
-            args = event.text.split(maxsplit=1)
-            if len(args) > 1:
-                name = args[1].strip()
-                await process_set_name(event, name)
-            else:
-                pending_name_updates[user_id] = True
-                await event.respond(
-                    "📝 **Set Account Name**\n\n"
-                    "Send me the name to set for ALL accounts.\n\n"
-                    "Example: `John` or `John Smith`\n\n"
-                    "_Send /cancel to abort_"
-                )
-
-        @self.client.on(events.NewMessage(func=lambda e: e.text and not e.text.startswith('/')))
-        @admin_only
-        async def text_input_handler(event):
-            """Handle text input for name/username updates"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            # Check for pending name update
-            if user_id in pending_name_updates:
-                del pending_name_updates[user_id]
-                await process_set_name(event, event.text.strip())
-                return
-
-            # Check for pending username update
-            if user_id in pending_username_updates:
-                del pending_username_updates[user_id]
-                await process_set_username(event, event.text.strip())
-                return
-
-        async def process_set_name(event, name: str):
-            """Process setting name for all accounts"""
-            # Parse first and last name
-            parts = name.split(maxsplit=1)
-            first_name = parts[0]
-            last_name = parts[1] if len(parts) > 1 else ""
-
-            progress_msg = await event.respond(f"🔄 Setting name '{name}' for all accounts...")
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                if not accounts:
-                    await progress_msg.edit("❌ No active accounts found")
-                    return
-
-                success_count = 0
-                failed_count = 0
-                results = []
-
-                for account in accounts:
-                    try:
-                        from telethon import TelegramClient
-                        from telethon.sessions import StringSession
-                        from telethon.tl.functions.account import UpdateProfileRequest
-
-                        client = TelegramClient(
-                            StringSession(account.session_string),
-                            settings.telegram.api_id,
-                            settings.telegram.api_hash
-                        )
-
-                        await client.connect()
-
-                        if not await client.is_user_authorized():
-                            results.append(f"❌ {account.phone_number}: Not authorized")
-                            failed_count += 1
-                            await client.disconnect()
-                            continue
-
-                        # Update profile name
-                        await client(UpdateProfileRequest(
-                            first_name=first_name,
-                            last_name=last_name
-                        ))
-
-                        # Update in database
-                        account.first_name = first_name
-                        account.last_name = last_name
-                        db.commit()
-
-                        results.append(f"✅ {account.phone_number}: {first_name} {last_name}")
-                        success_count += 1
-
-                        await client.disconnect()
-
-                        # Rate limit protection - wait between accounts
-                        import asyncio
-                        await asyncio.sleep(1)
-
-                    except Exception as e:
-                        error_msg = str(e)[:30]
-                        results.append(f"❌ {account.phone_number}: {error_msg}")
-                        failed_count += 1
-
-            result_text = "\n".join(results[:15])
-            if len(results) > 15:
-                result_text += f"\n... and {len(results) - 15} more"
-
-            await self.client.send_message(
-                event.chat_id,
-                f"📝 **NAME UPDATE COMPLETE**\n\n"
-                f"✅ Success: {success_count}\n"
-                f"❌ Failed: {failed_count}\n\n"
-                f"**Results:**\n{result_text}"
-            )
-
-        @self.client.on(events.NewMessage(pattern="/set_username"))
-        @admin_only
-        async def set_username_handler(event):
-            """Handle /set_username command - Set username for all accounts"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            # Check if username provided in command
-            args = event.text.split(maxsplit=1)
-            if len(args) > 1:
-                username = args[1].strip().replace("@", "")
-                await process_set_username(event, username)
-            else:
-                pending_username_updates[user_id] = True
-                await event.respond(
-                    "📝 **Set Account Username**\n\n"
-                    "Send me the base username. A random suffix will be added "
-                    "to make each account unique.\n\n"
-                    "Example: `cryptotrader` → cryptotrader_a1b2, cryptotrader_c3d4\n\n"
-                    "_Send /cancel to abort_"
-                )
-
-        async def process_set_username(event, base_username: str):
-            """Process setting username for all accounts"""
-            import random
-            import string
-
-            progress_msg = await event.respond(f"🔄 Setting usernames based on '{base_username}' for all accounts...")
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                if not accounts:
-                    await progress_msg.edit("❌ No active accounts found")
-                    return
-
-                success_count = 0
-                failed_count = 0
-                results = []
-
-                for account in accounts:
-                    try:
-                        from telethon import TelegramClient
-                        from telethon.sessions import StringSession
-                        from telethon.tl.functions.account import UpdateUsernameRequest
-
-                        client = TelegramClient(
-                            StringSession(account.session_string),
-                            settings.telegram.api_id,
-                            settings.telegram.api_hash
-                        )
-
-                        await client.connect()
-
-                        if not await client.is_user_authorized():
-                            results.append(f"❌ {account.phone_number}: Not authorized")
-                            failed_count += 1
-                            await client.disconnect()
-                            continue
-
-                        # Generate unique username with random suffix
-                        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-                        new_username = f"{base_username}_{suffix}"
-
-                        # Try to set username (may fail if taken)
-                        try:
-                            await client(UpdateUsernameRequest(username=new_username))
-
-                            # Update in database
-                            account.username = new_username
-                            db.commit()
-
-                            results.append(f"✅ {account.phone_number}: @{new_username}")
-                            success_count += 1
-                        except Exception as ue:
-                            if "USERNAME_OCCUPIED" in str(ue):
-                                # Try again with different suffix
-                                suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-                                new_username = f"{base_username}_{suffix}"
-                                await client(UpdateUsernameRequest(username=new_username))
-                                account.username = new_username
-                                db.commit()
-                                results.append(f"✅ {account.phone_number}: @{new_username}")
-                                success_count += 1
-                            else:
-                                raise ue
-
-                        await client.disconnect()
-
-                        # Rate limit protection - wait between accounts
-                        import asyncio
-                        await asyncio.sleep(2)
-
-                    except Exception as e:
-                        error_msg = str(e)[:30]
-                        results.append(f"❌ {account.phone_number}: {error_msg}")
-                        failed_count += 1
-
-            result_text = "\n".join(results[:15])
-            if len(results) > 15:
-                result_text += f"\n... and {len(results) - 15} more"
-
-            await self.client.send_message(
-                event.chat_id,
-                f"📝 **USERNAME UPDATE COMPLETE**\n\n"
-                f"✅ Success: {success_count}\n"
-                f"❌ Failed: {failed_count}\n\n"
-                f"**Results:**\n{result_text}"
-            )
-
-        # ============ ADDITIONAL UTILITY COMMANDS ============
-
-        @self.client.on(events.NewMessage(pattern=r"/set_bio\s+(.+)"))
-        @admin_only
-        async def set_bio_handler(event):
-            """Set bio/about for all accounts"""
-            bio_text = event.pattern_match.group(1)
-
-            progress_msg = await event.respond(f"📝 Setting bio for all accounts...")
-
-            try:
-                from telethon import TelegramClient
-                from telethon.sessions import StringSession
-                from telethon.tl.functions.account import UpdateProfileRequest
-
-                with get_db_context() as db:
-                    accounts = db.query(Account).filter(
-                        Account.status == AccountStatus.ACTIVE,
-                        Account.session_string.isnot(None)
-                    ).all()
-
-                    if not accounts:
-                        await progress_msg.edit("❌ No active accounts found")
-                        return
-
-                    success_count = 0
-                    failed_count = 0
-
-                    for account in accounts:
-                        try:
-                            client = TelegramClient(
-                                StringSession(account.session_string),
-                                settings.telegram.api_id,
-                                settings.telegram.api_hash
-                            )
-
-                            await client.connect()
-
-                            if await client.is_user_authorized():
-                                await client(UpdateProfileRequest(about=bio_text))
-                                success_count += 1
-                            else:
-                                failed_count += 1
-
-                            await client.disconnect()
-                            await asyncio.sleep(1)
-
-                        except Exception as e:
-                            failed_count += 1
-
-                await progress_msg.edit(
-                    f"📝 **BIO UPDATE COMPLETE**\n\n"
-                    f"✅ Success: {success_count}\n"
-                    f"❌ Failed: {failed_count}\n\n"
-                    f"Bio: `{bio_text[:50]}...`"
-                )
-
-            except Exception as e:
-                await progress_msg.edit(f"❌ Error: {str(e)}")
-
-        @self.client.on(events.NewMessage(pattern="/reset_mentions"))
-        @admin_only
-        async def reset_mentions_handler(event):
-            """Reset all users to be mentionable again"""
-            with get_db_context() as db:
-                count = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned > 0
-                ).update({DiscoveredUser.times_mentioned: 0})
-                db.commit()
-
-                await event.respond(
-                    f"🔄 **MENTIONS RESET**\n\n"
-                    f"Reset {count} users to be mentionable again.\n"
-                    f"They can now be mentioned in new stories."
-                )
-
-        @self.client.on(events.NewMessage(pattern="/account_health"))
-        @admin_only
-        async def account_health_handler(event):
-            """Check health of all accounts"""
-            progress_msg = await event.respond("🏥 Checking account health...")
-
-            try:
-                from telethon import TelegramClient
-                from telethon.sessions import StringSession
-
-                with get_db_context() as db:
-                    accounts = db.query(Account).filter(
-                        Account.status == AccountStatus.ACTIVE,
-                        Account.session_string.isnot(None)
-                    ).all()
-
-                    if not accounts:
-                        await progress_msg.edit("❌ No active accounts found")
-                        return
-
-                    results = []
-                    healthy = 0
-                    unhealthy = 0
-
-                    for account in accounts:
-                        try:
-                            client = TelegramClient(
-                                StringSession(account.session_string),
-                                settings.telegram.api_id,
-                                settings.telegram.api_hash
-                            )
-
-                            await client.connect()
-                            me = await client.get_me()
-
-                            if me:
-                                premium = "⭐" if me.premium else ""
-                                results.append(f"✅ {account.phone_number} {premium}: {me.first_name}")
-                                healthy += 1
-                            else:
-                                results.append(f"❌ {account.phone_number}: Session expired")
-                                unhealthy += 1
-                                account.status = AccountStatus.INACTIVE
-                                db.commit()
-
-                            await client.disconnect()
-
-                        except Exception as e:
-                            results.append(f"❌ {account.phone_number}: {str(e)[:20]}")
-                            unhealthy += 1
-
-                result_text = "\n".join(results[:15])
-                if len(results) > 15:
-                    result_text += f"\n... and {len(results) - 15} more"
-
-                await self.client.send_message(
-                    event.chat_id,
-                    f"🏥 **ACCOUNT HEALTH CHECK**\n\n"
-                    f"✅ Healthy: {healthy}\n"
-                    f"❌ Unhealthy: {unhealthy}\n\n"
-                    f"**Results:**\n{result_text}"
-                )
-
-            except Exception as e:
-                await progress_msg.edit(f"❌ Error: {str(e)}")
-
-        @self.client.on(events.NewMessage(pattern="/user_count"))
-        @admin_only
-        async def user_count_handler(event):
-            """Show user statistics"""
-            with get_db_context() as db:
-                total = db.query(DiscoveredUser).count()
-                available = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0,
-                    DiscoveredUser.username.isnot(None)
-                ).count()
-                mentioned = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned > 0
-                ).count()
-
-                await event.respond(
-                    f"👥 **USER STATISTICS**\n\n"
-                    f"📊 Total users: {total}\n"
-                    f"✅ Available to mention: {available}\n"
-                    f"📤 Already mentioned: {mentioned}\n\n"
-                    f"Use /reset_mentions to make mentioned users available again."
-                )
-
-        # ============ END UTILITY COMMANDS ============
 
         # Button handlers
         @self.client.on(events.NewMessage(pattern="📱 Login Account"))
@@ -3274,35 +1189,35 @@ _Use /monitor for detailed analytics_"""
             with get_db_context() as db:
                 accounts = db.query(Account).all()
 
-                if not accounts:
-                    await event.respond(
-                        "No accounts added yet.\n\n"
-                        "Use /login to add your first Telegram account."
-                    )
-                    return
+            if not accounts:
+                await event.respond(
+                    "No accounts added yet.\n\n"
+                    "Use /login to add your first Telegram account."
+                )
+                return
 
-                message = "👥 **Registered Accounts**\n\n"
-                for acc in accounts[:10]:
-                    status_emoji = {
-                        AccountStatus.ACTIVE: "✅",
-                        AccountStatus.INACTIVE: "⏸️",
-                        AccountStatus.BANNED: "🚫",
-                        AccountStatus.FLOOD_WAIT: "⏳",
-                        AccountStatus.AUTH_REQUIRED: "🔑",
-                    }.get(acc.status, "❓")
+            message = "👥 **Registered Accounts**\n\n"
+            for acc in accounts[:10]:
+                status_emoji = {
+                    AccountStatus.ACTIVE: "✅",
+                    AccountStatus.INACTIVE: "⏸️",
+                    AccountStatus.BANNED: "🚫",
+                    AccountStatus.FLOOD_WAIT: "⏳",
+                    AccountStatus.AUTH_REQUIRED: "🔑",
+                }.get(acc.status, "❓")
 
-                    username_str = f"@{acc.username}" if acc.username else "No username"
+                username_str = f"@{acc.username}" if acc.username else "No username"
 
-                    message += (
-                        f"{status_emoji} **{acc.phone_number}**\n"
-                        f"   └ {username_str} | "
-                        f"Stories: {acc.stories_today}\n"
-                    )
+                message += (
+                    f"{status_emoji} **{acc.phone_number}**\n"
+                    f"   └ {username_str} | "
+                    f"Stories: {acc.stories_today}\n"
+                )
 
-                if len(accounts) > 10:
-                    message += f"\n_...and {len(accounts) - 10} more_"
+            if len(accounts) > 10:
+                message += f"\n_...and {len(accounts) - 10} more_"
 
-                await event.respond(message)
+            await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="📊 Stats"))
         @admin_only
@@ -3331,130 +1246,13 @@ _Use /monitor for detailed analytics_"""
             """Handle Help button"""
             await event.respond(
                 "📖 **STORYFLEET Commands**\n\n"
-                "**📤 Publishing:**\n"
-                "/publish_all - Publish to ALL accounts\n"
-                "/publish - Publish to single account\n"
-                "/delete_story - Delete stories\n\n"
-                "**📱 Account Management:**\n"
-                "/login - Add new Telegram account\n"
-                "/tdata - Import tdata (Telegram Desktop) sessions\n"
-                "/accounts - View all accounts\n"
-                "/cancel - Cancel current operation\n\n"
-                "**🔍 Discovery:**\n"
-                "/scan - Scan channel for users\n"
-                "/users - View available users\n\n"
-                "**📊 Monitoring:**\n"
-                "/stats - View statistics\n"
-                "/monitor - Detailed analytics\n"
-                "/status - System health check\n\n"
-                "**🎯 Campaigns:**\n"
-                "/campaigns - View campaigns\n\n"
-                "**Other:**\n"
-                "/start - Main menu\n"
-                "/help - This help message"
-            )
-
-        @self.client.on(events.NewMessage(pattern="📤 Publish All"))
-        @admin_only
-        async def publish_all_button_handler(event):
-            """Handle Publish All button"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-                account_count = len(accounts)
-                users_count = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0,
-                    DiscoveredUser.username.isnot(None)
-                ).count()
-
-            if not accounts:
-                await event.respond("❌ No active accounts. Use /login first.")
-                return
-
-            pending_publishes[user_id] = {
-                "step": "waiting_caption_all",
-                "mode": "all",
-                "account_count": account_count,
-            }
-
-            await event.respond(
-                f"📤 **Publish to ALL {account_count} Accounts**\n\n"
-                f"👥 Users available for mention: {users_count}\n\n"
-                "📝 **Send the caption text** (or send `-` for no caption):\n\n"
-                "Send /cancel to abort.",
-                buttons=[[Button.text("❌ Cancel")]]
-            )
-
-        @self.client.on(events.NewMessage(pattern="🗑 Delete Stories"))
-        @admin_only
-        async def delete_stories_button_handler(event):
-            """Handle Delete Stories button"""
-            from telethon.tl.functions.stories import DeleteStoriesRequest, GetAllStoriesRequest
-            from telethon.tl.types import InputPeerSelf
-
-            with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
-                if not accounts:
-                    await event.respond("❌ No active accounts.")
-                    return
-
-                account_data = [(acc.id, acc.phone_number, acc.session_string) for acc in accounts]
-
-            buttons = [
-                [Button.inline(f"🗑 {phone}", data=f"del_{acc_id}")]
-                for acc_id, phone, _ in account_data[:5]
-            ]
-            buttons.append([Button.inline("🗑 Delete ALL Stories", data="del_all")])
-            buttons.append([Button.inline("❌ Cancel", data="del_cancel")])
-
-            await event.respond(
-                "🗑 **Delete Stories**\n\n"
-                "Select account to delete story from:",
-                buttons=buttons
-            )
-
-        @self.client.on(events.NewMessage(pattern="🔍 Scan Users"))
-        @admin_only
-        async def scan_users_button_handler(event):
-            """Handle Scan Users button"""
-            sender = await event.get_sender()
-            user_id = sender.id
-
-            with get_db_context() as db:
-                active_account = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).first()
-
-                if not active_account:
-                    await event.respond(
-                        "❌ **No active account**\n\n"
-                        "You need to login a Telegram account first.\n"
-                        "Use /login to add an account."
-                    )
-                    return
-
-            pending_scans[user_id] = {
-                "step": "waiting_group",
-                "groups": [],
-            }
-
-            await event.respond(
-                "🔍 **Scan Group for Users**\n\n"
-                "Send the group username or link:\n"
-                "• `@groupname`\n"
-                "• `https://t.me/groupname`\n\n"
-                "Send /cancel to abort.",
-                buttons=[[Button.text("❌ Cancel")]]
+                "📱 /login - Add new Telegram account\n"
+                "👥 /accounts - List all accounts\n"
+                "📊 /stats - View statistics\n"
+                "📤 /publish - Publish a story\n"
+                "🔍 /scan - Scan for users\n"
+                "🎯 /campaigns - View campaigns\n"
+                "/help - Full command list"
             )
 
         logger.info("Event handlers registered")
