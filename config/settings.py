@@ -6,10 +6,29 @@ from typing import Optional, List
 from pydantic_settings import BaseSettings
 from pydantic import Field
 import os
+import secrets
 from dotenv import load_dotenv
 
 # Load .env file explicitly
 load_dotenv()
+
+
+def _generate_secret_key() -> str:
+    """
+    SECURITY FIX: Generate secure secret key if not provided
+
+    Priority:
+    1. FLASK_SECRET_KEY or DASHBOARD_SECRET_KEY from env
+    2. Generate cryptographically secure key and warn
+    """
+    env_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("DASHBOARD_SECRET_KEY")
+    if env_key and len(env_key) >= 32:
+        return env_key
+
+    # Generate new key
+    new_key = secrets.token_hex(32)
+    print(f"WARNING: Generated new secret key. Set FLASK_SECRET_KEY in .env for persistence.")
+    return new_key
 
 
 class TelegramSettings(BaseSettings):
@@ -63,7 +82,11 @@ class RedisSettings(BaseSettings):
 
 class DashboardSettings(BaseSettings):
     """Flask dashboard configuration"""
-    secret_key: str = Field(default="change-me-in-production", description="Flask secret key")
+    # SECURITY FIX: Use factory function to generate secure key
+    secret_key: str = Field(
+        default_factory=_generate_secret_key,
+        description="Flask secret key (auto-generated if not set)"
+    )
     host: str = Field(default="0.0.0.0", description="Dashboard host")
     port: int = Field(default=5000, description="Dashboard port")
     debug: bool = Field(default=False, description="Enable debug mode")

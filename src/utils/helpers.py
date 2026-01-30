@@ -4,12 +4,21 @@ Utility Helper Functions
 import re
 import os
 import hashlib
+import secrets
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Tuple
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Import secure crypto utils
+try:
+    from src.security.crypto_utils import SecureCrypto
+    USE_SECURE_CRYPTO = True
+except ImportError:
+    USE_SECURE_CRYPTO = False
+    logger.warning("SecureCrypto not available, using fallback")
 
 
 def format_phone(phone: str) -> str:
@@ -77,14 +86,22 @@ def generate_session_name(phone: str) -> str:
     """
     Generate a unique session name from phone number
 
+    SECURITY FIX: Uses SHA-256 with cryptographic salt instead of MD5
+
     Args:
         phone: Phone number
 
     Returns:
-        Hashed session name
+        Secure hashed session name
     """
-    hash_input = f"{phone}_{datetime.utcnow().timestamp()}"
-    return hashlib.md5(hash_input.encode()).hexdigest()[:12]
+    if USE_SECURE_CRYPTO:
+        return SecureCrypto.generate_session_name(phone)
+
+    # Fallback to SHA-256 if secure crypto module not available
+    salt = secrets.token_hex(16)
+    timestamp = str(int(datetime.utcnow().timestamp() * 1000000))
+    hash_input = f"{phone}_{salt}_{timestamp}"
+    return hashlib.sha256(hash_input.encode()).hexdigest()[:20]
 
 
 def chunk_list(lst: List, chunk_size: int) -> List[List]:

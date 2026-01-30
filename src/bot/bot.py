@@ -20,12 +20,18 @@ from telethon.errors import (
     PhoneNumberBannedError,
 )
 import structlog
+import os
+import zipfile
+from pathlib import Path
 
 import sys
 sys.path.insert(0, '/home/user/autostory')
 from config.settings import settings
 from src.core.models import Account, Story, DiscoveredUser, Campaign, AccountStatus
 from src.core.database import get_db_context
+from src.core.memory_manager import memory_manager
+from src.security.zip_sanitizer import ZipSecurity
+from src.security.path_validator import PathValidator
 
 logger = structlog.get_logger(__name__)
 
@@ -137,6 +143,16 @@ class StoryFleetBot:
 
         logger.info("Bot running...")
         print("🚀 Bot is running. Press Ctrl+C to stop.")
+
+        # Start memory manager for cleanup of orphaned pending operations
+        pending_dicts = {
+            'logins': pending_logins,
+            'scans': pending_scans,
+            'publishes': pending_publishes,
+            'tdata_imports': pending_tdata_imports,
+        }
+        await memory_manager.start_cleanup(pending_dicts)
+        logger.info("Memory manager started")
 
         # Start auto-publish background task
         asyncio.create_task(self._auto_publish_loop())
@@ -291,6 +307,7 @@ class StoryFleetBot:
                 "client": user_client,
                 "phone": phone,
                 "phone_code_hash": result.phone_code_hash,
+                "created_at": datetime.utcnow(),  # For memory manager cleanup
             }
 
             await event.respond(
@@ -575,6 +592,7 @@ class StoryFleetBot:
                 "client": None,
                 "phone": None,
                 "phone_code_hash": None,
+                "created_at": datetime.utcnow(),  # For memory manager cleanup
             }
 
             await event.respond(
@@ -1792,15 +1810,33 @@ _Use /monitor for detailed analytics_"""
                 await event.download_media(file=download_path)
 
                 if is_zip:
-                    await event.respond("📦 Extracting ZIP file...")
+                    await event.respond("📦 Extracting ZIP file securely...")
 
-                    extract_dir = os.path.join(temp_dir, "extracted")
-                    os.makedirs(extract_dir, exist_ok=True)
+                    extract_dir = Path(temp_dir) / "extracted"
+                    extract_dir.mkdir(parents=True, exist_ok=True)
 
-                    with zipfile.ZipFile(download_path, 'r') as zip_ref:
-                        zip_ref.extractall(extract_dir)
+                    # SECURITY FIX: Use secure ZIP extraction
+                    try:
+                        extracted = ZipSecurity.safe_extract(
+                            Path(download_path),
+                            extract_dir
+                        )
+                        logger.info("ZIP extracted securely",
+                                  files=len(extracted))
+                    except ValueError as e:
+                        await event.respond(
+                            f"❌ **ZIP file rejected**\n\n"
+                            f"Security check failed: {str(e)}\n\n"
+                            "Please ensure your ZIP file does not contain:\n"
+                            "• Paths with `..` (parent directory)\n"
+                            "• Absolute paths\n"
+                            "• System files"
+                        )
+                        if user_id in pending_tdata_imports:
+                            del pending_tdata_imports[user_id]
+                        return
 
-                    tdata_path = extract_dir
+                    tdata_path = str(extract_dir)
                 else:
                     # For non-zip files, use the temp directory
                     tdata_path = temp_dir
