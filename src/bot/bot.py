@@ -56,10 +56,10 @@ def load_auto_publish_config() -> Dict[str, Any]:
     except:
         return {
             "enabled": False,
-            "stories_per_day": 2,
+            "stories_per_day": 1,
             "caption_template": "Check this out!\n\nFollow for more content",
             "media_folder": "/opt/autostory/data/auto_media",
-            "interval_hours": 12,  # Hours between stories
+            "interval_hours": 24,  # Hours between stories (1 per day)
             "last_publish": {},  # account_id -> last publish timestamp
             "mentions_per_story": 5,
         }
@@ -2163,6 +2163,7 @@ _Use /monitor for detailed analytics_"""
                 "📁 /tdata - Import tdata sessions (bulk)\n"
                 "👥 /accounts - List all accounts\n"
                 "🖼 /set_photo - Set profile photo for all accounts\n"
+                "🗑 /delete_photo - Delete profile photos from all accounts\n"
                 "📝 /set_name - Set name for all accounts\n"
                 "📝 /set_username - Set username for all accounts\n"
                 "📲 /get_code - Get login code for phone login\n"
@@ -2502,6 +2503,98 @@ _Use /monitor for detailed analytics_"""
 
             except Exception as e:
                 logger.error("Set photo error", error=str(e))
+                await progress_msg.edit(f"❌ Error: {str(e)}")
+
+        @self.client.on(events.NewMessage(pattern="/delete_photo"))
+        @admin_only
+        async def delete_photo_handler(event):
+            """Handle /delete_photo command - Delete profile photos from all accounts"""
+            progress_msg = await event.respond("🗑 **Deleting profile photos from all accounts...**")
+
+            try:
+                from telethon import TelegramClient
+                from telethon.sessions import StringSession
+                from telethon.tl.functions.photos import DeletePhotosRequest, GetUserPhotosRequest
+                from telethon.tl.types import InputPhoto
+
+                with get_db_context() as db:
+                    accounts = db.query(Account).filter(
+                        Account.status == AccountStatus.ACTIVE,
+                        Account.session_string.isnot(None)
+                    ).all()
+
+                    if not accounts:
+                        await progress_msg.edit("❌ No active accounts found")
+                        return
+
+                    success_count = 0
+                    failed_count = 0
+                    results = []
+
+                    for account in accounts:
+                        try:
+                            client = TelegramClient(
+                                StringSession(account.session_string),
+                                settings.telegram.api_id,
+                                settings.telegram.api_hash
+                            )
+
+                            await client.connect()
+
+                            if not await client.is_user_authorized():
+                                results.append(f"❌ {account.phone_number}: Not authorized")
+                                failed_count += 1
+                                await client.disconnect()
+                                continue
+
+                            # Get all profile photos
+                            photos = await client(GetUserPhotosRequest(
+                                user_id='me',
+                                offset=0,
+                                max_id=0,
+                                limit=100
+                            ))
+
+                            if photos.photos:
+                                # Delete all photos
+                                photo_ids = [
+                                    InputPhoto(
+                                        id=photo.id,
+                                        access_hash=photo.access_hash,
+                                        file_reference=photo.file_reference
+                                    )
+                                    for photo in photos.photos
+                                ]
+
+                                await client(DeletePhotosRequest(id=photo_ids))
+                                results.append(f"✅ {account.phone_number}: Deleted {len(photo_ids)} photos")
+                                success_count += 1
+                            else:
+                                results.append(f"⚪ {account.phone_number}: No photos to delete")
+                                success_count += 1
+
+                            await client.disconnect()
+
+                        except Exception as e:
+                            error_msg = str(e)[:30]
+                            results.append(f"❌ {account.phone_number}: {error_msg}")
+                            failed_count += 1
+
+                # Send results
+                result_text = "\n".join(results[:15])
+                if len(results) > 15:
+                    result_text += f"\n... and {len(results) - 15} more"
+
+                await self.client.send_message(
+                    event.chat_id,
+                    f"🗑 **PROFILE PHOTOS DELETED**\n\n"
+                    f"✅ Success: {success_count}\n"
+                    f"❌ Failed: {failed_count}\n\n"
+                    f"**Results:**\n{result_text}"
+                )
+
+            except Exception as e:
+                logger.error("Delete photo error", error=str(e))
                 await progress_msg.edit(f"❌ Error: {str(e)}")
 
         # Store for pending code capture
@@ -2908,6 +3001,172 @@ _Use /monitor for detailed analytics_"""
                 f"❌ Failed: {failed_count}\n\n"
                 f"**Results:**\n{result_text}"
             )
+
+        # ============ ADDITIONAL UTILITY COMMANDS ============
+
+        @self.client.on(events.NewMessage(pattern=r"/set_bio\s+(.+)"))
+        @admin_only
+        async def set_bio_handler(event):
+            """Set bio/about for all accounts"""
+            bio_text = event.pattern_match.group(1)
+
+            progress_msg = await event.respond(f"📝 Setting bio for all accounts...")
+
+            try:
+                from telethon import TelegramClient
+                from telethon.sessions import StringSession
+                from telethon.tl.functions.account import UpdateProfileRequest
+
+                with get_db_context() as db:
+                    accounts = db.query(Account).filter(
+                        Account.status == AccountStatus.ACTIVE,
+                        Account.session_string.isnot(None)
+                    ).all()
+
+                    if not accounts:
+                        await progress_msg.edit("❌ No active accounts found")
+                        return
+
+                    success_count = 0
+                    failed_count = 0
+
+                    for account in accounts:
+                        try:
+                            client = TelegramClient(
+                                StringSession(account.session_string),
+                                settings.telegram.api_id,
+                                settings.telegram.api_hash
+                            )
+
+                            await client.connect()
+
+                            if await client.is_user_authorized():
+                                await client(UpdateProfileRequest(about=bio_text))
+                                success_count += 1
+                            else:
+                                failed_count += 1
+
+                            await client.disconnect()
+                            await asyncio.sleep(1)
+
+                        except Exception as e:
+                            failed_count += 1
+
+                await progress_msg.edit(
+                    f"📝 **BIO UPDATE COMPLETE**\n\n"
+                    f"✅ Success: {success_count}\n"
+                    f"❌ Failed: {failed_count}\n\n"
+                    f"Bio: `{bio_text[:50]}...`"
+                )
+
+            except Exception as e:
+                await progress_msg.edit(f"❌ Error: {str(e)}")
+
+        @self.client.on(events.NewMessage(pattern="/reset_mentions"))
+        @admin_only
+        async def reset_mentions_handler(event):
+            """Reset all users to be mentionable again"""
+            with get_db_context() as db:
+                count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned > 0
+                ).update({DiscoveredUser.times_mentioned: 0})
+                db.commit()
+
+                await event.respond(
+                    f"🔄 **MENTIONS RESET**\n\n"
+                    f"Reset {count} users to be mentionable again.\n"
+                    f"They can now be mentioned in new stories."
+                )
+
+        @self.client.on(events.NewMessage(pattern="/account_health"))
+        @admin_only
+        async def account_health_handler(event):
+            """Check health of all accounts"""
+            progress_msg = await event.respond("🏥 Checking account health...")
+
+            try:
+                from telethon import TelegramClient
+                from telethon.sessions import StringSession
+
+                with get_db_context() as db:
+                    accounts = db.query(Account).filter(
+                        Account.status == AccountStatus.ACTIVE,
+                        Account.session_string.isnot(None)
+                    ).all()
+
+                    if not accounts:
+                        await progress_msg.edit("❌ No active accounts found")
+                        return
+
+                    results = []
+                    healthy = 0
+                    unhealthy = 0
+
+                    for account in accounts:
+                        try:
+                            client = TelegramClient(
+                                StringSession(account.session_string),
+                                settings.telegram.api_id,
+                                settings.telegram.api_hash
+                            )
+
+                            await client.connect()
+                            me = await client.get_me()
+
+                            if me:
+                                premium = "⭐" if me.premium else ""
+                                results.append(f"✅ {account.phone_number} {premium}: {me.first_name}")
+                                healthy += 1
+                            else:
+                                results.append(f"❌ {account.phone_number}: Session expired")
+                                unhealthy += 1
+                                account.status = AccountStatus.INACTIVE
+                                db.commit()
+
+                            await client.disconnect()
+
+                        except Exception as e:
+                            results.append(f"❌ {account.phone_number}: {str(e)[:20]}")
+                            unhealthy += 1
+
+                result_text = "\n".join(results[:15])
+                if len(results) > 15:
+                    result_text += f"\n... and {len(results) - 15} more"
+
+                await self.client.send_message(
+                    event.chat_id,
+                    f"🏥 **ACCOUNT HEALTH CHECK**\n\n"
+                    f"✅ Healthy: {healthy}\n"
+                    f"❌ Unhealthy: {unhealthy}\n\n"
+                    f"**Results:**\n{result_text}"
+                )
+
+            except Exception as e:
+                await progress_msg.edit(f"❌ Error: {str(e)}")
+
+        @self.client.on(events.NewMessage(pattern="/user_count"))
+        @admin_only
+        async def user_count_handler(event):
+            """Show user statistics"""
+            with get_db_context() as db:
+                total = db.query(DiscoveredUser).count()
+                available = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0,
+                    DiscoveredUser.username.isnot(None)
+                ).count()
+                mentioned = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned > 0
+                ).count()
+
+                await event.respond(
+                    f"👥 **USER STATISTICS**\n\n"
+                    f"📊 Total users: {total}\n"
+                    f"✅ Available to mention: {available}\n"
+                    f"📤 Already mentioned: {mentioned}\n\n"
+                    f"Use /reset_mentions to make mentioned users available again."
+                )
+
+        # ============ END UTILITY COMMANDS ============
 
         # Button handlers
         @self.client.on(events.NewMessage(pattern="📱 Login Account"))
