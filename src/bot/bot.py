@@ -2016,19 +2016,41 @@ _Use /monitor for detailed analytics_"""
                         delay = random.uniform(3, 8)  # 3-8 seconds between accounts
                         await asyncio.sleep(delay)
 
-                # Clean up
+                # Save media for auto-publish instead of deleting
                 try:
+                    import shutil
+                    auto_media_dir = "/opt/autostory/data/auto_media"
+                    os.makedirs(auto_media_dir, exist_ok=True)
+
+                    # Copy to auto_media folder with unique name
+                    import time
+                    ext = os.path.splitext(media_path)[1]
+                    auto_media_path = os.path.join(auto_media_dir, f"story_{int(time.time())}{ext}")
+                    shutil.copy2(media_path, auto_media_path)
+
+                    # Clean up original
                     os.remove(media_path)
-                except:
-                    pass
+
+                    logger.info("Media saved for auto-publish", path=auto_media_path)
+                except Exception as e:
+                    logger.error("Failed to save auto-publish media", error=str(e))
+                    try:
+                        os.remove(media_path)
+                    except:
+                        pass
 
                 flood_warning = ""
                 if flood_accounts:
                     flood_warning = f"\n⚠️ {len(flood_accounts)} accounts have rate limits\n"
 
+                # Count auto-publish media
+                auto_media_count = len([f for f in os.listdir("/opt/autostory/data/auto_media")
+                                       if f.endswith(('.jpg', '.png', '.mp4', '.jpeg'))]) if os.path.exists("/opt/autostory/data/auto_media") else 0
+
                 await event.respond(
                     f"📊 **Publish Results**\n\n"
-                    f"✅ Success: {success_count}/{len(account_ids)}{flood_warning}\n\n"
+                    f"✅ Success: {success_count}/{len(account_ids)}{flood_warning}\n"
+                    f"📁 Auto-publish media: {auto_media_count} files\n\n"
                     + "\n".join(results[:10]) +
                     ("\n..." if len(results) > 10 else ""),
                     buttons=[
