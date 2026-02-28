@@ -36,8 +36,9 @@ def create_app() -> Flask:
     csrf.init_app(app)
 
     # Register blueprints
-    from .routes import register_routes
+    from .routes import register_routes, api
     register_routes(app)
+    csrf.exempt(api)  # API uses JSON, no form CSRF
 
     # Error handlers
     @app.errorhandler(404)
