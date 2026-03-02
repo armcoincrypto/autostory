@@ -781,24 +781,32 @@ async function loadDeliveries() {
     }
 }
 
-// Populate modal dropdowns when shown
+function esc(s) { return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// Populate modal dropdowns when shown - refetch to ensure fresh data
 async function fillBindingModal() {
     const acc = document.getElementById('binding-account');
     const tgt = document.getElementById('binding-target');
-    acc.innerHTML = '<option value="">Select account</option>' + accounts.map(a => `<option value="${a.id}">${a.phone_number} ${a.username ? '@' + a.username : ''}</option>`).join('');
-    if (targets.length === 0) {
-        try {
-            const data = await apiFetch(API + '/targets');
-            targets = Array.isArray(data) ? data : [];
-        } catch (e) {
-            console.error('Failed to load targets for binding modal', e);
-            showToast('Could not load targets: ' + e.message, 'error');
-        }
+    if (!acc || !tgt) return;
+    // Refetch accounts and targets when modal opens (data may have been stale)
+    try {
+        const [accData, tgtData] = await Promise.all([
+            apiFetch('/api/accounts'),
+            apiFetch(API + '/targets')
+        ]);
+        accounts = Array.isArray(accData) ? accData : [];
+        targets = Array.isArray(tgtData) ? tgtData : [];
+    } catch (e) {
+        console.error('fillBindingModal fetch failed', e);
+        showToast('Could not load accounts or targets: ' + e.message, 'error');
     }
-    tgt.innerHTML = '<option value="">Select target</option>' + targets.map(t => {
+    acc.innerHTML = '<option value="">Select account</option>' + (accounts.length ? accounts.map(a => {
+        const label = (a.phone_number || '') + (a.username ? ' @' + a.username : '');
+        return `<option value="${esc(a.id)}">${esc(label) || 'Account #' + a.id}</option>`;
+    }).join('') : '<option value="" disabled>— No accounts. Add accounts in the Accounts page first.</option>');
+    tgt.innerHTML = '<option value="">Select target</option>' + (targets.length ? targets.map(t => {
         const label = formatTargetLabel(t, { showUnverified: true, bracketId: true });
-        return `<option value="${t.id}">${label}</option>`;
-    }).join('');
+        return `<option value="${esc(t.id)}">${esc(label)}</option>`;
+    }).join('') : '<option value="" disabled>— No targets. Add targets in the Targets tab first.</option>');
 }
 
 function fillRuleTargets() {
@@ -833,13 +841,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('deliveries-type-filter').addEventListener('change', loadDeliveries);
     document.getElementById('deliveries-refresh').addEventListener('click', loadDeliveries);
 
-    document.getElementById('addBindingModal').addEventListener('show.bs.modal', () => fillBindingModal());
+    // Populate when modal is fully visible (shown) so native select dropdowns render correctly
+    document.getElementById('addBindingModal').addEventListener('shown.bs.modal', () => fillBindingModal());
     document.getElementById('addRuleModal').addEventListener('show.bs.modal', fillRuleTargets);
     document.getElementById('rule-target-mode').addEventListener('change', fillRuleTargets);
 });
 
-// Tab switch load - ensure targets are loaded when Bindings tab shown (for Add Binding dropdown)
-document.getElementById('bindings-tab').addEventListener('shown.bs.tab', async () => { await loadTargets(); loadBindings(); });
+// Tab switch load - ensure targets loaded AND modal dropdowns pre-populated when Bindings tab shown
+document.getElementById('bindings-tab').addEventListener('shown.bs.tab', async () => {
+    await loadTargets();
+    await fillBindingModal();  // Pre-populate Add Binding modal so dropdowns work before user opens it
+    loadBindings();
+});
 document.getElementById('templates-tab').addEventListener('shown.bs.tab', loadTemplates);
 document.getElementById('rules-tab').addEventListener('shown.bs.tab', () => { if (document.getElementById('rules-account').value) loadRules(); });
 document.getElementById('deliveries-tab').addEventListener('shown.bs.tab', loadDeliveries);
