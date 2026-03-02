@@ -42,11 +42,11 @@
                 </button>
             </div>
             <div class="card-body">
-                <div id="targets-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="targets-loading" class="text-center scheduler-loading py-5">Loading...</div>
                 <div id="targets-error" class="alert alert-danger d-none"></div>
-                <div id="targets-empty" class="text-center text-muted py-4 d-none">
-                    <i class="bi bi-chat-dots" style="font-size: 2rem; opacity: 0.5;"></i>
-                    <p class="mt-2">No targets yet. Add a channel or group.</p>
+                <div id="targets-empty" class="text-center scheduler-empty py-5 d-none">
+                    <i class="bi bi-chat-dots scheduler-empty-icon d-block mb-3"></i>
+                    <p class="mb-0">No targets yet. Add a channel or group.</p>
                 </div>
                 <table class="table table-hover d-none" id="targets-table">
                     <thead><tr><th>ID</th><th>Username</th><th>Invite Link</th><th>tg_id</th><th>Type</th><th>Verified</th><th>Actions</th></tr></thead>
@@ -71,11 +71,11 @@
                 </div>
             </div>
             <div class="card-body">
-                <div id="bindings-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="bindings-loading" class="text-center scheduler-loading py-5">Loading...</div>
                 <div id="bindings-error" class="alert alert-danger d-none"></div>
-                <div id="bindings-empty" class="text-center text-muted py-4 d-none">
-                    <i class="bi bi-link-45deg" style="font-size: 2rem; opacity: 0.5;"></i>
-                    <p class="mt-2">No bindings yet. Link an account to a target.</p>
+                <div id="bindings-empty" class="text-center scheduler-empty py-5 d-none">
+                    <i class="bi bi-link-45deg scheduler-empty-icon d-block mb-3"></i>
+                    <p class="mb-0">No bindings yet. Link an account to a target.</p>
                 </div>
                 <table class="table table-hover d-none" id="bindings-table">
                     <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>Can Post</th><th>Allowed Types</th><th>Daily Cap</th><th>Actions</th></tr></thead>
@@ -95,11 +95,11 @@
                 </button>
             </div>
             <div class="card-body">
-                <div id="templates-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="templates-loading" class="text-center scheduler-loading py-5">Loading...</div>
                 <div id="templates-error" class="alert alert-danger d-none"></div>
-                <div id="templates-empty" class="text-center text-muted py-4 d-none">
-                    <i class="bi bi-file-text" style="font-size: 2rem; opacity: 0.5;"></i>
-                    <p class="mt-2">No templates yet. Create a PROMO or INFO template.</p>
+                <div id="templates-empty" class="text-center scheduler-empty py-5 d-none">
+                    <i class="bi bi-file-text scheduler-empty-icon d-block mb-3"></i>
+                    <p class="mb-0">No templates yet. Create a PROMO or INFO template.</p>
                 </div>
                 <table class="table table-hover d-none" id="templates-table">
                     <thead><tr><th>ID</th><th>Type</th><th>Scope</th><th>Name</th><th>Body</th><th>Active</th><th>Weight</th><th>Actions</th></tr></thead>
@@ -122,7 +122,7 @@
                         <option value="">Select account</option>
                     </select>
                 </div>
-                <div id="profile-loading" class="text-center text-muted py-4 d-none">Loading profile...</div>
+                <div id="profile-loading" class="text-center scheduler-loading py-5 d-none">Loading profile...</div>
                 <div id="profile-error" class="alert alert-danger d-none"></div>
                 <form id="profile-form" class="d-none">
                     <div class="row">
@@ -182,9 +182,12 @@
                 </div>
             </div>
             <div class="card-body">
-                <div id="rules-loading" class="text-center text-muted py-4">Select an account</div>
+                <div id="rules-loading" class="text-center scheduler-loading py-5">Select an account</div>
                 <div id="rules-error" class="alert alert-danger d-none"></div>
-                <div id="rules-empty" class="text-center text-muted py-4 d-none">No rules for this account. Add PROMO or INFO rules.</div>
+                <div id="rules-empty" class="text-center scheduler-empty py-5 d-none">
+                    <i class="bi bi-calendar-event scheduler-empty-icon d-block mb-3"></i>
+                    <p class="mb-0">No rules for this account. Add PROMO or INFO rules.</p>
+                </div>
                 <table class="table table-hover d-none" id="rules-table">
                     <thead><tr><th>ID</th><th>Type</th><th>Times</th><th>Target Mode</th><th>Enabled</th><th>Actions</th></tr></thead>
                     <tbody></tbody>
@@ -213,9 +216,12 @@
                 </div>
             </div>
             <div class="card-body">
-                <div id="deliveries-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="deliveries-loading" class="text-center scheduler-loading py-5">Loading...</div>
                 <div id="deliveries-error" class="alert alert-danger d-none"></div>
-                <div id="deliveries-empty" class="text-center text-muted py-4 d-none">No deliveries yet.</div>
+                <div id="deliveries-empty" class="text-center scheduler-empty py-5 d-none">
+                    <i class="bi bi-envelope scheduler-empty-icon d-block mb-3"></i>
+                    <p class="mb-0">No deliveries yet.</p>
+                </div>
                 <table class="table table-hover d-none" id="deliveries-table">
                     <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>Type</th><th>Status</th><th>Sent At</th><th>Error</th></tr></thead>
                     <tbody></tbody>
