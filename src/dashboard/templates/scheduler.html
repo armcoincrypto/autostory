@@ -242,11 +242,17 @@ const API = '/api/v1';
 
 async function apiFetch(url, opts = {}) {
     const res = await fetch(url, {
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', ...opts.headers },
         ...opts
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || res.statusText);
+    const text = await res.text();
+    const data = text ? (function(){ try { return JSON.parse(text); } catch(_) { return {}; } })() : {};
+    if (!res.ok) {
+        const errMsg = data.error || res.statusText || `HTTP ${res.status}`;
+        console.error('API error', { url, status: res.status, error: errMsg, body: text.slice(0, 200) });
+        throw new Error(errMsg);
+    }
     return data;
 }
 
@@ -267,6 +273,16 @@ function showToast(msg, type = 'success') {
 
 // ============ Shared data ============
 let accounts = [], targets = [], bindings = [], templates = [];
+
+function formatTargetLabel(t, opts = {}) {
+    const id = t.id;
+    const label = t.title || t.username || t.invite_link || ('Target #' + id);
+    const typeStr = (t.chat_type || 'channel');
+    const unverified = !t.is_verified;
+    const prefix = (opts.showUnverified && unverified) ? '\u26A0\uFE0F ' : '';
+    const bracket = opts.bracketId ? '[' + id + '] ' : '';
+    return prefix + bracket + label + ' (' + typeStr + ')';
+}
 
 async function loadAccounts() {
     const data = await apiFetch('/api/accounts');
@@ -293,7 +309,8 @@ async function loadTargets() {
     empty.classList.add('d-none');
     tbl.classList.add('d-none');
     try {
-        targets = await apiFetch(API + '/targets');
+        const data = await apiFetch(API + '/targets');
+        targets = Array.isArray(data) ? data : [];
         loading.classList.add('d-none');
         if (targets.length === 0) {
             empty.classList.remove('d-none');
@@ -385,7 +402,7 @@ async function loadBindings() {
             <tr>
                 <td>${b.id}</td>
                 <td>${acc ? acc.phone_number + (acc.username ? ' @' + acc.username : '') : b.account_id}</td>
-                <td>${tgt ? (tgt.username || tgt.title || tgt.id) : b.target_id}</td>
+                <td>${tgt ? formatTargetLabel(tgt) : b.target_id}</td>
                 <td><input type="checkbox" ${b.can_post ? 'checked' : ''} onchange="toggleBindingCanPost(${b.id}, this.checked)"></td>
                 <td><input type="text" class="form-control form-control-sm" style="width:120px" value="${b.allowed_types || ''}" onchange="updateBindingTypes(${b.id}, this.value)"></td>
                 <td>${b.daily_cap ?? '-'}</td>
@@ -750,7 +767,7 @@ async function loadDeliveries() {
             <tr>
                 <td>${d.id}</td>
                 <td>${acc ? acc.phone_number : d.account_id}</td>
-                <td>${tgt ? (tgt.username || tgt.title || d.target_id) : d.target_id}</td>
+                <td>${tgt ? formatTargetLabel(tgt) : d.target_id}</td>
                 <td>${d.type || '-'}</td>
                 <td><span class="badge ${statusBadge}">${d.status}</span></td>
                 <td>${d.sent_at ? new Date(d.sent_at).toLocaleString() : '-'}</td>
@@ -765,11 +782,23 @@ async function loadDeliveries() {
 }
 
 // Populate modal dropdowns when shown
-function fillBindingModal() {
+async function fillBindingModal() {
     const acc = document.getElementById('binding-account');
     const tgt = document.getElementById('binding-target');
     acc.innerHTML = '<option value="">Select account</option>' + accounts.map(a => `<option value="${a.id}">${a.phone_number} ${a.username ? '@' + a.username : ''}</option>`).join('');
-    tgt.innerHTML = '<option value="">Select target</option>' + targets.map(t => `<option value="${t.id}">${t.username || t.title || t.invite_link || '#' + t.id}</option>`).join('');
+    if (targets.length === 0) {
+        try {
+            const data = await apiFetch(API + '/targets');
+            targets = Array.isArray(data) ? data : [];
+        } catch (e) {
+            console.error('Failed to load targets for binding modal', e);
+            showToast('Could not load targets: ' + e.message, 'error');
+        }
+    }
+    tgt.innerHTML = '<option value="">Select target</option>' + targets.map(t => {
+        const label = formatTargetLabel(t, { showUnverified: true, bracketId: true });
+        return `<option value="${t.id}">${label}</option>`;
+    }).join('');
 }
 
 function fillRuleTargets() {
@@ -780,7 +809,7 @@ function fillRuleTargets() {
         document.getElementById('rule-targets').innerHTML = targets.map(t => `
             <div class="form-check">
                 <input class="form-check-input" type="checkbox" value="${t.id}" id="rt-${t.id}">
-                <label class="form-check-label" for="rt-${t.id}">${t.username || t.title || '#' + t.id}</label>
+                <label class="form-check-label" for="rt-${t.id}">${formatTargetLabel(t, { showUnverified: true })}</label>
             </div>
         `).join('');
     } else {
@@ -804,13 +833,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('deliveries-type-filter').addEventListener('change', loadDeliveries);
     document.getElementById('deliveries-refresh').addEventListener('click', loadDeliveries);
 
-    document.getElementById('addBindingModal').addEventListener('show.bs.modal', fillBindingModal);
+    document.getElementById('addBindingModal').addEventListener('show.bs.modal', () => fillBindingModal());
     document.getElementById('addRuleModal').addEventListener('show.bs.modal', fillRuleTargets);
     document.getElementById('rule-target-mode').addEventListener('change', fillRuleTargets);
 });
 
-// Tab switch load
-document.getElementById('bindings-tab').addEventListener('shown.bs.tab', loadBindings);
+// Tab switch load - ensure targets are loaded when Bindings tab shown (for Add Binding dropdown)
+document.getElementById('bindings-tab').addEventListener('shown.bs.tab', async () => { await loadTargets(); loadBindings(); });
 document.getElementById('templates-tab').addEventListener('shown.bs.tab', loadTemplates);
 document.getElementById('rules-tab').addEventListener('shown.bs.tab', () => { if (document.getElementById('rules-account').value) loadRules(); });
 document.getElementById('deliveries-tab').addEventListener('shown.bs.tab', loadDeliveries);

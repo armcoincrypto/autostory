@@ -6,7 +6,7 @@ import os
 import sys
 from functools import wraps
 
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, jsonify, request, render_template, send_from_directory
 from flask_login import login_required, current_user
 import structlog
 
@@ -431,6 +431,14 @@ def list_tasks():
 # Web Blueprint (HTML pages)
 # ============================================
 web = Blueprint('web', __name__)
+
+
+@web.route('/favicon.ico')
+def favicon():
+    """Serve favicon to prevent 404"""
+    import os
+    _dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+    return send_from_directory(_dir, 'favicon.svg', mimetype='image/svg+xml')
 
 
 @web.route('/')
