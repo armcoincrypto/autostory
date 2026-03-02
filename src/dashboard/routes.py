@@ -2,13 +2,18 @@
 Dashboard Routes - API and Web endpoints
 """
 import asyncio
+import os
+import sys
 from functools import wraps
+
 from flask import Blueprint, jsonify, request, render_template
 from flask_login import login_required, current_user
 import structlog
 
-import sys
-sys.path.insert(0, '/home/user/autostory')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 from src.core.models import Account, Story, DiscoveredUser, Campaign, Task, AccountStatus
 from src.core.database import get_db_context
 

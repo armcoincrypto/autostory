@@ -1,6 +1,8 @@
 """
 Database configuration and session management
 """
+import os
+import sys
 from contextlib import contextmanager
 from typing import Generator
 
@@ -8,8 +10,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 import structlog
 
-import sys
-sys.path.insert(0, '/home/user/autostory')
+# Add project root to path
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 from config.settings import settings
 
 logger = structlog.get_logger(__name__)

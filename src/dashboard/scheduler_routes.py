@@ -45,7 +45,7 @@ def create_target():
             chat_type=data.get("chat_type", "channel")
         )
         db.add(t)
-        db.refresh(t)
+        db.flush()  # Persist and assign ID (refresh fails on pending instances)
         return jsonify({"id": t.id, "success": True})
 
 
@@ -100,7 +100,7 @@ def create_binding():
             daily_cap=data.get("daily_cap")
         )
         db.add(b)
-        db.refresh(b)
+        db.flush()
         return jsonify({"id": b.id, "success": True})
 
 
@@ -168,7 +168,7 @@ def create_template():
             weight=data.get("weight", 100)
         )
         db.add(t)
-        db.refresh(t)
+        db.flush()
         return jsonify({"id": t.id, "success": True})
 
 
@@ -238,7 +238,7 @@ def update_schedule_profile(account_id):
         if not p:
             p = ScheduleProfile(account_id=account_id)
             db.add(p)
-            db.refresh(p)
+            db.flush()
         for k in ["is_enabled", "timezone", "min_interval_sec", "daily_cap_total",
                   "daily_cap_promo", "daily_cap_info", "jitter_sec", "quiet_hours_json"]:
             if k in data:
@@ -280,7 +280,7 @@ def create_schedule_rule(account_id):
             is_enabled=data.get("is_enabled", True)
         )
         db.add(r)
-        db.refresh(r)
+        db.flush()
         return jsonify({"id": r.id, "success": True})
 
 

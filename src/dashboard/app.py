@@ -2,13 +2,21 @@
 Flask Application Factory
 STORYFLEET Control Dashboard
 """
+import os
+import sys
+import traceback
+
 from flask import Flask
 from flask_login import LoginManager
 from flask_wtf.csrf import CSRFProtect
 import structlog
 
-import sys
-sys.path.insert(0, '/home/user/autostory')
+# Add project root to path (works for both /home/user/autostory and /opt/autostory)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_script_dir, "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from config.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -50,7 +58,11 @@ def create_app() -> Flask:
 
     @app.errorhandler(500)
     def internal_error(error):
-        logger.error("Internal error", error=str(error))
+        tb = traceback.format_exc()
+        logger.error("Internal server error", error=str(error), traceback=tb)
+        # Also print to stderr so journalctl captures it
+        import sys
+        print(traceback.format_exc(), file=sys.stderr, flush=True)
         return {"error": "Internal server error"}, 500
 
     logger.info("Flask app created", environment=settings.environment)
@@ -59,6 +71,11 @@ def create_app() -> Flask:
 
 @login_manager.user_loader
 def load_user(user_id):
-    """Load user for Flask-Login"""
-    from .models import DashboardUser
-    return DashboardUser.query.get(int(user_id))
+    """Load user for Flask-Login (uses raw SQLAlchemy, not Flask-SQLAlchemy)"""
+    try:
+        from .models import DashboardUser
+        from src.core.database import get_db_context
+        with get_db_context() as db:
+            return db.get(DashboardUser, int(user_id))
+    except Exception:
+        return None
