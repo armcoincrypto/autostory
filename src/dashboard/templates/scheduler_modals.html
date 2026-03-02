@@ -45,17 +45,25 @@
             <div class="modal-body">
                 <div class="mb-3">
                     <label class="form-label">Account</label>
-                    <input type="text" class="form-control form-control-sm mb-1" id="binding-account-filter" placeholder="Search by phone or username..." autocomplete="off">
-                    <select class="form-select" id="binding-account">
-                        <option value="">Select account</option>
-                    </select>
+                    <input type="hidden" id="binding-account" value="">
+                    <div class="dropdown">
+                        <button class="form-select text-start dropdown-toggle d-block w-100" type="button" id="binding-account-btn" data-bs-toggle="dropdown" aria-expanded="false">Select account</button>
+                        <div class="dropdown-menu dropdown-menu-dark w-100 p-2" style="max-height: 200px; overflow-y: auto;">
+                            <input type="text" class="form-control form-control-sm mb-2 bg-secondary border-secondary text-light" id="binding-account-filter" placeholder="Search..." autocomplete="off">
+                            <div id="binding-account-options"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Target</label>
-                    <input type="text" class="form-control form-control-sm mb-1" id="binding-target-filter" placeholder="Search by name or link..." autocomplete="off">
-                    <select class="form-select" id="binding-target">
-                        <option value="">Select target</option>
-                    </select>
+                    <input type="hidden" id="binding-target" value="">
+                    <div class="dropdown">
+                        <button class="form-select text-start dropdown-toggle d-block w-100" type="button" id="binding-target-btn" data-bs-toggle="dropdown" aria-expanded="false">Select target</button>
+                        <div class="dropdown-menu dropdown-menu-dark w-100 p-2" style="max-height: 200px; overflow-y: auto;">
+                            <input type="text" class="form-control form-control-sm mb-2 bg-secondary border-secondary text-light" id="binding-target-filter" placeholder="Search..." autocomplete="off">
+                            <div id="binding-target-options"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="mb-3">
                     <div class="form-check form-switch">

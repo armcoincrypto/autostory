@@ -783,27 +783,20 @@ async function loadDeliveries() {
 
 function esc(s) { return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function filterSelectOptions(selectId, filterInputId) {
-    const sel = document.getElementById(selectId);
-    const inp = document.getElementById(filterInputId);
-    if (!sel || !inp) return;
-    const q = (inp.value || '').toLowerCase().trim();
-    for (const opt of sel.options) {
-        if (opt.value === '') { opt.style.display = q ? 'none' : ''; continue; }
-        const search = (opt.textContent || '').toLowerCase();
-        opt.style.display = !q || search.includes(q) ? '' : 'none';
-    }
-}
-
-// Populate modal dropdowns when shown - refetch to ensure fresh data
+// Populate and wire custom dropdowns (Bootstrap dropdowns work in modals; native selects don't)
 async function fillBindingModal() {
-    const acc = document.getElementById('binding-account');
-    const tgt = document.getElementById('binding-target');
+    const accVal = document.getElementById('binding-account');
+    const tgtVal = document.getElementById('binding-target');
+    const accBtn = document.getElementById('binding-account-btn');
+    const tgtBtn = document.getElementById('binding-target-btn');
+    const accOpts = document.getElementById('binding-account-options');
+    const tgtOpts = document.getElementById('binding-target-options');
     const accFilter = document.getElementById('binding-account-filter');
     const tgtFilter = document.getElementById('binding-target-filter');
-    if (!acc || !tgt) return;
-    if (accFilter) accFilter.value = '';
-    if (tgtFilter) tgtFilter.value = '';
+    if (!accVal || !tgtVal || !accBtn || !tgtBtn || !accOpts || !tgtOpts) return;
+    accVal.value = ''; tgtVal.value = '';
+    accBtn.textContent = 'Select account'; tgtBtn.textContent = 'Select target';
+    if (accFilter) accFilter.value = ''; if (tgtFilter) tgtFilter.value = '';
     try {
         const [accData, tgtData] = await Promise.all([
             apiFetch('/api/accounts'),
@@ -815,22 +808,39 @@ async function fillBindingModal() {
         console.error('fillBindingModal fetch failed', e);
         showToast('Could not load accounts or targets: ' + e.message, 'error');
     }
-    acc.innerHTML = '<option value="">Select account</option>' + (accounts.length ? accounts.map(a => {
-        const label = (a.phone_number || '') + (a.username ? ' @' + a.username : '');
-        return `<option value="${esc(a.id)}">${esc(label) || 'Account #' + a.id}</option>`;
-    }).join('') : '<option value="" disabled>— No accounts. Add accounts in the Accounts page first.</option>');
-    tgt.innerHTML = '<option value="">Select target</option>' + (targets.length ? targets.map(t => {
-        const label = formatTargetLabel(t, { showUnverified: true, bracketId: true });
-        return `<option value="${esc(t.id)}">${esc(label)}</option>`;
-    }).join('') : '<option value="" disabled>— No targets. Add targets in the Targets tab first.</option>');
-}
-
-function setupBindingModalFilters() {
-    const accF = document.getElementById('binding-account-filter');
-    const tgtF = document.getElementById('binding-target-filter');
-    const run = () => { filterSelectOptions('binding-account', 'binding-account-filter'); filterSelectOptions('binding-target', 'binding-target-filter'); };
-    if (accF) accF.addEventListener('input', run);
-    if (tgtF) tgtF.addEventListener('input', run);
+    function renderAccountOpts(filter) {
+        const q = (filter || '').toLowerCase().trim();
+        const list = accounts.filter(a => {
+            const label = (a.phone_number || '') + (a.username ? ' @' + a.username : '');
+            return !q || String(label).toLowerCase().includes(q);
+        });
+        const emptyMsg = !accounts.length ? 'No accounts. Add accounts in the Accounts page first.' : 'No matches';
+        accOpts.innerHTML = list.length ? list.map(a => {
+            const label = esc((a.phone_number || '') + (a.username ? ' @' + a.username : '') || 'Account #' + a.id);
+            return `<a class="dropdown-item text-light" href="#" data-id="${a.id}" data-label="${label}">${label}</a>`;
+        }).join('') : `<div class="dropdown-item-text text-muted">${emptyMsg}</div>`;
+        accOpts.querySelectorAll('.dropdown-item').forEach(el => {
+            el.addEventListener('click', e => { e.preventDefault(); accVal.value = el.dataset.id; accBtn.textContent = el.dataset.label; bootstrap.Dropdown.getInstance(accBtn)?.hide(); });
+        });
+    }
+    function renderTargetOpts(filter) {
+        const q = (filter || '').toLowerCase().trim();
+        const list = targets.filter(t => {
+            const label = formatTargetLabel(t, { showUnverified: true, bracketId: true });
+            return !q || label.toLowerCase().includes(q);
+        });
+        const emptyMsg = !targets.length ? 'No targets. Add targets in the Targets tab first.' : 'No matches';
+        tgtOpts.innerHTML = list.length ? list.map(t => {
+            const label = formatTargetLabel(t, { showUnverified: true, bracketId: true });
+            return `<a class="dropdown-item text-light" href="#" data-id="${t.id}" data-label="${esc(label)}">${esc(label)}</a>`;
+        }).join('') : `<div class="dropdown-item-text text-muted">${emptyMsg}</div>`;
+        tgtOpts.querySelectorAll('.dropdown-item').forEach(el => {
+            el.addEventListener('click', e => { e.preventDefault(); tgtVal.value = el.dataset.id; tgtBtn.textContent = el.dataset.label; bootstrap.Dropdown.getInstance(tgtBtn)?.hide(); });
+        });
+    }
+    renderAccountOpts(); renderTargetOpts();
+    if (accFilter && !accFilter.dataset.bound) { accFilter.dataset.bound = '1'; accFilter.addEventListener('input', () => renderAccountOpts(accFilter.value)); }
+    if (tgtFilter && !tgtFilter.dataset.bound) { tgtFilter.dataset.bound = '1'; tgtFilter.addEventListener('input', () => renderTargetOpts(tgtFilter.value)); }
 }
 
 function fillRuleTargets() {
@@ -868,7 +878,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('addBindingModal').addEventListener('shown.bs.modal', fillBindingModal);
     document.getElementById('addRuleModal').addEventListener('show.bs.modal', fillRuleTargets);
     document.getElementById('rule-target-mode').addEventListener('change', fillRuleTargets);
-    setupBindingModalFilters();
 });
 
 // Tab switch load - ensure targets loaded AND modal dropdowns pre-populated when Bindings tab shown
