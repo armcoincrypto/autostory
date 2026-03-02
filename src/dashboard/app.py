@@ -37,8 +37,11 @@ def create_app() -> Flask:
 
     # Register blueprints
     from .routes import register_routes, api
+    from .scheduler_routes import scheduler_api
     register_routes(app)
-    csrf.exempt(api)  # API uses JSON, no form CSRF
+    app.register_blueprint(scheduler_api)
+    csrf.exempt(api)
+    csrf.exempt(scheduler_api)
 
     # Error handlers
     @app.errorhandler(404)

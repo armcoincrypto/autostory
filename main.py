@@ -81,6 +81,14 @@ def run_beat():
     celery_app.worker_main(["beat", "--loglevel=info"])
 
 
+def run_scheduler():
+    """Run Auto Message Scheduler worker"""
+    from src.scheduler.worker import main as scheduler_main
+
+    logger.info("Starting Auto Message Scheduler")
+    scheduler_main()
+
+
 def init_database():
     """Initialize the database"""
     from src.core.database import init_db
@@ -180,7 +188,7 @@ Examples:
 
     parser.add_argument(
         "command",
-        choices=["dashboard", "bot", "worker", "beat", "init", "add-account", "status"],
+        choices=["dashboard", "bot", "worker", "beat", "scheduler", "init", "add-account", "status"],
         help="Command to run"
     )
 
@@ -191,6 +199,7 @@ Examples:
         "bot": run_bot,
         "worker": run_worker,
         "beat": run_beat,
+        "scheduler": run_scheduler,
         "init": init_database,
         "add-account": add_account_interactive,
         "status": show_status,

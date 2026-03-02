@@ -236,3 +236,7 @@ class SystemLog(Base):
 
     def __repr__(self):
         return f"<SystemLog {self.level} {self.component}>"
+
+
+# Import scheduler models so they're registered with Base
+from . import scheduler_models  # noqa: F401, E402
