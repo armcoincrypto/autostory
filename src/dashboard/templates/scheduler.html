@@ -1,0 +1,812 @@
+{% extends "base.html" %}
+
+{% block title %}Scheduler - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-calendar-week"></i> Scheduler</h2>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container position-fixed top-0 end-0 p-3" id="toast-container"></div>
+
+<ul class="nav nav-tabs mb-3" id="schedulerTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="targets-tab" data-bs-toggle="tab" data-bs-target="#targets" type="button">Targets</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="bindings-tab" data-bs-toggle="tab" data-bs-target="#bindings" type="button">Bindings</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="templates-tab" data-bs-toggle="tab" data-bs-target="#templates" type="button">Templates</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="profile-tab" data-bs-toggle="tab" data-bs-target="#profile" type="button">Schedule Profile</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="rules-tab" data-bs-toggle="tab" data-bs-target="#rules" type="button">Schedule Rules</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="deliveries-tab" data-bs-toggle="tab" data-bs-target="#deliveries" type="button">Deliveries</button>
+    </li>
+</ul>
+
+<div class="tab-content" id="schedulerTabContent">
+    <!-- Targets -->
+    <div class="tab-pane fade show active" id="targets" role="tabpanel">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Chat Targets</span>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addTargetModal">
+                    <i class="bi bi-plus-circle"></i> Add Target
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="targets-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="targets-error" class="alert alert-danger d-none"></div>
+                <div id="targets-empty" class="text-center text-muted py-4 d-none">
+                    <i class="bi bi-chat-dots" style="font-size: 2rem; opacity: 0.5;"></i>
+                    <p class="mt-2">No targets yet. Add a channel or group.</p>
+                </div>
+                <table class="table table-hover d-none" id="targets-table">
+                    <thead><tr><th>ID</th><th>Username</th><th>Invite Link</th><th>tg_id</th><th>Type</th><th>Verified</th><th>Actions</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bindings -->
+    <div class="tab-pane fade" id="bindings" role="tabpanel">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Account ↔ Target Bindings</span>
+                <div class="d-flex gap-2">
+                    <select class="form-select form-select-sm" id="bindings-account-filter" style="width: auto;">
+                        <option value="">All accounts</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addBindingModal">
+                        <i class="bi bi-plus-circle"></i> Add Binding
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="bindings-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="bindings-error" class="alert alert-danger d-none"></div>
+                <div id="bindings-empty" class="text-center text-muted py-4 d-none">
+                    <i class="bi bi-link-45deg" style="font-size: 2rem; opacity: 0.5;"></i>
+                    <p class="mt-2">No bindings yet. Link an account to a target.</p>
+                </div>
+                <table class="table table-hover d-none" id="bindings-table">
+                    <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>Can Post</th><th>Allowed Types</th><th>Daily Cap</th><th>Actions</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Templates -->
+    <div class="tab-pane fade" id="templates" role="tabpanel">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Message Templates</span>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addTemplateModal">
+                    <i class="bi bi-plus-circle"></i> Add Template
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="templates-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="templates-error" class="alert alert-danger d-none"></div>
+                <div id="templates-empty" class="text-center text-muted py-4 d-none">
+                    <i class="bi bi-file-text" style="font-size: 2rem; opacity: 0.5;"></i>
+                    <p class="mt-2">No templates yet. Create a PROMO or INFO template.</p>
+                </div>
+                <table class="table table-hover d-none" id="templates-table">
+                    <thead><tr><th>ID</th><th>Type</th><th>Scope</th><th>Name</th><th>Body</th><th>Active</th><th>Weight</th><th>Actions</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Schedule Profile -->
+    <div class="tab-pane fade" id="profile" role="tabpanel">
+        <div class="card">
+            <div class="card-header">
+                Schedule Profile (per account)
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Account</label>
+                    <select class="form-select" id="profile-account">
+                        <option value="">Select account</option>
+                    </select>
+                </div>
+                <div id="profile-loading" class="text-center text-muted py-4 d-none">Loading profile...</div>
+                <div id="profile-error" class="alert alert-danger d-none"></div>
+                <form id="profile-form" class="d-none">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="profile-enabled">
+                                <label class="form-check-label" for="profile-enabled">Enable scheduling</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Timezone</label>
+                            <input type="text" class="form-control" id="profile-timezone" placeholder="Asia/Yerevan" value="Asia/Yerevan">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Min interval (sec)</label>
+                            <input type="number" class="form-control" id="profile-min-interval" min="60" placeholder="900">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Daily cap total</label>
+                            <input type="number" class="form-control" id="profile-cap-total" min="1" placeholder="6">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Daily cap PROMO</label>
+                            <input type="number" class="form-control" id="profile-cap-promo" min="0" placeholder="3">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Daily cap INFO</label>
+                            <input type="number" class="form-control" id="profile-cap-info" min="0" placeholder="3">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Jitter (sec)</label>
+                            <input type="number" class="form-control" id="profile-jitter" min="0" placeholder="300">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Quiet hours (JSON)</label>
+                            <input type="text" class="form-control" id="profile-quiet-hours" placeholder='{"start":"00:00","end":"08:00"}'>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-check-circle"></i> Save Profile</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Schedule Rules -->
+    <div class="tab-pane fade" id="rules" role="tabpanel">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Schedule Rules (per account)</span>
+                <div class="d-flex gap-2">
+                    <select class="form-select form-select-sm" id="rules-account" style="width: auto;">
+                        <option value="">Select account</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addRuleModal">
+                        <i class="bi bi-plus-circle"></i> Add Rule
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="rules-loading" class="text-center text-muted py-4">Select an account</div>
+                <div id="rules-error" class="alert alert-danger d-none"></div>
+                <div id="rules-empty" class="text-center text-muted py-4 d-none">No rules for this account. Add PROMO or INFO rules.</div>
+                <table class="table table-hover d-none" id="rules-table">
+                    <thead><tr><th>ID</th><th>Type</th><th>Times</th><th>Target Mode</th><th>Enabled</th><th>Actions</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Deliveries -->
+    <div class="tab-pane fade" id="deliveries" role="tabpanel">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Delivery Logs</span>
+                <div class="d-flex gap-2">
+                    <select class="form-select form-select-sm" id="deliveries-account-filter" style="width: auto;">
+                        <option value="">All accounts</option>
+                    </select>
+                    <select class="form-select form-select-sm" id="deliveries-type-filter" style="width: auto;">
+                        <option value="">All types</option>
+                        <option value="PROMO">PROMO</option>
+                        <option value="INFO">INFO</option>
+                    </select>
+                    <button class="btn btn-outline-secondary btn-sm" id="deliveries-refresh">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="deliveries-loading" class="text-center text-muted py-4">Loading...</div>
+                <div id="deliveries-error" class="alert alert-danger d-none"></div>
+                <div id="deliveries-empty" class="text-center text-muted py-4 d-none">No deliveries yet.</div>
+                <table class="table table-hover d-none" id="deliveries-table">
+                    <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>Type</th><th>Status</th><th>Sent At</th><th>Error</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modals -->
+{% include 'scheduler_modals.html' %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ============ API ============
+const API = '/api/v1';
+
+async function apiFetch(url, opts = {}) {
+    const res = await fetch(url, {
+        headers: { 'Content-Type': 'application/json', ...opts.headers },
+        ...opts
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+}
+
+function showToast(msg, type = 'success') {
+    const c = document.getElementById('toast-container');
+    const t = document.createElement('div');
+    t.className = `toast align-items-center text-bg-${type === 'error' ? 'danger' : 'success'} border-0`;
+    t.setAttribute('role', 'alert');
+    t.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body">${msg}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>`;
+    c.appendChild(t);
+    new bootstrap.Toast(t, { delay: 4000 }).show();
+    t.addEventListener('hidden.bs.toast', () => t.remove());
+}
+
+// ============ Shared data ============
+let accounts = [], targets = [], bindings = [], templates = [];
+
+async function loadAccounts() {
+    const data = await apiFetch('/api/accounts');
+    accounts = Array.isArray(data) ? data : [];
+    const sel = (id) => document.getElementById(id);
+    [sel('bindings-account-filter'), sel('profile-account'), sel('rules-account'), sel('deliveries-account-filter')].forEach(s => {
+        if (!s) return;
+        const v = s.value;
+        s.innerHTML = '<option value="">' + (s.id.includes('profile') || s.id.includes('rules') ? 'Select account' : 'All accounts') + '</option>' +
+            accounts.map(a => `<option value="${a.id}">${a.phone_number} ${a.username ? '@' + a.username : ''}</option>`).join('');
+        s.value = v || '';
+    });
+    return accounts;
+}
+
+// ============ Targets ============
+async function loadTargets() {
+    const loading = document.getElementById('targets-loading');
+    const errEl = document.getElementById('targets-error');
+    const empty = document.getElementById('targets-empty');
+    const tbl = document.getElementById('targets-table');
+    loading.classList.remove('d-none');
+    errEl.classList.add('d-none');
+    empty.classList.add('d-none');
+    tbl.classList.add('d-none');
+    try {
+        targets = await apiFetch(API + '/targets');
+        loading.classList.add('d-none');
+        if (targets.length === 0) {
+            empty.classList.remove('d-none');
+            return;
+        }
+        tbl.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = targets.map(t => `
+            <tr>
+                <td>${t.id}</td>
+                <td>${t.username || '-'}</td>
+                <td><small>${(t.invite_link || '-').slice(0, 30)}${(t.invite_link||'').length > 30 ? '…' : ''}</small></td>
+                <td>${t.tg_id || '-'}</td>
+                <td><span class="badge bg-secondary">${t.chat_type || 'channel'}</span></td>
+                <td>${t.is_verified ? '<span class="badge bg-success">Yes</span>' : '<span class="badge bg-secondary">No</span>'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteTarget(${t.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        loading.classList.add('d-none');
+        errEl.textContent = e.message || 'Failed to load targets';
+        errEl.classList.remove('d-none');
+    }
+}
+
+async function createTarget() {
+    const username = document.getElementById('target-username').value.trim();
+    const invite = document.getElementById('target-invite').value.trim();
+    const chatType = document.getElementById('target-chat-type').value;
+    if (!username && !invite) {
+        showToast('Enter username or invite link', 'error');
+        return;
+    }
+    try {
+        await apiFetch(API + '/targets', {
+            method: 'POST',
+            body: JSON.stringify({
+                username: username || undefined,
+                invite_link: invite || undefined,
+                chat_type: chatType
+            })
+        });
+        bootstrap.Modal.getInstance(document.getElementById('addTargetModal')).hide();
+        document.getElementById('target-username').value = '';
+        document.getElementById('target-invite').value = '';
+        showToast('Target created');
+        loadTargets();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+function deleteTarget(id) {
+    if (!confirm('Delete this target?')) return;
+    apiFetch(API + '/targets/' + id, { method: 'DELETE' })
+        .then(() => { showToast('Target deleted'); loadTargets(); })
+        .catch(e => showToast(e.message, 'error'));
+}
+
+// ============ Bindings ============
+async function loadBindings() {
+    const loading = document.getElementById('bindings-loading');
+    const errEl = document.getElementById('bindings-error');
+    const empty = document.getElementById('bindings-empty');
+    const tbl = document.getElementById('bindings-table');
+    loading.classList.remove('d-none');
+    errEl.classList.add('d-none');
+    empty.classList.add('d-none');
+    tbl.classList.add('d-none');
+    const accountId = document.getElementById('bindings-account-filter').value;
+    try {
+        const url = accountId ? API + '/bindings?account_id=' + accountId : API + '/bindings';
+        bindings = await apiFetch(url);
+        loading.classList.add('d-none');
+        if (bindings.length === 0) {
+            empty.classList.remove('d-none');
+            return;
+        }
+        const accMap = Object.fromEntries(accounts.map(a => [a.id, a]));
+        const tgtMap = Object.fromEntries(targets.map(t => [t.id, t]));
+        tbl.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = bindings.map(b => {
+            const acc = accMap[b.account_id];
+            const tgt = tgtMap[b.target_id];
+            return `
+            <tr>
+                <td>${b.id}</td>
+                <td>${acc ? acc.phone_number + (acc.username ? ' @' + acc.username : '') : b.account_id}</td>
+                <td>${tgt ? (tgt.username || tgt.title || tgt.id) : b.target_id}</td>
+                <td><input type="checkbox" ${b.can_post ? 'checked' : ''} onchange="toggleBindingCanPost(${b.id}, this.checked)"></td>
+                <td><input type="text" class="form-control form-control-sm" style="width:120px" value="${b.allowed_types || ''}" onchange="updateBindingTypes(${b.id}, this.value)"></td>
+                <td>${b.daily_cap ?? '-'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteBinding(${b.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        loading.classList.add('d-none');
+        errEl.textContent = e.message || 'Failed to load bindings';
+        errEl.classList.remove('d-none');
+    }
+}
+
+async function createBinding() {
+    const accountId = document.getElementById('binding-account').value;
+    const targetId = document.getElementById('binding-target').value;
+    const canPost = document.getElementById('binding-can-post').checked;
+    const allowedTypes = document.getElementById('binding-allowed-types').value.trim() || 'PROMO,INFO';
+    const dailyCap = document.getElementById('binding-daily-cap').value.trim();
+    if (!accountId || !targetId) {
+        showToast('Select account and target', 'error');
+        return;
+    }
+    try {
+        await apiFetch(API + '/bindings', {
+            method: 'POST',
+            body: JSON.stringify({
+                account_id: parseInt(accountId),
+                target_id: parseInt(targetId),
+                can_post: canPost,
+                allowed_types: allowedTypes,
+                daily_cap: dailyCap ? parseInt(dailyCap) : undefined
+            })
+        });
+        bootstrap.Modal.getInstance(document.getElementById('addBindingModal')).hide();
+        showToast('Binding created');
+        loadBindings();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+function toggleBindingCanPost(id, val) {
+    apiFetch(API + '/bindings/' + id, {
+        method: 'PUT',
+        body: JSON.stringify({ can_post: val })
+    }).then(() => showToast('Updated')).catch(e => showToast(e.message, 'error'));
+}
+
+function updateBindingTypes(id, val) {
+    apiFetch(API + '/bindings/' + id, {
+        method: 'PUT',
+        body: JSON.stringify({ allowed_types: val })
+    }).then(() => showToast('Updated')).catch(e => showToast(e.message, 'error'));
+}
+
+function deleteBinding(id) {
+    if (!confirm('Remove this binding?')) return;
+    apiFetch(API + '/bindings/' + id, { method: 'DELETE' })
+        .then(() => { showToast('Binding removed'); loadBindings(); })
+        .catch(e => showToast(e.message, 'error'));
+}
+
+// ============ Templates ============
+async function loadTemplates() {
+    const loading = document.getElementById('templates-loading');
+    const errEl = document.getElementById('templates-error');
+    const empty = document.getElementById('templates-empty');
+    const tbl = document.getElementById('templates-table');
+    loading.classList.remove('d-none');
+    errEl.classList.add('d-none');
+    empty.classList.add('d-none');
+    tbl.classList.add('d-none');
+    try {
+        templates = await apiFetch(API + '/templates');
+        loading.classList.add('d-none');
+        if (templates.length === 0) {
+            empty.classList.remove('d-none');
+            return;
+        }
+        tbl.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = templates.map(t => `
+            <tr>
+                <td>${t.id}</td>
+                <td><span class="badge ${t.type === 'PROMO' ? 'bg-warning' : 'bg-info'}">${t.type}</span></td>
+                <td>${t.scope || 'GLOBAL'}</td>
+                <td>${t.name || '-'}</td>
+                <td><small>${(t.body || '').slice(0, 50)}${(t.body||'').length > 50 ? '…' : ''}</small></td>
+                <td>${t.is_active ? '<span class="badge bg-success">Yes</span>' : '<span class="badge bg-secondary">No</span>'}</td>
+                <td>${t.weight ?? 100}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteTemplate(${t.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        loading.classList.add('d-none');
+        errEl.textContent = e.message || 'Failed to load templates';
+        errEl.classList.remove('d-none');
+    }
+}
+
+async function createTemplate() {
+    const type = document.getElementById('template-type').value;
+    const scope = document.getElementById('template-scope').value;
+    const name = document.getElementById('template-name').value.trim() || 'Template';
+    const body = document.getElementById('template-body').value.trim();
+    const isActive = document.getElementById('template-active').checked;
+    const weight = parseInt(document.getElementById('template-weight').value) || 100;
+    if (!body) {
+        showToast('Body is required', 'error');
+        return;
+    }
+    try {
+        await apiFetch(API + '/templates', {
+            method: 'POST',
+            body: JSON.stringify({ type, scope, name, body, is_active: isActive, weight })
+        });
+        bootstrap.Modal.getInstance(document.getElementById('addTemplateModal')).hide();
+        document.getElementById('template-body').value = '';
+        showToast('Template created');
+        loadTemplates();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+function deleteTemplate(id) {
+    if (!confirm('Delete this template?')) return;
+    apiFetch(API + '/templates/' + id, { method: 'DELETE' })
+        .then(() => { showToast('Template deleted'); loadTemplates(); })
+        .catch(e => showToast(e.message, 'error'));
+}
+
+let previewDebounce;
+function onTemplateBodyInput() {
+    clearTimeout(previewDebounce);
+    previewDebounce = setTimeout(updatePreview, 300);
+}
+
+async function updatePreview() {
+    const body = document.getElementById('template-body').value;
+    const el = document.getElementById('template-preview');
+    if (!body) { el.textContent = ''; return; }
+    try {
+        const r = await apiFetch(API + '/templates/preview', {
+            method: 'POST',
+            body: JSON.stringify({ body, account_name: 'Account', chat_title: 'Chat' })
+        });
+        el.textContent = r.rendered || '';
+    } catch (e) {
+        el.textContent = 'Preview error: ' + e.message;
+    }
+}
+
+// ============ Schedule Profile ============
+async function loadProfile() {
+    const id = document.getElementById('profile-account').value;
+    const loading = document.getElementById('profile-loading');
+    const errEl = document.getElementById('profile-error');
+    const form = document.getElementById('profile-form');
+    if (!id) {
+        form.classList.add('d-none');
+        return;
+    }
+    loading.classList.remove('d-none');
+    errEl.classList.add('d-none');
+    form.classList.add('d-none');
+    try {
+        const p = await apiFetch(API + '/schedule/profile/' + id);
+        loading.classList.add('d-none');
+        form.classList.remove('d-none');
+        document.getElementById('profile-enabled').checked = !!p.is_enabled;
+        document.getElementById('profile-timezone').value = p.timezone || 'Asia/Yerevan';
+        document.getElementById('profile-min-interval').value = p.min_interval_sec ?? '';
+        document.getElementById('profile-cap-total').value = p.daily_cap_total ?? '';
+        document.getElementById('profile-cap-promo').value = p.daily_cap_promo ?? '';
+        document.getElementById('profile-cap-info').value = p.daily_cap_info ?? '';
+        document.getElementById('profile-jitter').value = p.jitter_sec ?? '';
+        document.getElementById('profile-quiet-hours').value = p.quiet_hours_json || '';
+    } catch (e) {
+        loading.classList.add('d-none');
+        errEl.textContent = e.message || 'Failed to load profile';
+        errEl.classList.remove('d-none');
+    }
+}
+
+async function saveProfile(e) {
+    e.preventDefault();
+    const id = document.getElementById('profile-account').value;
+    if (!id) return;
+    const minInterval = document.getElementById('profile-min-interval').value;
+    const capTotal = document.getElementById('profile-cap-total').value;
+    const capPromo = document.getElementById('profile-cap-promo').value;
+    const capInfo = document.getElementById('profile-cap-info').value;
+    const jitter = document.getElementById('profile-jitter').value;
+    const qh = document.getElementById('profile-quiet-hours').value.trim();
+    if (minInterval && (isNaN(minInterval) || parseInt(minInterval) < 60)) {
+        showToast('Min interval must be >= 60', 'error');
+        return;
+    }
+    if (qh) {
+        try { JSON.parse(qh); } catch (_) {
+            showToast('Quiet hours must be valid JSON', 'error');
+            return;
+        }
+    }
+    try {
+        await apiFetch(API + '/schedule/profile/' + id, {
+            method: 'PUT',
+            body: JSON.stringify({
+                is_enabled: document.getElementById('profile-enabled').checked,
+                timezone: document.getElementById('profile-timezone').value || 'Asia/Yerevan',
+                min_interval_sec: minInterval ? parseInt(minInterval) : undefined,
+                daily_cap_total: capTotal ? parseInt(capTotal) : undefined,
+                daily_cap_promo: capPromo ? parseInt(capPromo) : undefined,
+                daily_cap_info: capInfo ? parseInt(capInfo) : undefined,
+                jitter_sec: jitter ? parseInt(jitter) : undefined,
+                quiet_hours_json: qh || undefined
+            })
+        });
+        showToast('Profile saved');
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+// ============ Schedule Rules ============
+async function loadRules() {
+    const id = document.getElementById('rules-account').value;
+    const loading = document.getElementById('rules-loading');
+    const errEl = document.getElementById('rules-error');
+    const empty = document.getElementById('rules-empty');
+    const tbl = document.getElementById('rules-table');
+    if (!id) {
+        loading.textContent = 'Select an account';
+        loading.classList.remove('d-none');
+        errEl.classList.add('d-none');
+        empty.classList.add('d-none');
+        tbl.classList.add('d-none');
+        return;
+    }
+    loading.textContent = 'Loading...';
+    loading.classList.remove('d-none');
+    errEl.classList.add('d-none');
+    empty.classList.add('d-none');
+    tbl.classList.add('d-none');
+    try {
+        const rules = await apiFetch(API + '/schedule/rules/' + id);
+        loading.classList.add('d-none');
+        if (rules.length === 0) {
+            empty.classList.remove('d-none');
+            return;
+        }
+        tbl.classList.remove('d-none');
+        const timesStr = (tj) => {
+            try { const arr = typeof tj === 'string' ? JSON.parse(tj) : tj; return Array.isArray(arr) ? arr.join(', ') : tj; } catch(_) { return tj || '-'; }
+        };
+        tbl.querySelector('tbody').innerHTML = rules.map(r => `
+            <tr>
+                <td>${r.id}</td>
+                <td><span class="badge ${r.type === 'PROMO' ? 'bg-warning' : 'bg-info'}">${r.type}</span></td>
+                <td>${timesStr(r.times_json)}</td>
+                <td>${r.target_mode || 'ALL_BOUND'}</td>
+                <td>${r.is_enabled ? '<span class="badge bg-success">Yes</span>' : '<span class="badge bg-secondary">No</span>'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteRule(${id}, ${r.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        loading.classList.add('d-none');
+        errEl.textContent = e.message || 'Failed to load rules';
+        errEl.classList.remove('d-none');
+    }
+}
+
+function deleteRule(accountId, ruleId) {
+    if (!confirm('Delete this rule?')) return;
+    apiFetch(API + '/schedule/rules/' + accountId + '/' + ruleId, { method: 'DELETE' })
+        .then(() => { showToast('Rule deleted'); loadRules(); })
+        .catch(e => showToast(e.message, 'error'));
+}
+
+async function createRule() {
+    const accountId = document.getElementById('rules-account').value;
+    const type = document.getElementById('rule-type').value;
+    const timesStr = document.getElementById('rule-times').value.trim();
+    const targetMode = document.getElementById('rule-target-mode').value;
+    const selectedIds = [];
+    document.querySelectorAll('#rule-targets input:checked').forEach(cb => selectedIds.push(parseInt(cb.value)));
+    const isEnabled = document.getElementById('rule-enabled').checked;
+    if (!accountId) {
+        showToast('Select an account first', 'error');
+        return;
+    }
+    const times = timesStr.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const invalid = times.find(t => !/^\d{1,2}:\d{2}$/.test(t));
+    if (invalid) {
+        showToast('Invalid time format. Use HH:MM (e.g. 10:00, 18:00)', 'error');
+        return;
+    }
+    try {
+        await apiFetch(API + '/schedule/rules/' + accountId, {
+            method: 'POST',
+            body: JSON.stringify({
+                type,
+                times_json: times.length ? times : ['10:00', '18:00'],
+                target_mode: targetMode,
+                selected_target_ids: targetMode === 'ONLY_SELECTED' ? selectedIds : [],
+                is_enabled: isEnabled
+            })
+        });
+        bootstrap.Modal.getInstance(document.getElementById('addRuleModal')).hide();
+        document.getElementById('rule-times').value = '10:00, 18:00';
+        showToast('Rule created');
+        loadRules();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+// ============ Deliveries ============
+async function loadDeliveries() {
+    const loading = document.getElementById('deliveries-loading');
+    const errEl = document.getElementById('deliveries-error');
+    const empty = document.getElementById('deliveries-empty');
+    const tbl = document.getElementById('deliveries-table');
+    loading.classList.remove('d-none');
+    errEl.classList.add('d-none');
+    empty.classList.add('d-none');
+    tbl.classList.add('d-none');
+    const accountId = document.getElementById('deliveries-account-filter').value;
+    const type = document.getElementById('deliveries-type-filter').value;
+    let url = API + '/deliveries?limit=100';
+    if (accountId) url += '&account_id=' + accountId;
+    if (type) url += '&type=' + type;
+    try {
+        const data = await apiFetch(url);
+        loading.classList.add('d-none');
+        if (data.length === 0) {
+            empty.classList.remove('d-none');
+            return;
+        }
+        const accMap = Object.fromEntries(accounts.map(a => [a.id, a]));
+        const tgtMap = Object.fromEntries(targets.map(t => [t.id, t]));
+        tbl.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = data.map(d => {
+            const acc = accMap[d.account_id];
+            const tgt = tgtMap[d.target_id];
+            const err = [d.error_code, d.error_message].filter(Boolean).join(' ');
+            const statusBadge = d.status === 'SENT' ? 'bg-success' : d.status === 'FAILED' ? 'bg-danger' : 'bg-secondary';
+            return `
+            <tr>
+                <td>${d.id}</td>
+                <td>${acc ? acc.phone_number : d.account_id}</td>
+                <td>${tgt ? (tgt.username || tgt.title || d.target_id) : d.target_id}</td>
+                <td>${d.type || '-'}</td>
+                <td><span class="badge ${statusBadge}">${d.status}</span></td>
+                <td>${d.sent_at ? new Date(d.sent_at).toLocaleString() : '-'}</td>
+                <td><small class="text-danger">${err || '-'}</small></td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        loading.classList.add('d-none');
+        errEl.textContent = e.message || 'Failed to load deliveries';
+        errEl.classList.remove('d-none');
+    }
+}
+
+// Populate modal dropdowns when shown
+function fillBindingModal() {
+    const acc = document.getElementById('binding-account');
+    const tgt = document.getElementById('binding-target');
+    acc.innerHTML = '<option value="">Select account</option>' + accounts.map(a => `<option value="${a.id}">${a.phone_number} ${a.username ? '@' + a.username : ''}</option>`).join('');
+    tgt.innerHTML = '<option value="">Select target</option>' + targets.map(t => `<option value="${t.id}">${t.username || t.title || t.invite_link || '#' + t.id}</option>`).join('');
+}
+
+function fillRuleTargets() {
+    const wrap = document.getElementById('rule-targets-wrap');
+    const mode = document.getElementById('rule-target-mode').value;
+    if (mode === 'ONLY_SELECTED') {
+        wrap.classList.remove('d-none');
+        document.getElementById('rule-targets').innerHTML = targets.map(t => `
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="${t.id}" id="rt-${t.id}">
+                <label class="form-check-label" for="rt-${t.id}">${t.username || t.title || '#' + t.id}</label>
+            </div>
+        `).join('');
+    } else {
+        wrap.classList.add('d-none');
+    }
+}
+
+// ============ Init ============
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadAccounts();
+    await loadTargets();
+    loadBindings();
+    loadTemplates();
+    loadDeliveries();
+
+    document.getElementById('profile-account').addEventListener('change', loadProfile);
+    document.getElementById('profile-form').addEventListener('submit', saveProfile);
+    document.getElementById('rules-account').addEventListener('change', loadRules);
+    document.getElementById('bindings-account-filter').addEventListener('change', loadBindings);
+    document.getElementById('deliveries-account-filter').addEventListener('change', loadDeliveries);
+    document.getElementById('deliveries-type-filter').addEventListener('change', loadDeliveries);
+    document.getElementById('deliveries-refresh').addEventListener('click', loadDeliveries);
+
+    document.getElementById('addBindingModal').addEventListener('show.bs.modal', fillBindingModal);
+    document.getElementById('addRuleModal').addEventListener('show.bs.modal', fillRuleTargets);
+    document.getElementById('rule-target-mode').addEventListener('change', fillRuleTargets);
+});
+
+// Tab switch load
+document.getElementById('bindings-tab').addEventListener('shown.bs.tab', loadBindings);
+document.getElementById('templates-tab').addEventListener('shown.bs.tab', loadTemplates);
+document.getElementById('rules-tab').addEventListener('shown.bs.tab', () => { if (document.getElementById('rules-account').value) loadRules(); });
+document.getElementById('deliveries-tab').addEventListener('shown.bs.tab', loadDeliveries);
+</script>
+{% endblock %}

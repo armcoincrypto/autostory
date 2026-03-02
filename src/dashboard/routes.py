@@ -458,6 +458,12 @@ def campaigns_page():
     return render_template('campaigns.html')
 
 
+@web.route('/scheduler')
+def scheduler_page():
+    """Scheduler configuration page"""
+    return render_template('scheduler.html')
+
+
 # ============================================
 # Register all routes
 # ============================================

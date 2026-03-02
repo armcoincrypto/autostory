@@ -49,6 +49,16 @@ def create_target():
         return jsonify({"id": t.id, "success": True})
 
 
+@scheduler_api.route('/targets/<int:target_id>', methods=['DELETE'])
+def delete_target(target_id):
+    with get_db_context() as db:
+        t = db.query(ChatTarget).filter(ChatTarget.id == target_id).first()
+        if not t:
+            return jsonify({"error": "Target not found"}), 404
+        db.delete(t)
+        return jsonify({"success": True})
+
+
 # ============ Bindings ============
 @scheduler_api.route('/bindings', methods=['GET'])
 def list_bindings():
@@ -94,6 +104,29 @@ def create_binding():
         return jsonify({"id": b.id, "success": True})
 
 
+@scheduler_api.route('/bindings/<int:binding_id>', methods=['PUT'])
+def update_binding(binding_id):
+    data = request.get_json() or {}
+    with get_db_context() as db:
+        b = db.query(AccountTargetBinding).filter(AccountTargetBinding.id == binding_id).first()
+        if not b:
+            return jsonify({"error": "Binding not found"}), 404
+        for k in ["can_post", "allowed_types", "daily_cap"]:
+            if k in data:
+                setattr(b, k, data[k])
+        return jsonify({"success": True})
+
+
+@scheduler_api.route('/bindings/<int:binding_id>', methods=['DELETE'])
+def delete_binding(binding_id):
+    with get_db_context() as db:
+        b = db.query(AccountTargetBinding).filter(AccountTargetBinding.id == binding_id).first()
+        if not b:
+            return jsonify({"error": "Binding not found"}), 404
+        db.delete(b)
+        return jsonify({"success": True})
+
+
 # ============ Templates ============
 @scheduler_api.route('/templates', methods=['GET'])
 def list_templates():
@@ -137,6 +170,29 @@ def create_template():
         db.add(t)
         db.refresh(t)
         return jsonify({"id": t.id, "success": True})
+
+
+@scheduler_api.route('/templates/<int:template_id>', methods=['PUT'])
+def update_template(template_id):
+    data = request.get_json() or {}
+    with get_db_context() as db:
+        t = db.query(MessageTemplate).filter(MessageTemplate.id == template_id).first()
+        if not t:
+            return jsonify({"error": "Template not found"}), 404
+        for k in ["type", "scope", "name", "body", "is_active", "weight", "account_id", "target_id", "binding_id"]:
+            if k in data:
+                setattr(t, k, data[k])
+        return jsonify({"success": True})
+
+
+@scheduler_api.route('/templates/<int:template_id>', methods=['DELETE'])
+def delete_template(template_id):
+    with get_db_context() as db:
+        t = db.query(MessageTemplate).filter(MessageTemplate.id == template_id).first()
+        if not t:
+            return jsonify({"error": "Template not found"}), 404
+        db.delete(t)
+        return jsonify({"success": True})
 
 
 @scheduler_api.route('/templates/preview', methods=['POST'])
@@ -228,15 +284,34 @@ def create_schedule_rule(account_id):
         return jsonify({"id": r.id, "success": True})
 
 
+@scheduler_api.route('/schedule/rules/<int:account_id>/<int:rule_id>', methods=['DELETE'])
+def delete_schedule_rule(account_id, rule_id):
+    with get_db_context() as db:
+        r = db.query(ScheduleRule).filter(
+            ScheduleRule.id == rule_id,
+            ScheduleRule.account_id == account_id
+        ).first()
+        if not r:
+            return jsonify({"error": "Rule not found"}), 404
+        db.delete(r)
+        return jsonify({"success": True})
+
+
 # ============ Deliveries (Logs) ============
 @scheduler_api.route('/deliveries', methods=['GET'])
 def list_deliveries():
     account_id = request.args.get("account_id", type=int)
+    target_id = request.args.get("target_id", type=int)
+    msg_type = request.args.get("type")
     limit = request.args.get("limit", 100, type=int)
     with get_db_context() as db:
         q = db.query(MessageDelivery).order_by(MessageDelivery.created_at.desc())
         if account_id:
             q = q.filter(MessageDelivery.account_id == account_id)
+        if target_id:
+            q = q.filter(MessageDelivery.target_id == target_id)
+        if msg_type:
+            q = q.filter(MessageDelivery.type == msg_type)
         deliveries = q.limit(limit).all()
         return jsonify([{
             "id": d.id,
@@ -245,6 +320,7 @@ def list_deliveries():
             "type": d.type,
             "status": d.status,
             "sent_at": d.sent_at.isoformat() if d.sent_at else None,
+            "error_code": getattr(d, "error_code", None),
             "error_message": d.error_message,
             "created_at": d.created_at.isoformat(),
         } for d in deliveries])
