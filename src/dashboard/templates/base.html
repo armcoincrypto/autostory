@@ -91,11 +91,9 @@
         .nav-tabs .nav-link { color: #94a3b8; }
         .nav-tabs .nav-link:hover { color: #e4e4e7; border-color: transparent; }
         .nav-tabs .nav-link.active { color: #fff; background-color: var(--card-bg); border-color: #334155 #334155 var(--card-bg); }
-        /* Modal selects: listbox style so options always visible (avoids dropdown z-index issues) */
+        /* Modal selects: allow dropdown to show above modal */
         .modal-body { overflow: visible !important; }
-        .modal #binding-account, .modal #binding-target {
-            min-height: 6rem; cursor: pointer; display: block;
-        }
+        .modal .form-select { min-height: 2.5rem; cursor: pointer; }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
