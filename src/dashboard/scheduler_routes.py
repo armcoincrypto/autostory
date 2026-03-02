@@ -1,6 +1,7 @@
 """
 Scheduler API routes - Targets, Templates, Bindings, Schedule, Logs
 """
+import asyncio
 import json
 from datetime import datetime
 
@@ -11,9 +12,10 @@ from src.core.models import Account, AccountStatus
 from src.core.scheduler_models import (
     ChatTarget, AccountTargetBinding, MessageTemplate,
     ScheduleProfile, ScheduleRule, ScheduledJob, MessageDelivery,
-    MessageType
+    MessageType, JobStatus
 )
 from src.scheduler.renderer import render_template
+from src.scheduler.executor import execute_job
 
 scheduler_api = Blueprint('scheduler_api', __name__, url_prefix='/api/v1')
 
@@ -57,6 +59,18 @@ def delete_target(target_id):
             return jsonify({"error": "Target not found"}), 404
         db.delete(t)
         return jsonify({"success": True})
+
+
+@scheduler_api.route('/targets/<int:target_id>/verify', methods=['POST'])
+def verify_target(target_id):
+    """Mark target as verified (manual; real verification would need Telethon lookup)."""
+    with get_db_context() as db:
+        t = db.query(ChatTarget).filter(ChatTarget.id == target_id).first()
+        if not t:
+            return jsonify({"error": "Target not found"}), 404
+        t.is_verified = True
+        t.verified_at = datetime.utcnow()
+        return jsonify({"success": True, "is_verified": True})
 
 
 # ============ Bindings ============
@@ -295,6 +309,42 @@ def delete_schedule_rule(account_id, rule_id):
             return jsonify({"error": "Rule not found"}), 404
         db.delete(r)
         return jsonify({"success": True})
+
+
+# ============ Run Now (Test) ============
+@scheduler_api.route('/jobs/run-now', methods=['POST'])
+def run_job_now():
+    """Create and execute a job immediately for testing."""
+    data = request.get_json() or {}
+    account_id = data.get("account_id")
+    target_id = data.get("target_id")
+    msg_type = data.get("type")
+    if not all([account_id, target_id, msg_type]):
+        return jsonify({"error": "account_id, target_id, type required"}), 400
+    if msg_type not in ("PROMO", "INFO"):
+        return jsonify({"error": "type must be PROMO or INFO"}), 400
+    with get_db_context() as db:
+        binding = db.query(AccountTargetBinding).filter(
+            AccountTargetBinding.account_id == account_id,
+            AccountTargetBinding.target_id == target_id
+        ).first()
+        if not binding:
+            return jsonify({"error": "No binding for this account-target pair"}), 400
+        job = ScheduledJob(
+            account_id=int(account_id),
+            target_id=int(target_id),
+            type=msg_type,
+            run_at=datetime.utcnow(),
+            status=JobStatus.PENDING
+        )
+        db.add(job)
+        db.flush()
+        job_id = job.id
+    try:
+        asyncio.run(execute_job(job_id))
+    except Exception as e:
+        return jsonify({"error": str(e), "job_id": job_id}), 500
+    return jsonify({"success": True, "job_id": job_id})
 
 
 # ============ Deliveries (Logs) ============
