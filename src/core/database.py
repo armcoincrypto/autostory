@@ -26,8 +26,8 @@ engine = create_engine(
     echo=settings.environment == "development",
 )
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Create session factory (expire_on_commit=False so Account objects stay usable after session closes)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 
 
 def init_db() -> None:
