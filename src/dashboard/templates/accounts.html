@@ -10,6 +10,12 @@
     </button>
 </div>
 
+<div class="alert alert-info mb-4">
+    <strong><i class="bi bi-chat-dots"></i> Use an account for Scheduler (send messages to groups):</strong>
+    In the <strong>Purpose</strong> column below, set the account to <strong>Messaging</strong> or <strong>Both</strong>.
+    Then it will appear in <a href="/scheduler" class="alert-link">Scheduler</a> when you choose "Select user".
+</div>
+
 <div class="card">
     <div class="card-body">
         <table class="table table-hover">
@@ -19,13 +25,14 @@
                     <th>Phone</th>
                     <th>Username</th>
                     <th>Status</th>
+                    <th>Purpose <small class="text-muted" title="Messaging = use in Scheduler only">(Scheduler / Stories)</small></th>
                     <th>Stories Today</th>
                     <th>Last Active</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="accounts-table">
-                <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="8" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -33,38 +40,115 @@
 
 <!-- Add Account Modal -->
 <div class="modal fade" id="addAccountModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content bg-dark">
             <div class="modal-header">
                 <h5 class="modal-title">Add New Account</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div id="auth-step-1">
-                    <div class="mb-3">
-                        <label class="form-label">Phone Number (with country code)</label>
-                        <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-phone">Phone + Code</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-qr">QR Code (no SMS)</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tdata">Import from tdata</button></li>
+                </ul>
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="tab-phone">
+                        <div id="auth-step-1">
+                            <div class="mb-3">
+                                <label class="form-label">Phone Number (with country code)</label>
+                                <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
+                            </div>
+                            <button class="btn btn-primary w-100" onclick="startAuth()">
+                                <i class="bi bi-send"></i> Send Code
+                            </button>
+                        </div>
+                        <div id="auth-step-2" style="display:none;">
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i> Code goes to <strong>Telegram app</strong> ("Login code: XXXXX") when this number is logged in somewhere. If it's in Accounts, click <strong>Fetch code</strong>. If it's on your phone as a second account, check that Telegram app. Brand-new numbers need SMS for first login.
+                            </div>
+                            <div id="auth-fetch-code-area" class="mb-3">
+                                <button type="button" class="btn btn-outline-info w-100" id="auth-fetch-btn" onclick="fetchCodeInAuthFlow()">
+                                    <i class="bi bi-download"></i> Fetch code from session (if number is in Accounts)
+                                </button>
+                                <div id="auth-fetch-result" class="alert d-none mt-2"></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Verification Code</label>
+                                <input type="text" class="form-control" id="auth-code" placeholder="12345">
+                            </div>
+                            <div class="mb-3" id="password-field" style="display:none;">
+                                <label class="form-label">2FA Password</label>
+                                <input type="password" class="form-control" id="auth-password">
+                            </div>
+                            <button class="btn btn-primary w-100" onclick="completeAuth()">
+                                <i class="bi bi-check-circle"></i> Verify
+                            </button>
+                        </div>
                     </div>
-                    <button class="btn btn-primary w-100" onclick="startAuth()">
-                        <i class="bi bi-send"></i> Send Code
-                    </button>
+                    <div class="tab-pane fade" id="tab-qr">
+                        <p class="text-muted small mb-2"><strong>No SMS access?</strong> Scan the QR code with Telegram on your phone (Settings → Devices → Link Desktop Device). No code or SMS needed.</p>
+                        <div id="qr-area" class="text-center mb-3">
+                            <div id="qr-placeholder" class="bg-dark rounded p-4" style="min-height:280px;">
+                                <button class="btn btn-primary" onclick="startQRLogin()"><i class="bi bi-qr-code-scan"></i> Show QR Code</button>
+                            </div>
+                            <div id="qr-status" class="alert d-none mt-2"></div>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="tab-tdata">
+                        <div class="alert alert-light border mb-3">
+                            <strong>What is a session string?</strong> It’s a long line of text (starts with <code>1A...</code> or <code>1B...</code>) that represents a logged-in Telegram account. You get it by running a small script on your computer that reads your Telegram Desktop <strong>tdata</strong> folder and prints this string. You then paste that string here — no zip upload needed.
+                        </div>
+                        <p class="text-muted small mb-2"><strong>Step 1.</strong> On your computer (Mac/Windows), open a terminal in this project and run (use the <strong>real path</strong> to your tdata folder):</p>
+                        <pre class="bg-dark text-light p-2 rounded small mb-2"><code>python scripts/convert_tdata.py "/path/to/your/tdata"</code></pre>
+                        <p class="text-muted small mb-2">Examples: Mac <code>~/Library/Application Support/Telegram Desktop/tdata</code> &nbsp;|&nbsp; Windows <code>%APPDATA%\Telegram Desktop\tdata</code></p>
+                        <p class="text-muted small mb-2"><strong>Step 2.</strong> Copy the long line it prints (the session string) and paste it below, then click Import.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Session string</label>
+                            <textarea class="form-control font-monospace" id="session-string" rows="3" placeholder="Paste the 1BQ... line here" style="font-size:0.85em;"></textarea>
+                        </div>
+                        <button class="btn btn-success w-100 mb-3" onclick="importSession()">
+                            <i class="bi bi-clipboard"></i> Import from pasted string
+                        </button>
+                        <hr class="my-3">
+                        <p class="text-muted small mb-2"><strong>Or upload a zip:</strong> Only works if the zip contains the real <strong>tdata</strong> folder from Telegram Desktop (with <code>map.json</code> inside). Many “session” zips from other tools use a different structure and won’t work — use the paste method above instead.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Upload tdata (zip)</label>
+                            <input type="file" class="form-control" id="tdata-zip" accept=".zip">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Passcode or session string <span class="text-muted">(optional)</span></label>
+                            <input type="text" class="form-control font-monospace" id="tdata-passcode" placeholder="Telegram passcode, or paste session string (no file needed)">
+                        </div>
+                        <button class="btn btn-outline-success w-100" id="btn-import-tdata" onclick="importTdataZip()">
+                            <i class="bi bi-cloud-upload"></i> Upload and import account
+                        </button>
+                    </div>
                 </div>
-                <div id="auth-step-2" style="display:none;">
-                    <div class="alert alert-info">
-                        <i class="bi bi-info-circle"></i> Check your Telegram app for the code
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Verification Code</label>
-                        <input type="text" class="form-control" id="auth-code" placeholder="12345">
-                    </div>
-                    <div class="mb-3" id="password-field" style="display:none;">
-                        <label class="form-label">2FA Password</label>
-                        <input type="password" class="form-control" id="auth-password">
-                    </div>
-                    <button class="btn btn-primary w-100" onclick="completeAuth()">
-                        <i class="bi bi-check-circle"></i> Verify
-                    </button>
-                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Get Login Code Modal (for phone login without SMS) -->
+<div class="modal fade" id="loginCodeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-phone"></i> Get Login Code for Phone</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Use when you have this account only in DB and can't receive SMS. Choose "Send code via Telegram" on your phone. If you see "Account not found", run <code>./sync_db_from_server.sh</code> first.</p>
+                <ol class="small mb-3">
+                    <li>On your phone: Telegram → Add account → enter your phone number</li>
+                    <li>When asked, choose <strong>Send code via Telegram</strong> (not SMS)</li>
+                    <li>Click "Fetch Code" below within ~90 seconds</li>
+                </ol>
+                <div id="login-code-result" class="alert d-none"></div>
+                <button class="btn btn-primary w-100" id="login-code-fetch-btn" onclick="fetchLoginCode()">
+                    <i class="bi bi-download"></i> Fetch Code
+                </button>
             </div>
         </div>
     </div>
@@ -82,32 +166,60 @@ async function loadAccounts() {
 
         const tbody = document.getElementById('accounts-table');
         if (accounts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No accounts added yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No accounts added yet</td></tr>';
             return;
         }
 
-        tbody.innerHTML = accounts.map(a => `
+        tbody.innerHTML = accounts.map(a => {
+            const purpose = a.purpose || 'both';
+            return `
             <tr>
                 <td>${a.id}</td>
                 <td>${a.phone_number}</td>
                 <td>${a.username || '-'}</td>
                 <td><span class="badge badge-${a.status}">${a.status}</span></td>
+                <td>
+                <select class="form-select form-select-sm purpose-select" style="width:auto;" data-account-id="${a.id}" title="Messaging = Scheduler only, Autostory = Stories only, Both = both">
+                        <option value="both" ${purpose === 'both' ? 'selected' : ''}>Both</option>
+                        <option value="autostory" ${purpose === 'autostory' ? 'selected' : ''}>Stories only</option>
+                        <option value="messaging" ${purpose === 'messaging' ? 'selected' : ''}>Messaging (Scheduler)</option>
+                    </select>
+                </td>
                 <td>${a.stories_today}</td>
                 <td>${a.last_active ? new Date(a.last_active).toLocaleString() : 'Never'}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-secondary" onclick="viewAccount(${a.id})">
                         <i class="bi bi-eye"></i>
                     </button>
+                    <button class="btn btn-sm btn-outline-info" onclick="openLoginCodeModal(${a.id})" title="Get login code for phone">
+                        <i class="bi bi-phone"></i>
+                    </button>
                     <button class="btn btn-sm btn-outline-danger" onclick="toggleAccount(${a.id}, '${a.status}')">
                         <i class="bi bi-power"></i>
                     </button>
                 </td>
             </tr>
-        `).join('');
+        `;
+        }).join('');
     } catch (error) {
         console.error('Failed to load accounts:', error);
     }
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadAccounts();
+    document.getElementById('accounts-table')?.addEventListener('change', async (e) => {
+        if (e.target.classList.contains('purpose-select')) {
+            const id = e.target.dataset.accountId;
+            const purpose = e.target.value;
+            try {
+                await fetch(`/api/accounts/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ purpose }) });
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    });
+});
 
 async function startAuth() {
     const phone = document.getElementById('phone-number').value;
@@ -123,12 +235,58 @@ async function startAuth() {
             authData = result;
             document.getElementById('auth-step-1').style.display = 'none';
             document.getElementById('auth-step-2').style.display = 'block';
+            document.getElementById('auth-fetch-result').classList.add('d-none');
         } else {
             alert('Error: ' + result.error);
         }
     } catch (error) {
         alert('Failed to send code: ' + error);
     }
+}
+
+async function fetchCodeInAuthFlow() {
+    if (!authData?.phone_number) return;
+    let accountId = authData.existing_account_id;
+    if (!accountId) {
+        const phoneNorm = authData.phone_number.replace(/\s|-/g, '');
+        const accResp = await fetch('/api/accounts');
+        const accounts = await accResp.json();
+        const match = accounts.find(a => {
+            const p = (a.phone_number || '').replace(/\s|-/g, '');
+            return p && (p === phoneNorm || p.slice(-9) === phoneNorm.slice(-9));
+        });
+        accountId = match?.id;
+    }
+    if (!accountId) {
+        document.getElementById('auth-fetch-result').classList.remove('d-none');
+        document.getElementById('auth-fetch-result').className = 'alert alert-warning mt-2';
+        document.getElementById('auth-fetch-result').textContent = 'This number is not in Accounts. Code via Telegram only works when the number is already added.';
+        return;
+    }
+    const btn = document.getElementById('auth-fetch-btn');
+    const resultEl = document.getElementById('auth-fetch-result');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Waiting...';
+    resultEl.classList.add('d-none');
+    try {
+        const r = await fetch(`/api/accounts/${authData.existing_account_id}/get-login-code`, { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        const data = await r.json();
+        resultEl.classList.remove('d-none');
+        if (data.success && data.code) {
+            resultEl.className = 'alert alert-success';
+            resultEl.innerHTML = `Code: <strong>${data.code}</strong> – entered below`;
+            document.getElementById('auth-code').value = data.code;
+        } else {
+            resultEl.className = 'alert alert-warning';
+            resultEl.textContent = data.error || 'No code yet. Wait a few seconds and try again.';
+        }
+    } catch (e) {
+        resultEl.classList.remove('d-none');
+        resultEl.className = 'alert alert-danger';
+        resultEl.textContent = 'Failed: ' + e.message;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-download"></i> Fetch code from session';
 }
 
 async function completeAuth() {
@@ -166,6 +324,121 @@ async function completeAuth() {
     }
 }
 
+let qrToken = null;
+let qrPollId = null;
+async function startQRLogin() {
+    document.getElementById('qr-placeholder').innerHTML = '<div class="spinner-border text-primary"></div><p class="mt-2">Generating...</p>';
+    try {
+        const r = await fetch('/api/accounts/auth/qr-start', { method: 'POST', headers: {'Content-Type': 'application/json'}});
+        const data = await r.json();
+        if (!data.success) {
+            document.getElementById('qr-placeholder').innerHTML = `<div class="alert alert-danger">${data.error || 'Failed'}</div><button class="btn btn-primary mt-2" onclick="startQRLogin()">Retry</button>`;
+            return;
+        }
+        qrToken = data.token;
+        const url = encodeURIComponent(data.url);
+        document.getElementById('qr-placeholder').innerHTML = `
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${url}" alt="QR Code" class="rounded">
+            <p class="mt-2 small text-muted">Open Telegram → Settings → Devices → Link Desktop Device → Scan</p>
+        `;
+        document.getElementById('qr-status').classList.add('d-none');
+        qrPollId = setInterval(pollQRCheck, 2000);
+    } catch (e) {
+        document.getElementById('qr-placeholder').innerHTML = `<div class="alert alert-danger">${e.message}</div><button class="btn btn-primary mt-2" onclick="startQRLogin()">Retry</button>`;
+    }
+}
+async function pollQRCheck() {
+    if (!qrToken) return;
+    try {
+        const r = await fetch('/api/accounts/auth/qr-check?token=' + encodeURIComponent(qrToken));
+        const data = await r.json();
+        if (data.success && data.account_id) {
+            clearInterval(qrPollId);
+            qrPollId = null;
+            document.getElementById('qr-status').classList.remove('d-none');
+            document.getElementById('qr-status').className = 'alert alert-success mt-2';
+            document.getElementById('qr-status').textContent = 'Success! Account added.';
+            loadAccounts();
+            setTimeout(() => { document.getElementById('addAccountModal').querySelector('.btn-close').click(); location.reload(); }, 1500);
+        } else if (data.error) {
+            clearInterval(qrPollId);
+            qrPollId = null;
+            document.getElementById('qr-status').classList.remove('d-none');
+            document.getElementById('qr-status').className = 'alert alert-warning mt-2';
+            document.getElementById('qr-status').textContent = data.error;
+        }
+    } catch (e) {}
+}
+
+async function importSession() {
+    const sessionString = document.getElementById('session-string').value.trim();
+    if (!sessionString) {
+        alert('Paste your session string first');
+        return;
+    }
+    try {
+        const response = await fetch('/api/accounts/import-session', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_string: sessionString})
+        });
+        const result = await response.json().catch(() => ({}));
+        if (result.success) {
+            alert(result.message || 'Account imported!');
+            location.reload();
+        } else {
+            alert('Error: ' + (result.error || response.statusText || 'Import failed'));
+        }
+    } catch (error) {
+        alert('Failed: ' + error);
+    }
+}
+
+async function importTdataZip() {
+    const fileInput = document.getElementById('tdata-zip');
+    const file = fileInput?.files?.[0];
+    let passcode = document.getElementById('tdata-passcode').value.trim() || null;
+    // If nothing in passcode field but session string textarea has content, use that
+    if (!passcode) {
+        const fromTextarea = document.getElementById('session-string').value.trim().replace(/\s+/g, '');
+        if (fromTextarea && fromTextarea.length >= 90 && /^1[A-Za-z0-9+/=]+$/.test(fromTextarea))
+            passcode = fromTextarea;
+    }
+    if (!file && !passcode) {
+        alert('Paste your session string in the box above and click "Import from pasted string", or paste it in "Passcode or session string" and click this button (no file needed).');
+        return;
+    }
+    const btn = document.getElementById('btn-import-tdata');
+    const origText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Uploading and converting...';
+    try {
+        const form = new FormData();
+        if (file) form.append('file', file);
+        if (passcode) form.append('passcode', passcode);
+        const response = await fetch('/api/accounts/import-tdata', {
+            method: 'POST',
+            body: form
+        });
+        const result = await response.json().catch(() => ({}));
+        if (result.success) {
+            let msg = result.message || 'Account imported from tdata!';
+            if (result.failed > 0 && result.errors && result.errors.length > 0) {
+                msg += '\n\nFirst errors:\n' + result.errors.slice(0, 3).map(e => e.error || e).join('\n');
+            }
+            alert(msg);
+            location.reload();
+        } else {
+            alert('Error: ' + (result.error || response.statusText || 'Import failed'));
+        }
+    } catch (error) {
+        alert('Failed: ' + error.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = origText;
+    }
+}
+
 async function toggleAccount(id, currentStatus) {
     const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
     try {
@@ -184,6 +457,38 @@ function viewAccount(id) {
     window.location.href = `/accounts/${id}`;
 }
 
-document.addEventListener('DOMContentLoaded', loadAccounts);
+let loginCodeAccountId = null;
+function openLoginCodeModal(accountId) {
+    loginCodeAccountId = accountId;
+    document.getElementById('login-code-result').classList.add('d-none');
+    document.getElementById('login-code-fetch-btn').disabled = false;
+    new bootstrap.Modal(document.getElementById('loginCodeModal')).show();
+}
+async function fetchLoginCode() {
+    if (!loginCodeAccountId) return;
+    const btn = document.getElementById('login-code-fetch-btn');
+    const resultEl = document.getElementById('login-code-result');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Waiting...';
+    resultEl.classList.add('d-none');
+    try {
+        const r = await fetch(`/api/accounts/${loginCodeAccountId}/get-login-code`, { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        const data = await r.json();
+        resultEl.classList.remove('d-none');
+        if (data.success && data.code) {
+            resultEl.className = 'alert alert-success';
+            resultEl.innerHTML = `Code: <strong class="fs-4">${data.code}</strong><br><small>Enter this on your phone</small>`;
+        } else {
+            resultEl.className = 'alert alert-warning';
+            resultEl.textContent = data.error || 'No code received. Request the code on your phone first, then try again.';
+        }
+    } catch (e) {
+        resultEl.classList.remove('d-none');
+        resultEl.className = 'alert alert-danger';
+        resultEl.textContent = 'Failed: ' + e.message;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-download"></i> Fetch Code';
+}
 </script>
 {% endblock %}
