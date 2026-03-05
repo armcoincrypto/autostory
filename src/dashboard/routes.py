@@ -11,6 +11,19 @@ from functools import wraps
 from datetime import datetime
 from typing import Optional
 
+def _dt_iso(v):
+    """Return ISO string for datetime-like or keep strings as-is."""
+    if v is None:
+        return None
+    iso = getattr(v, "isoformat", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    return str(v)
+
+
 from flask import Blueprint, jsonify, request, render_template, send_from_directory
 from flask_login import login_required, current_user
 import structlog
@@ -150,7 +163,7 @@ def list_accounts():
                     "first_name": r.first_name,
                     "status": getattr(r.status, "value", r.status) if r.status is not None else "inactive",
                     "purpose": "both",
-                    "last_active": r.last_active.isoformat() if r.last_active else None,
+                    "last_active": _dt_iso(r.last_active) if r.last_active else None,
                     "stories_today": r.stories_today or 0,
                 })
             return jsonify(result)
@@ -172,7 +185,7 @@ def list_accounts():
                 "first_name": a.first_name,
                 "status": getattr(a.status, "value", str(a.status)) if a.status is not None else "inactive",
                 "purpose": p,
-                "last_active": a.last_active.isoformat() if a.last_active else None,
+                "last_active": _dt_iso(account.last_active) if a.last_active else None,
                 "stories_today": a.stories_today if a.stories_today is not None else 0,
             })
         return jsonify(result)
@@ -195,11 +208,11 @@ def get_account(account_id):
             "last_name": account.last_name,
             "status": getattr(account.status, "value", str(account.status)) if account.status is not None else "inactive",
             "purpose": getattr(account, "purpose", None) or "both",
-            "last_active": account.last_active.isoformat() if account.last_active else None,
+            "last_active": _dt_iso(account.last_active) if account.last_active else None,
             "last_error": account.last_error,
             "stories_today": account.stories_today,
             "actions_today": account.actions_today,
-            "created_at": account.created_at.isoformat() if account.created_at else None,
+            "created_at": _dt_iso(account.created_at) if account.created_at else None,
         })
 
 
@@ -424,6 +437,13 @@ def qr_start():
     """Start QR login – no SMS or code needed. Scan with Telegram on your phone."""
     from src.clients.manager import start_qr_login
     result = start_qr_login()
+    # normalize token types (some implementations return int)
+    try:
+        if isinstance(result, dict) and "token" in result and result["token"] is not None:
+            result["token"] = str(result["token"])
+    except Exception:
+        pass
+
     return jsonify(result)
 
 
@@ -928,7 +948,7 @@ def list_campaigns():
                 "is_active": c.is_active,
                 "total_stories": c.total_stories_published,
                 "total_mentions": c.total_users_mentioned,
-                "created_at": c.created_at.isoformat(),
+                "created_at": _dt_iso(account.created_at),
             }
             for c in campaigns
         ])
