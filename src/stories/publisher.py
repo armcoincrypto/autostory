@@ -18,7 +18,10 @@ from telethon.tl.types import (
 import structlog
 
 import sys
-sys.path.insert(0, '/home/user/autostory')
+from pathlib import Path
+_project_root = Path(__file__).resolve().parents[2]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 from config.settings import settings
 from src.core.models import Story, DiscoveredUser, Account, Campaign
 from src.core.database import get_db_context

@@ -90,6 +90,10 @@ class DashboardSettings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Dashboard host")
     port: int = Field(default=5000, description="Dashboard port")
     debug: bool = Field(default=False, description="Enable debug mode")
+    run_now_proxy_url: Optional[str] = Field(
+        default=None,
+        description="When set (e.g. http://207.180.212.142:5000), Send test now proxies to server so sessions work"
+    )
 
     class Config:
         env_prefix = "DASHBOARD_"

@@ -125,6 +125,7 @@ echo "2. Initialize database: cd /opt/autostory && source venv/bin/activate && p
 echo "3. Start the bot: systemctl start storyfleet-bot"
 echo "4. Check status: systemctl status storyfleet-bot"
 echo "5. View logs: tail -f /var/log/storyfleet/bot.log"
+echo "   (To run the bot manually for debugging, stop the service first: systemctl stop storyfleet-bot — only one process can use the session.)"
 echo ""
 echo -e "${YELLOW}Database connection string for .env:${NC}"
 echo "DATABASE_URL=postgresql://storyfleet:storyfleet_secure_password@localhost/storyfleet"

@@ -87,11 +87,12 @@
                             <select class="form-select" id="story-account">
                                 <option>Loading...</option>
                             </select>
+                            <small class="text-muted">Any account that can publish stories</small>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Media Path</label>
-                            <input type="text" class="form-control" id="story-media" placeholder="/path/to/media.jpg">
-                            <small class="text-muted">Supported: JPG, PNG, MP4</small>
+                            <label class="form-label">Media (photo or video)</label>
+                            <input type="file" class="form-control" id="story-media-file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov">
+                            <small class="text-muted">JPG, PNG, MP4 (story will use auto-selected mentions)</small>
                         </div>
                     </div>
                     <div class="col-md-6">
@@ -100,8 +101,9 @@
                             <textarea class="form-control" id="story-caption" rows="4"></textarea>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Mentions (user IDs, comma-separated)</label>
-                            <input type="text" class="form-control" id="story-mentions" placeholder="123456, 789012">
+                            <label class="form-label">Mentions</label>
+                            <input type="text" class="form-control" id="story-mentions" placeholder="Leave empty for auto (from discovered users)">
+                            <small class="text-muted">Optional: user IDs comma-separated. Empty = auto-select 5 from Discovery.</small>
                         </div>
                     </div>
                 </div>
@@ -126,8 +128,9 @@
                     <i class="bi bi-info-circle"></i> This will publish stories across multiple accounts with auto-selected mentions.
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Media Path</label>
-                    <input type="text" class="form-control" id="batch-media" placeholder="/path/to/media.jpg">
+                    <label class="form-label">Media (photo or video)</label>
+                    <input type="file" class="form-control" id="batch-media-file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov">
+                    <small class="text-muted">JPG, PNG, MP4</small>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Caption</label>
@@ -212,37 +215,61 @@ async function loadAccounts() {
     try {
         const response = await fetch('/api/accounts');
         const accounts = await response.json();
-
         const select = document.getElementById('story-account');
+        if (!Array.isArray(accounts) || accounts.length === 0) {
+            select.innerHTML = '<option value="">No accounts</option>';
+            return;
+        }
         select.innerHTML = accounts.map(a =>
-            `<option value="${a.id}">${a.phone_number} (${a.username || 'No username'})</option>`
+            `<option value="${a.id}">${a.phone_number} (${a.username || a.first_name || 'No username'})</option>`
         ).join('');
     } catch (error) {
         console.error('Failed to load accounts:', error);
+        document.getElementById('story-account').innerHTML = '<option value="">Failed to load</option>';
     }
 }
 
 async function publishStory() {
-    const data = {
-        account_id: parseInt(document.getElementById('story-account').value),
-        media_path: document.getElementById('story-media').value,
-        caption: document.getElementById('story-caption').value,
-        mentions: document.getElementById('story-mentions').value.split(',').map(m => m.trim()).filter(m => m)
-    };
+    const fileInput = document.getElementById('story-media-file');
+    if (!fileInput?.files?.length) {
+        alert('Please select a photo or video file.');
+        return;
+    }
+    const accountId = parseInt(document.getElementById('story-account').value);
+    const caption = document.getElementById('story-caption').value;
+    const mentionsText = document.getElementById('story-mentions').value;
+    const mentions = mentionsText ? mentionsText.split(',').map(m => m.trim()).filter(m => m) : [];
 
     try {
+        const form = new FormData();
+        form.append('file', fileInput.files[0]);
+        const up = await fetch('/api/stories/upload-media', { method: 'POST', body: form });
+        const upResult = await up.json();
+        if (!upResult.success || !upResult.path) {
+            alert('Upload failed: ' + (upResult.error || 'Unknown'));
+            return;
+        }
         const response = await fetch('/api/stories/publish', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(data)
+            body: JSON.stringify({
+                account_id: accountId,
+                media_path: upResult.path,
+                caption,
+                mentions,
+                mentions_count: 5
+            })
         });
         const result = await response.json();
 
         if (result.success) {
             alert('Story published!');
+            document.getElementById('story-media-file').value = '';
+            document.getElementById('story-caption').value = '';
+            document.getElementById('story-mentions').value = '';
             location.reload();
         } else {
-            alert('Error: ' + result.error);
+            alert('Error: ' + (result.error || 'Publish failed'));
         }
     } catch (error) {
         alert('Failed: ' + error);
@@ -250,22 +277,39 @@ async function publishStory() {
 }
 
 async function batchPublish() {
-    const data = {
-        media_path: document.getElementById('batch-media').value,
-        caption: document.getElementById('batch-caption').value,
-        max_stories: parseInt(document.getElementById('batch-max').value),
-        mentions_per_story: parseInt(document.getElementById('batch-mentions').value)
-    };
+    const fileInput = document.getElementById('batch-media-file');
+    if (!fileInput?.files?.length) {
+        alert('Please select a photo or video file.');
+        return;
+    }
+    const caption = document.getElementById('batch-caption').value;
+    const maxStories = parseInt(document.getElementById('batch-max').value) || 10;
+    const mentionsPerStory = parseInt(document.getElementById('batch-mentions').value) || 5;
 
     try {
+        const form = new FormData();
+        form.append('file', fileInput.files[0]);
+        const up = await fetch('/api/stories/upload-media', { method: 'POST', body: form });
+        const upResult = await up.json();
+        if (!upResult.success || !upResult.path) {
+            alert('Upload failed: ' + (upResult.error || 'Unknown'));
+            return;
+        }
         const response = await fetch('/api/stories/batch', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(data)
+            body: JSON.stringify({
+                media_path: upResult.path,
+                caption,
+                max_stories: maxStories,
+                mentions_per_story: mentionsPerStory
+            })
         });
         const result = await response.json();
 
-        alert(`Batch complete! ${result.successful}/${result.total_attempted} stories published.`);
+        alert(`Batch complete! ${result.successful ?? 0}/${result.total_attempted ?? 0} stories published.`);
+        document.getElementById('batch-media-file').value = '';
+        document.getElementById('batch-caption').value = '';
         location.reload();
     } catch (error) {
         alert('Batch failed: ' + error);

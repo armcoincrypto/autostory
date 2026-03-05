@@ -1,13 +1,18 @@
 """
 Dashboard User Model for Flask-Login
 """
+import os
+import sys
+from datetime import datetime
+
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import Column, Integer, String, Boolean, DateTime
-from datetime import datetime
 
-import sys
-sys.path.insert(0, '/home/user/autostory')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 from src.core.database import Base
 
 

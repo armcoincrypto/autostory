@@ -1,28 +1,19 @@
 [Unit]
 Description=STORYFLEET Telegram Bot
-After=network.target postgresql.service redis.service
-Wants=postgresql.service redis.service
+After=network.target
 
 [Service]
 Type=simple
-User=storyfleet
-Group=storyfleet
 WorkingDirectory=/opt/autostory
 Environment=PATH=/opt/autostory/venv/bin:/usr/bin
+EnvironmentFile=-/opt/autostory/.env
 ExecStart=/opt/autostory/venv/bin/python main.py bot
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
 
-# Logging
+# Logging (ensure dir exists: sudo mkdir -p /var/log/storyfleet)
 StandardOutput=append:/var/log/storyfleet/bot.log
 StandardError=append:/var/log/storyfleet/bot-error.log
-
-# Security
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/autostory/data /var/log/storyfleet
 
 [Install]
 WantedBy=multi-user.target

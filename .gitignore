@@ -99,3 +99,35 @@ celerybeat.pid
 
 # Logs
 *.log
+backups/
+*.bak
+*.bak.*
+*.wrong.*
+*.recovered.*
+autostory.db*
+storyfleet.db*
+
+# --- local/runtime ---
+.env
+.env.*
+*.session
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.bak.*
+*.wrong.*
+*.recovered.*
+
+# --- runtime folders ---
+venv/
+data/
+__pycache__/
+.pytest_cache/
+
+# --- random local junk ---
+tools/
+npm
+tsc
+knex
+*=*

@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}STORYFLEET{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
@@ -71,6 +72,28 @@
             color: var(--primary-color);
             margin-bottom: 30px;
         }
+        /* Dark theme: make muted/placeholder text readable */
+        .text-muted { color: #94a3b8 !important; }
+        .form-control, .form-select { background-color: #1e293b; border-color: #334155; color: #e4e4e7; }
+        .form-control::placeholder { color: #64748b; }
+        .form-control:focus, .form-select:focus { background-color: #1e293b; border-color: var(--primary-color); color: #e4e4e7; }
+        .form-label { color: #d4d4d8; }
+        .modal-content.bg-dark { background-color: var(--card-bg) !important; color: #e4e4e7; }
+        .modal-content .form-control, .modal-content .form-select { background-color: #1e293b; color: #e4e4e7; }
+        /* Empty/loading states - high visibility */
+        .scheduler-empty, .scheduler-loading { color: #cbd5e1 !important; font-size: 1.1rem; }
+        .scheduler-empty .scheduler-empty-icon { font-size: 3rem; opacity: 0.8; color: var(--primary-color) !important; }
+        /* Template preview box */
+        #template-preview, .template-preview-box { background-color: #1e293b !important; color: #e4e4e7 !important; border: 1px solid #334155; }
+        .form-check-label { color: #d4d4d8; }
+        /* Nav tabs on dark */
+        .nav-tabs { border-bottom-color: #334155; }
+        .nav-tabs .nav-link { color: #94a3b8; }
+        .nav-tabs .nav-link:hover { color: #e4e4e7; border-color: transparent; }
+        .nav-tabs .nav-link.active { color: #fff; background-color: var(--card-bg); border-color: #334155 #334155 var(--card-bg); }
+        /* Modal selects: allow dropdown to show above modal */
+        .modal-body { overflow: visible !important; }
+        .modal .form-select { min-height: 2.5rem; cursor: pointer; }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
@@ -97,6 +120,9 @@
                     </a>
                     <a class="nav-link {% if request.path == '/campaigns' %}active{% endif %}" href="/campaigns">
                         <i class="bi bi-megaphone"></i> Campaigns
+                    </a>
+                    <a class="nav-link {% if request.path == '/scheduler' %}active{% endif %}" href="/scheduler">
+                        <i class="bi bi-calendar-week"></i> Scheduler
                     </a>
                 </nav>
             </div>

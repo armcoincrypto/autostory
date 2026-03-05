@@ -9,6 +9,7 @@ from functools import wraps
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.sessions import SQLiteSession
 from telethon.tl.custom import Button
 from telethon.errors import (
     PhoneCodeInvalidError,
@@ -22,7 +23,8 @@ from telethon.errors import (
 import structlog
 
 import sys
-sys.path.insert(0, '/home/user/autostory')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.settings import settings
 from src.core.models import Account, Story, DiscoveredUser, Campaign, AccountStatus
 from src.core.database import get_db_context
@@ -30,8 +32,8 @@ from src.core.database import get_db_context
 logger = structlog.get_logger(__name__)
 
 
-# Store for pending login sessions (user_id -> login state)
-pending_logins: Dict[int, Dict[str, Any]] = {}
+# Store for pending session imports (user_id -> True when waiting for session string)
+pending_session_imports: Dict[int, bool] = {}
 
 # Store for pending scan sessions (user_id -> scan state)
 pending_scans: Dict[int, Dict[str, Any]] = {}
@@ -75,8 +77,15 @@ class StoryFleetBot:
             print("❌ Bot token not configured. Check your .env file.")
             return False
 
+        # Use a dedicated session path under project data/ so systemd ReadWritePaths works
+        # and we avoid conflicts with other runs (only one process should use this file).
+        _root = Path(__file__).resolve().parents[2]
+        session_dir = _root / "data" / "bot"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        session_path = session_dir / "storyfleet_bot.session"
+
         self.client = TelegramClient(
-            "storyfleet_bot",
+            SQLiteSession(str(session_path)),
             settings.telegram.api_id,
             settings.telegram.api_hash
         )
@@ -373,12 +382,14 @@ class StoryFleetBot:
             if is_admin:
                 welcome += (
                     "**Admin Commands:**\n"
-                    "📱 /login - Add a new Telegram account\n"
+                    "📱 /login - Add account (phone + code)\n"
+                    "📥 /import_session or /tdata - Add account from tdata session string\n"
                     "👥 /accounts - View all accounts\n"
                     "📊 /stats - View statistics\n"
                     "📤 /publish - Publish a story\n"
                     "🔍 /scan - Scan channel for users\n"
                     "🎯 /campaigns - View campaigns\n"
+                    "📲 **Dashboard** (web): Scheduler, bulk zip import, full UI\n"
                     "❓ /help - Full command list"
                 )
             else:
@@ -426,7 +437,7 @@ class StoryFleetBot:
         @self.client.on(events.NewMessage(pattern="/cancel"))
         @admin_only
         async def cancel_handler(event):
-            """Cancel ongoing operations (login or scan)"""
+            """Cancel ongoing operations (login, scan, session import, or publish)"""
             sender = await event.get_sender()
             user_id = sender.id
 
@@ -449,12 +460,47 @@ class StoryFleetBot:
                     await event.respond("❌ Scan cancelled.")
                 cancelled = True
 
+            if user_id in pending_session_imports:
+                del pending_session_imports[user_id]
+                if not cancelled:
+                    await event.respond("❌ Session import cancelled.")
+                cancelled = True
+
+            if user_id in pending_publishes:
+                del pending_publishes[user_id]
+                if not cancelled:
+                    await event.respond("❌ Publish cancelled.")
+                cancelled = True
+
             if not cancelled:
                 await event.respond("No active operation to cancel.")
 
+        @self.client.on(events.NewMessage(pattern="/import_session"))
+        @admin_only
+        async def import_session_cmd(event):
+            """Import account from tdata session string."""
+            pending_session_imports[event.sender_id] = True
+            await event.respond(
+                "📥 **Import from tdata**\n\n"
+                "Paste the session string (from convert_tdata.py) in your next message.\n"
+                "It usually starts with 1BQAOMTQ...\n\n"
+                "Send /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
+            )
+
+        @self.client.on(events.NewMessage(pattern="/tdata"))
+        @admin_only
+        async def tdata_cmd(event):
+            """Alias for /import_session"""
+            pending_session_imports[event.sender_id] = True
+            await event.respond(
+                "📥 Paste your tdata session string in the next message.\n\nSend /cancel to abort.",
+                buttons=[[Button.text("❌ Cancel")]]
+            )
+
         @self.client.on(events.NewMessage())
         async def message_handler(event):
-            """Handle messages for login flow"""
+            """Handle messages for login flow and session import"""
             if event.text and event.text.startswith("/"):
                 return
 
@@ -465,6 +511,33 @@ class StoryFleetBot:
             user_id = sender.id
 
             if user_id not in settings.bot.admin_ids:
+                return
+
+            # Handle session string import (tdata)
+            if user_id in pending_session_imports:
+                if event.text == "❌ Cancel":
+                    del pending_session_imports[user_id]
+                    await event.respond("❌ Session import cancelled.")
+                    return
+                session_string = (event.text or "").strip()
+                if not session_string or len(session_string) < 50:
+                    await event.respond("❌ Session string too short. Paste the full string from convert_tdata.py.")
+                    return
+                del pending_session_imports[user_id]
+                await event.respond("⏳ Importing session...")
+                try:
+                    from src.clients.manager import client_manager
+                    result = await client_manager.import_session_string(session_string)
+                    if result.get("success"):
+                        await event.respond(
+                            f"✅ **{result.get('message', 'Account imported!')}**\n\n"
+                            f"Account ID: #{result.get('account_id')} | @{result.get('username', 'N/A')}"
+                        )
+                    else:
+                        await event.respond(f"❌ **Error:** {result.get('error', 'Import failed')}")
+                except Exception as e:
+                    logger.error("Import session error", error=str(e))
+                    await event.respond(f"❌ **Error:** {str(e)}")
                 return
 
             if user_id not in pending_logins:
@@ -1039,7 +1112,7 @@ class StoryFleetBot:
         @self.client.on(events.NewMessage(pattern="📤 Publish Another"))
         @admin_only
         async def publish_another_handler(event):
-            """Handle Publish Another button"""
+            """Handle Publish Another button (same flow as /publish: ALL + each account)"""
             sender = await event.get_sender()
             user_id = sender.id
 
@@ -1049,21 +1122,34 @@ class StoryFleetBot:
                     Account.session_string.isnot(None)
                 ).all()
 
+                users_count = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0
+                ).count()
+
             if not accounts:
                 await event.respond("No active accounts. Use /login first.")
                 return
 
-            pending_publishes[user_id] = {"step": "select_account"}
+            pending_publishes[user_id] = {
+                "step": "select_account",
+                "account_id": None,
+                "account_ids": [acc.id for acc in accounts],
+                "mentions": 5,
+                "caption": "",
+            }
 
-            buttons = [
-                [Button.inline(f"📱 {acc.phone_number}", data=f"pub_{acc.id}")]
-                for acc in accounts[:5]
-            ]
+            buttons = []
+            if len(accounts) > 1:
+                buttons.append([Button.inline(f"📤 Publish to ALL {len(accounts)} Accounts", data="pub_all")])
+            for acc in accounts[:10]:
+                buttons.append([Button.inline(f"📱 {acc.phone_number} (@{acc.username or 'N/A'})", data=f"pub_{acc.id}")])
             buttons.append([Button.inline("❌ Cancel", data="pub_cancel")])
 
             await event.respond(
                 "📤 **Publish Story**\n\n"
-                "Select an account:",
+                f"📱 Active accounts: {len(accounts)}\n"
+                f"👥 Users available for mention: {users_count}\n\n"
+                "Select account(s) to publish from:",
                 buttons=buttons
             )
 
@@ -1126,7 +1212,8 @@ class StoryFleetBot:
             await event.respond(
                 "📖 **STORYFLEET Commands**\n\n"
                 "**Account Management**\n"
-                "📱 /login - Add new Telegram account\n"
+                "📱 /login - Add account (phone + code)\n"
+                "📥 /import_session or /tdata - Add account from tdata session string\n"
                 "👥 /accounts - List all accounts\n"
                 "/cancel - Cancel current operation\n\n"
                 "**Statistics**\n"
@@ -1138,6 +1225,8 @@ class StoryFleetBot:
                 "/users - View available users\n\n"
                 "**Campaigns**\n"
                 "🎯 /campaigns - View campaigns\n\n"
+                "**Dashboard (web)**\n"
+                "📲 Use the Dashboard for Scheduler (messaging to groups), bulk zip import, and full UI.\n\n"
                 "**Other**\n"
                 "/start - Welcome message\n"
                 "/help - This help message"
@@ -1222,7 +1311,7 @@ class StoryFleetBot:
         @self.client.on(events.NewMessage(pattern="📊 Stats"))
         @admin_only
         async def stats_button_handler(event):
-            """Handle Stats button"""
+            """Handle Stats button (same as /stats)"""
             with get_db_context() as db:
                 accounts_total = db.query(Account).count()
                 accounts_active = db.query(Account).filter(
@@ -1230,14 +1319,21 @@ class StoryFleetBot:
                 ).count()
                 stories_total = db.query(Story).count()
                 users_total = db.query(DiscoveredUser).count()
+                users_unmentioned = db.query(DiscoveredUser).filter(
+                    DiscoveredUser.times_mentioned == 0
+                ).count()
+                campaigns_active = db.query(Campaign).filter(
+                    Campaign.is_active == True
+                ).count()
 
             message = (
                 "📊 **STORYFLEET Statistics**\n\n"
                 f"👥 **Accounts**: {accounts_active}/{accounts_total} active\n"
                 f"📸 **Stories**: {stories_total} published\n"
-                f"🔍 **Users**: {users_total} discovered"
+                f"🔍 **Users**: {users_total} discovered\n"
+                f"📤 **Available for mention**: {users_unmentioned}\n"
+                f"🎯 **Campaigns**: {campaigns_active} active"
             )
-
             await event.respond(message)
 
         @self.client.on(events.NewMessage(pattern="❓ Help"))
@@ -1252,6 +1348,7 @@ class StoryFleetBot:
                 "📤 /publish - Publish a story\n"
                 "🔍 /scan - Scan for users\n"
                 "🎯 /campaigns - View campaigns\n"
+                "📲 Dashboard: Scheduler (messaging), bulk zip import\n"
                 "/help - Full command list"
             )
 

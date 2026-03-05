@@ -64,6 +64,9 @@
                     <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#scanChannelModal">
                         <i class="bi bi-search"></i> Scan Channel
                     </button>
+                    <a class="btn btn-outline-primary" href="/scheduler">
+                        <i class="bi bi-calendar-week"></i> Scheduler (Messaging)
+                    </a>
                 </div>
             </div>
         </div>
@@ -106,26 +109,45 @@
 
 <!-- Add Account Modal -->
 <div class="modal fade" id="addAccountModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content bg-dark">
             <div class="modal-header">
                 <h5 class="modal-title">Add New Account</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div id="auth-step-1">
-                    <div class="mb-3">
-                        <label class="form-label">Phone Number</label>
-                        <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-phone">Phone + Code</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tdata">Import from tdata</button></li>
+                </ul>
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="tab-phone">
+                        <div id="auth-step-1">
+                            <div class="mb-3">
+                                <label class="form-label">Phone Number</label>
+                                <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
+                            </div>
+                            <button class="btn btn-primary w-100" onclick="startAuth()">Send Code</button>
+                        </div>
+                        <div id="auth-step-2" style="display:none;">
+                            <div class="mb-3">
+                                <label class="form-label">Verification Code</label>
+                                <input type="text" class="form-control" id="auth-code" placeholder="12345">
+                            </div>
+                            <button class="btn btn-primary w-100" onclick="completeAuth()">Verify</button>
+                        </div>
                     </div>
-                    <button class="btn btn-primary w-100" onclick="startAuth()">Send Code</button>
-                </div>
-                <div id="auth-step-2" style="display:none;">
-                    <div class="mb-3">
-                        <label class="form-label">Verification Code</label>
-                        <input type="text" class="form-control" id="auth-code" placeholder="12345">
+                    <div class="tab-pane fade" id="tab-tdata">
+                        <p class="text-muted small mb-2">Paste the session string from your tdata conversion. No phone or code needed.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Session String</label>
+                            <textarea class="form-control font-monospace" id="session-string" rows="4" placeholder="1BQAOMTQ..." style="font-size:0.85em;"></textarea>
+                            <small class="text-muted">Convert tdata → session: <code>python scripts/convert_tdata.py path/to/tdata</code></small>
+                        </div>
+                        <button class="btn btn-success w-100" onclick="importSessionFromDashboard()">
+                            <i class="bi bi-upload"></i> Import Account
+                        </button>
                     </div>
-                    <button class="btn btn-primary w-100" onclick="completeAuth()">Verify</button>
                 </div>
             </div>
         </div>
@@ -134,7 +156,7 @@
 
 <!-- Publish Story Modal -->
 <div class="modal fade" id="publishStoryModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content bg-dark">
             <div class="modal-header">
                 <h5 class="modal-title">Publish Story</h5>
@@ -148,8 +170,9 @@
                     </select>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Media Path</label>
-                    <input type="text" class="form-control" id="story-media" placeholder="/path/to/media.jpg">
+                    <label class="form-label">Media (photo or video)</label>
+                    <input type="file" class="form-control" id="story-media-file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov">
+                    <small class="text-muted">JPG, PNG, MP4. Mentions auto-selected from Discovery.</small>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Caption</label>
@@ -171,12 +194,9 @@
             </div>
             <div class="modal-body">
                 <div class="mb-3">
-                    <label class="form-label">Channel Username</label>
-                    <input type="text" class="form-control" id="scan-channel" placeholder="@channelname">
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Limit</label>
-                    <input type="number" class="form-control" id="scan-limit" value="500">
+                    <label class="form-label">Channel Username(s)</label>
+                    <input type="text" class="form-control" id="scan-channel" placeholder="@p2pgroup or @channel">
+                    <small class="text-muted">One channel. For multiple use Discovery → Scan Channel.</small>
                 </div>
                 <button class="btn btn-primary w-100" onclick="scanChannel()">Start Scan</button>
             </div>
@@ -193,7 +213,6 @@ async function refreshStats() {
     try {
         const response = await fetch('/api/stats');
         const stats = await response.json();
-
         document.getElementById('stat-accounts').textContent = stats.accounts.active;
         document.getElementById('stat-stories').textContent = stats.stories.total;
         document.getElementById('stat-users').textContent = stats.users.discovered;
@@ -207,13 +226,11 @@ async function loadRecentStories() {
     try {
         const response = await fetch('/api/stories?per_page=5');
         const data = await response.json();
-
         const tbody = document.getElementById('recent-stories');
         if (data.stories.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No stories yet</td></tr>';
             return;
         }
-
         tbody.innerHTML = data.stories.map(s => `
             <tr>
                 <td>Account #${s.account_id}</td>
@@ -237,7 +254,6 @@ async function startAuth() {
             body: JSON.stringify({phone_number: phone})
         });
         const result = await response.json();
-
         if (result.success) {
             authData = result;
             document.getElementById('auth-step-1').style.display = 'none';
@@ -264,7 +280,6 @@ async function completeAuth() {
             })
         });
         const result = await response.json();
-
         if (result.success) {
             alert('Account added successfully!');
             location.reload();
@@ -276,28 +291,65 @@ async function completeAuth() {
     }
 }
 
-async function publishStory() {
-    const accountId = document.getElementById('story-account').value;
-    const mediaPath = document.getElementById('story-media').value;
-    const caption = document.getElementById('story-caption').value;
-
+async function importSessionFromDashboard() {
+    const sessionString = document.getElementById('session-string').value.trim();
+    if (!sessionString) {
+        alert('Paste your session string first');
+        return;
+    }
     try {
+        const response = await fetch('/api/accounts/import-session', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_string: sessionString})
+        });
+        const result = await response.json().catch(() => ({}));
+        if (result.success) {
+            alert(result.message || 'Account imported!');
+            location.reload();
+        } else {
+            alert('Error: ' + (result.error || response.statusText || 'Import failed'));
+        }
+    } catch (error) {
+        alert('Failed: ' + error);
+    }
+}
+
+async function publishStory() {
+    const fileInput = document.getElementById('story-media-file');
+    if (!fileInput?.files?.length) {
+        alert('Please select a photo or video file.');
+        return;
+    }
+    const accountId = parseInt(document.getElementById('story-account').value);
+    const caption = document.getElementById('story-caption').value;
+    try {
+        const form = new FormData();
+        form.append('file', fileInput.files[0]);
+        const up = await fetch('/api/stories/upload-media', { method: 'POST', body: form });
+        const upResult = await up.json();
+        if (!upResult.success || !upResult.path) {
+            alert('Upload failed: ' + (upResult.error || 'Unknown'));
+            return;
+        }
         const response = await fetch('/api/stories/publish', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                account_id: parseInt(accountId),
-                media_path: mediaPath,
-                caption: caption
+                account_id: accountId,
+                media_path: upResult.path,
+                caption,
+                mentions_count: 5
             })
         });
         const result = await response.json();
-
         if (result.success) {
             alert('Story published!');
+            fileInput.value = '';
+            document.getElementById('story-caption').value = '';
             location.reload();
         } else {
-            alert('Error: ' + result.error);
+            alert('Error: ' + (result.error || 'Publish failed'));
         }
     } catch (error) {
         alert('Failed to publish: ' + error);
@@ -305,30 +357,50 @@ async function publishStory() {
 }
 
 async function scanChannel() {
-    const channel = document.getElementById('scan-channel').value;
-    const limit = document.getElementById('scan-limit').value;
-
+    const channel = document.getElementById('scan-channel').value.trim();
+    if (!channel) {
+        alert('Enter a channel username (e.g. @p2pgroup)');
+        return;
+    }
     try {
         const response = await fetch('/api/discovery/scan', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                channels: [channel],
-                limit: parseInt(limit)
-            })
+            body: JSON.stringify({ channels: [channel] })
         });
         const result = await response.json();
-
-        alert(`Scan complete! Found ${result.total_new_users} new users.`);
+        if (result.success) {
+            const newUsers = result.total_new_users ?? 0;
+            alert(`Scan complete! New users saved: ${newUsers}`);
+            refreshStats();
+        } else {
+            alert('Scan failed: ' + (result.error || result.errors?.join(', ') || 'Unknown error'));
+        }
     } catch (error) {
         alert('Scan failed: ' + error);
     }
 }
 
-// Initialize
 document.addEventListener('DOMContentLoaded', () => {
     refreshStats();
     loadRecentStories();
+    loadStoryAccounts();
 });
+async function loadStoryAccounts() {
+    try {
+        const r = await fetch('/api/accounts');
+        const accounts = await r.json();
+        const sel = document.getElementById('story-account');
+        if (!sel) return;
+        if (!Array.isArray(accounts) || accounts.length === 0) {
+            sel.innerHTML = '<option value="">No accounts</option>';
+            return;
+        }
+        sel.innerHTML = accounts.map(a => `<option value="${a.id}">${a.phone_number} (${a.username || a.first_name || 'No username'})</option>`).join('');
+    } catch (e) {
+        const sel = document.getElementById('story-account');
+        if (sel) sel.innerHTML = '<option value="">Failed to load</option>';
+    }
+}
 </script>
 {% endblock %}

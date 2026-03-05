@@ -1,0 +1,166 @@
+<!-- Add Binding Modal -->
+<div class="modal fade" id="addBindingModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Account-Target Binding</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Account</label>
+                    <input type="hidden" id="binding-account" value="">
+                    <div class="dropdown">
+                        <button class="form-select text-start dropdown-toggle d-block w-100" type="button" id="binding-account-btn" data-bs-toggle="dropdown" aria-expanded="false">Select account</button>
+                        <div class="dropdown-menu dropdown-menu-dark w-100 p-2" style="max-height: 200px; overflow-y: auto;">
+                            <input type="text" class="form-control form-control-sm mb-2 bg-secondary border-secondary text-light" id="binding-account-filter" placeholder="Search..." autocomplete="off">
+                            <div id="binding-account-options"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Target</label>
+                    <input type="hidden" id="binding-target" value="">
+                    <div class="dropdown">
+                        <button class="form-select text-start dropdown-toggle d-block w-100" type="button" id="binding-target-btn" data-bs-toggle="dropdown" aria-expanded="false">Select target</button>
+                        <div class="dropdown-menu dropdown-menu-dark w-100 p-2" style="max-height: 200px; overflow-y: auto;">
+                            <input type="text" class="form-control form-control-sm mb-2 bg-secondary border-secondary text-light" id="binding-target-filter" placeholder="Search..." autocomplete="off">
+                            <div id="binding-target-options"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="binding-can-post" checked>
+                        <label class="form-check-label" for="binding-can-post">Can post</label>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Allowed types (e.g. PROMO,INFO)</label>
+                    <input type="text" class="form-control" id="binding-allowed-types" value="PROMO,INFO" placeholder="PROMO,INFO">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Messages per day to this group</label>
+                    <input type="number" class="form-control" id="binding-daily-cap" min="1" max="10" value="1" placeholder="1">
+                    <div class="form-text">How many times this account will send to this group per day (1–10)</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createBinding()">
+                    <i class="bi bi-plus-circle"></i> Add Binding
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Template Modal -->
+<div class="modal fade" id="addTemplateModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Message Template</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" id="template-type">
+                            <option value="PROMO">PROMO</option>
+                            <option value="INFO">INFO</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Scope</label>
+                        <select class="form-select" id="template-scope">
+                            <option value="GLOBAL">GLOBAL</option>
+                            <option value="ACCOUNT">ACCOUNT</option>
+                            <option value="TARGET">TARGET</option>
+                            <option value="BINDING">BINDING</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Name</label>
+                    <input type="text" class="form-control" id="template-name" placeholder="Template">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Body <small class="text-muted">Use {account_name}, {chat_title}, {date}, {time}, {random_emoji}, {cta_link}</small></label>
+                    <textarea class="form-control" id="template-body" rows="4" placeholder="Hello {account_name}! Today is {date}."></textarea>
+                    <div class="mt-2">
+                        <small class="form-label">Preview:</small>
+                        <div id="template-preview" class="p-3 rounded mt-1 template-preview-box" style="min-height: 2em; color: #e4e4e7;"></div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="template-active" checked>
+                            <label class="form-check-label" for="template-active">Active</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Weight</label>
+                        <input type="number" class="form-control" id="template-weight" value="100" min="1">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createTemplate()">
+                    <i class="bi bi-plus-circle"></i> Add Template
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Rule Modal -->
+<div class="modal fade" id="addRuleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Schedule Rule</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Type</label>
+                    <select class="form-select" id="rule-type">
+                        <option value="PROMO">PROMO</option>
+                        <option value="INFO">INFO</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Times (HH:MM, comma-separated)</label>
+                    <input type="text" class="form-control" id="rule-times" value="10:00, 18:00" placeholder="10:00, 14:00, 18:00">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Target mode</label>
+                    <select class="form-select" id="rule-target-mode">
+                        <option value="ALL_BOUND">All bound targets</option>
+                        <option value="ONLY_SELECTED">Only selected targets</option>
+                    </select>
+                </div>
+                <div class="mb-3 d-none" id="rule-targets-wrap">
+                    <label class="form-label">Select targets</label>
+                    <div id="rule-targets"></div>
+                </div>
+                <div class="mb-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="rule-enabled" checked>
+                        <label class="form-check-label" for="rule-enabled">Enabled</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createRule()">
+                    <i class="bi bi-plus-circle"></i> Add Rule
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

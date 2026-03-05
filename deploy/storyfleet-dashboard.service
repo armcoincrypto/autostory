@@ -1,0 +1,24 @@
+[Unit]
+Description=STORYFLEET Dashboard (Flask/Gunicorn)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/autostory
+Environment=PATH=/opt/autostory/venv/bin:/usr/bin
+Environment=GUNICORN_CHDIR=/opt/autostory
+ExecStart=/opt/autostory/venv/bin/gunicorn -c deploy/gunicorn.conf.py "src.dashboard.app:create_app()"
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+
+# Logging - stdout/stderr go to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=storyfleet-dashboard
+
+[Install]
+WantedBy=multi-user.target

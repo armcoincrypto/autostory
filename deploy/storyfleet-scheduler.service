@@ -1,0 +1,28 @@
+[Unit]
+Description=STORYFLEET Auto Message Scheduler
+After=network.target
+# No redis/postgres - scheduler uses SQLite
+
+[Service]
+Type=simple
+User=storyfleet
+Group=storyfleet
+WorkingDirectory=/opt/autostory
+Environment=PATH=/opt/autostory/venv/bin:/usr/bin
+EnvironmentFile=-/opt/autostory/.env
+ExecStart=/opt/autostory/venv/bin/python main.py scheduler
+Restart=always
+RestartSec=30
+
+# Logging
+StandardOutput=append:/var/log/storyfleet/scheduler.log
+StandardError=append:/var/log/storyfleet/scheduler-error.log
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/autostory/data /var/log/storyfleet
+
+[Install]
+WantedBy=multi-user.target

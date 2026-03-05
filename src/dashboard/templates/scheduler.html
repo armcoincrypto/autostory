@@ -1,0 +1,949 @@
+{% extends "base.html" %}
+
+{% block title %}Scheduler - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-calendar-week"></i> Scheduler</h2>
+</div>
+
+<div class="toast-container position-fixed top-0 end-0 p-3" id="toast-container"></div>
+
+<!-- Simple Daily Mode -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-sun"></i> Send messages</h5>
+        <small class="text-muted">Choose user → pick groups → set message and schedule. Everything below is filtered by selected user.</small>
+    </div>
+    <div class="card-body">
+        <div id="simple-no-account" class="alert alert-info d-none">
+            <i class="bi bi-info-circle"></i> Select a user (messaging account) to configure.
+        </div>
+        <form id="simple-form" class="d-none">
+            <div class="mb-3">
+                <label class="form-label">1. User <span class="text-danger">*</span></label>
+                <select class="form-select" id="simple-account" required>
+                    <option value="">Select user</option>
+                </select>
+                <div class="form-text">Only accounts set as <strong>Messaging</strong> or <strong>Both</strong> appear here. Set this in <a href="/accounts" class="text-info">Dashboard → Accounts</a>: find your number (e.g. +374 93766244) and set Purpose to &quot;Messaging (Scheduler)&quot; or &quot;Both&quot;.</div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">2. Groups to send to <span class="text-danger">*</span></label>
+                <p class="form-text text-muted small mb-1">Only this user’s groups are listed. Add more via &quot;Load my Telegram groups&quot; or Advanced → Bindings.</p>
+                <button type="button" class="btn btn-outline-primary btn-sm mb-2" id="simple-load-my-groups"><i class="bi bi-cloud-download"></i> Load my Telegram groups</button>
+                <input type="text" class="form-control form-control-sm mb-2" id="simple-target-search" placeholder="Search groups..." autocomplete="off">
+                <div id="simple-targets-wrap" class="border rounded p-2" style="max-height: 280px; overflow-y: auto; background-color: #1e293b;">
+                    <div id="simple-targets-list"></div>
+                    <div id="simple-targets-empty" class="text-muted small">Select a user to see groups.</div>
+                </div>
+                <div class="mt-2">
+                    <label class="form-label small">Messages per group per day</label>
+                    <div class="input-group input-group-sm" style="width: 140px;">
+                        <input type="number" class="form-control" id="simple-msgs-per-group" min="1" max="10" value="1" title="How many times this user sends to each group per day">
+                        <span class="input-group-text">per day</span>
+                    </div>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">3. Message text <span class="text-danger">*</span></label>
+                <textarea class="form-control" id="simple-body" rows="4" required placeholder="Use {account_name}, {chat_title}, {date}, {time}..."></textarea>
+            </div>
+            <div class="row g-2 mb-3">
+                <div class="col-md-4">
+                    <label class="form-label">Allowed send window (MSK)</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="simple-window-start" value="10:00" placeholder="10:00">
+                        <span class="input-group-text">–</span>
+                        <input type="text" class="form-control" id="simple-window-end" value="21:00" placeholder="21:00">
+                    </div>
+                    <small class="text-muted">Never sends at night</small>
+                </div>
+                <div class="col-md-4 d-flex align-items-end">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="simple-random" checked>
+                        <label class="form-check-label" for="simple-random">Random send time each day</label>
+                    </div>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Send mode</label>
+                <div class="d-flex gap-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="simple-send-mode" id="simple-mode-auto" value="auto" checked>
+                        <label class="form-check-label" for="simple-mode-auto">Auto (scheduled daily)</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="simple-send-mode" id="simple-mode-once" value="once">
+                        <label class="form-check-label" for="simple-mode-once">One-time only</label>
+                    </div>
+                </div>
+            </div>
+            <div id="simple-summary" class="alert alert-secondary py-2 px-3 mb-3 small d-none"></div>
+            <div id="simple-current-schedule" class="mb-3 d-none"></div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <button type="submit" class="btn btn-primary" id="simple-save">
+                    <i class="bi bi-check-circle"></i> Save / Update schedule
+                </button>
+                <button type="button" class="btn btn-outline-success" id="simple-test-now">
+                    <i class="bi bi-send"></i> Send now (test)
+                </button>
+                <button type="button" class="btn btn-outline-danger d-none" id="simple-disable-auto" title="Turn off daily auto-send for this user">
+                    <i class="bi bi-pause-circle"></i> Cancel auto-send
+                </button>
+            </div>
+            <div class="alert alert-secondary mt-3 mb-0 small">
+                <strong>Auto:</strong> Save enables daily sends. Run <code>python main.py scheduler</code> on the server.
+                <br><strong>One-time:</strong> Use "Send now" only; no schedule is saved.
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Logs (deliveries for selected user) -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-journal-text"></i> Logs <small id="simple-deliveries-summary" class="text-muted ms-2"></small></span>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="simple-deliveries-refresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    </div>
+    <div class="card-body">
+        <div id="simple-deliveries-loading" class="text-center py-4">Loading...</div>
+        <div id="simple-deliveries-empty" class="text-center py-4 text-muted d-none">No deliveries yet.</div>
+        <table class="table table-hover d-none" id="simple-deliveries-table">
+            <thead><tr><th>Target</th><th>Account</th><th>Status</th><th>Sent at</th><th>Error</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Advanced (collapsed) -->
+<div class="accordion" id="advancedAccordion">
+    <div class="accordion-item bg-dark border-secondary">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed bg-dark text-light" type="button" data-bs-toggle="collapse" data-bs-target="#advancedCollapse" aria-expanded="false" aria-controls="advancedCollapse">
+                <i class="bi bi-gear me-2"></i> Advanced: Bindings, Templates, Profile, Rules
+            </button>
+        </h2>
+        <div id="advancedCollapse" class="accordion-collapse collapse" data-bs-parent="#advancedAccordion">
+            <div class="accordion-body p-0">
+                <ul class="nav nav-tabs px-3 pt-2" id="advancedTabs" role="tablist">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#adv-bindings">Bindings</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#adv-templates">Templates</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#adv-profile">Profile</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#adv-rules">Rules</button></li>
+                </ul>
+                <div class="tab-content p-3" id="advancedTabContent">
+                    <div class="tab-pane fade show active" id="adv-bindings">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span>Account ↔ Target Bindings</span>
+                            <div class="d-flex gap-2">
+                                <select class="form-select form-select-sm" id="bindings-account-filter" style="width: auto;"><option value="">All accounts</option></select>
+                                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addBindingModal"><i class="bi bi-plus-circle"></i> Add Binding</button>
+                            </div>
+                        </div>
+                        <div id="bindings-loading" class="text-center py-5">Loading...</div>
+                        <div id="bindings-empty" class="text-center py-5 d-none">No bindings yet.</div>
+                        <table class="table table-hover d-none" id="bindings-table">
+                            <thead><tr><th>Account</th><th>Target</th><th>Msgs/day</th><th>Types</th><th>Actions</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div class="tab-pane fade" id="adv-templates">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span>Templates</span>
+                            <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addTemplateModal"><i class="bi bi-plus-circle"></i> Add Template</button>
+                        </div>
+                        <div id="templates-loading" class="text-center py-5">Loading...</div>
+                        <div id="templates-empty" class="text-center py-5 d-none">No templates yet.</div>
+                        <table class="table table-hover d-none" id="templates-table">
+                            <thead><tr><th>Type</th><th>Scope</th><th>Name</th><th>Body</th><th>Actions</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div class="tab-pane fade" id="adv-profile">
+                        <div class="mb-3">
+                            <label class="form-label">Account</label>
+                            <select class="form-select" id="profile-account"><option value="">Select account</option></select>
+                        </div>
+                        <div id="profile-loading" class="text-center py-5 d-none">Loading...</div>
+                        <form id="profile-form" class="d-none">
+                            <div class="row g-2">
+                                <div class="col-md-4"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="profile-enabled"><label class="form-check-label" for="profile-enabled">Enable</label></div></div>
+                                <div class="col-md-4"><label class="form-label">Daily cap</label><input type="number" class="form-control form-control-sm" id="profile-cap-total" min="1" placeholder="6"></div>
+                                <div class="col-md-4"><label class="form-label">Min interval (sec)</label><input type="number" class="form-control form-control-sm" id="profile-min-interval" min="60" placeholder="900"></div>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-sm mt-2">Save</button>
+                        </form>
+                        <div id="profile-no-account" class="text-muted d-none">Select account.</div>
+                    </div>
+                    <div class="tab-pane fade" id="adv-rules">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span>Schedule Rules</span>
+                            <div class="d-flex gap-2">
+                                <select class="form-select form-select-sm" id="rules-account" style="width: auto;"><option value="">Select account</option></select>
+                                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addRuleModal"><i class="bi bi-plus-circle"></i> Add Rule</button>
+                            </div>
+                        </div>
+                        <div id="rules-loading" class="text-center py-5">Select an account</div>
+                        <div id="rules-empty" class="text-center py-5 d-none">No rules yet.</div>
+                        <table class="table table-hover d-none" id="rules-table">
+                            <thead><tr><th>Type</th><th>Times</th><th>Mode</th><th>Actions</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% include 'scheduler_modals.html' %}
+
+<!-- Load my groups modal (dialogs from Telegram) -->
+<div class="modal fade" id="loadMyGroupsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-cloud-download"></i> Groups from Telegram</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Select groups to add as targets and enable sending for the selected user.</p>
+                <div id="load-my-groups-loading" class="text-center py-4">Loading...</div>
+                <div id="load-my-groups-list" class="d-none" style="max-height: 360px; overflow-y: auto;"></div>
+                <div id="load-my-groups-empty" class="text-center py-4 text-muted d-none">No groups found.</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="load-my-groups-add-selected"><i class="bi bi-plus-circle"></i> Add selected</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const API = '/api/v1';
+
+async function apiFetch(url, opts = {}) {
+    const res = await fetch(url, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...opts.headers }, ...opts });
+    const text = await res.text();
+    const data = text ? (function(){ try { return JSON.parse(text); } catch(_) { return {}; } })() : {};
+    if (!res.ok) {
+        const errMsg = data.error || res.statusText || `HTTP ${res.status}`;
+        const err = new Error(errMsg);
+        err.status = res.status;
+        err.response = data;
+        throw err;
+    }
+    return data;
+}
+
+function showToast(msg, type = 'success') {
+    const c = document.getElementById('toast-container');
+    const t = document.createElement('div');
+    t.className = `toast align-items-center text-bg-${type === 'error' ? 'danger' : 'success'} border-0`;
+    t.innerHTML = `<div class="d-flex"><div class="toast-body">${msg}</div><button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button></div>`;
+    c.appendChild(t); new bootstrap.Toast(t, { delay: 4000 }).show();
+    t.addEventListener('hidden.bs.toast', () => t.remove());
+}
+
+function esc(s) { return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+let accounts = [], targets = [];
+let loadedDialogs = [];
+let currentUserBoundTargetIds = new Set();
+
+async function loadMyGroupsClick() {
+    const accountId = document.getElementById('simple-account')?.value;
+    if (!accountId) { showToast('Select a user first', 'error'); return; }
+    const loading = document.getElementById('load-my-groups-loading');
+    const listEl = document.getElementById('load-my-groups-list');
+    const emptyEl = document.getElementById('load-my-groups-empty');
+    loading?.classList.remove('d-none'); listEl?.classList.add('d-none'); emptyEl?.classList.add('d-none');
+    try {
+        const data = await apiFetch('/api/accounts/' + accountId + '/dialogs');
+        if (data && typeof data.error === 'string') {
+            showToast(data.error, 'error');
+            loading?.classList.add('d-none');
+            return;
+        }
+        loadedDialogs = Array.isArray(data) ? data : [];
+        loading?.classList.add('d-none');
+        if (loadedDialogs.length === 0) { emptyEl?.classList.remove('d-none'); return; }
+        listEl.classList.remove('d-none');
+        listEl.innerHTML = loadedDialogs.map((d, i) => {
+            const label = esc(d.title || ('Chat ' + d.id));
+            const un = d.username ? ' @' + d.username : '';
+            return `<div class="form-check"><input class="form-check-input dialog-cb" type="checkbox" value="${i}" id="dc-${i}"><label class="form-check-label" for="dc-${i}">${label}${un} <span class="badge bg-secondary">${d.chat_type || ''}</span></label></div>`;
+        }).join('');
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('loadMyGroupsModal')).show();
+    } catch (e) {
+        loading?.classList.add('d-none');
+        showToast(e.message || 'Failed to load groups', 'error');
+    }
+}
+
+async function addSelectedDialogs() {
+    const accountId = document.getElementById('simple-account')?.value;
+    const selected = [...document.querySelectorAll('#load-my-groups-list .dialog-cb:checked')].map(cb => parseInt(cb.value));
+    if (!accountId || selected.length === 0) { showToast('Select at least one group', 'error'); return; }
+    const btn = document.getElementById('load-my-groups-add-selected');
+    btn.disabled = true;
+    try {
+        const existingTargets = await apiFetch(API + '/targets');
+        const byTgId = Object.fromEntries((existingTargets || []).filter(t => t.tg_id).map(t => [String(t.tg_id), t]));
+        const byUsername = Object.fromEntries((existingTargets || []).filter(t => t.username).map(t => [String(t.username).toLowerCase(), t]));
+        let added = 0;
+        for (const i of selected) {
+            const d = loadedDialogs[i];
+            if (!d) continue;
+            let targetId = null;
+            if (d.username && byUsername[d.username.toLowerCase()]) targetId = byUsername[d.username.toLowerCase()].id;
+            else if (d.id != null && byTgId[String(d.id)]) targetId = byTgId[String(d.id)].id;
+            if (!targetId) {
+                const res = await apiFetch(API + '/targets', { method: 'POST', body: JSON.stringify({ username: d.username || undefined, title: d.title || ('Chat ' + d.id), chat_type: d.chat_type || 'group', tg_id: d.id }) });
+                targetId = res.id;
+                added++;
+            }
+            try {
+                await apiFetch(API + '/bindings', { method: 'POST', body: JSON.stringify({ account_id: parseInt(accountId), target_id: targetId, can_post: true, allowed_types: 'PROMO', daily_cap: 1 }) });
+            } catch (err) {
+                if (!(err.response && err.response.error && err.response.error.includes('already exists'))) throw err;
+            }
+        }
+        await loadTargets();
+        const bindings = await apiFetch(API + '/bindings?account_id=' + accountId);
+        document.querySelectorAll('.simple-target-cb').forEach(cb => { cb.checked = (bindings || []).some(b => b.target_id === parseInt(cb.value)); });
+        updateSimpleSummary();
+        bootstrap.Modal.getInstance(document.getElementById('loadMyGroupsModal')).hide();
+        showToast(added ? `Added ${added} new target(s), ${selected.length} group(s) enabled` : `${selected.length} group(s) enabled`);
+    } catch (e) {
+        showToast(e.message || 'Failed', 'error');
+    }
+    btn.disabled = false;
+}
+
+function formatTargetLabel(t) {
+    const label = t.title || t.username || (t.invite_link ? (t.invite_link.length > 35 ? t.invite_link.slice(0, 35) + '…' : t.invite_link) : null) || ('Target #' + t.id);
+    return (t.is_verified ? '' : '\u26A0\uFE0F ') + label + ' (' + (t.chat_type || 'channel') + ')';
+}
+
+function formatTargetShort(t) {
+    if (t.title) return t.title;
+    if (t.username) return '@' + t.username;
+    if (t.invite_link && t.invite_link.includes('t.me/')) {
+        const m = t.invite_link.match(/t\.me\/([^/?]+)/);
+        return m ? m[1] : t.invite_link.slice(0, 24) + '…';
+    }
+    return 'Group #' + t.id;
+}
+
+// ============ Simple Daily Mode ============
+async function loadAccounts() {
+    let data = [];
+    try {
+        data = await apiFetch('/api/accounts?purpose=messaging');
+    } catch (_) {}
+    if (!Array.isArray(data) || data.length === 0) {
+        try {
+            const all = await apiFetch('/api/accounts');
+            data = Array.isArray(all) ? all : [];
+        } catch (_) {
+            data = [];
+        }
+    }
+    if (!Array.isArray(data) || data.length === 0) {
+        try {
+            const bindings = await apiFetch(API + '/bindings');
+            if (Array.isArray(bindings) && bindings.length > 0) {
+                const seen = new Set();
+                data = [];
+                bindings.forEach(b => {
+                    if (b.account_id && !seen.has(b.account_id)) {
+                        seen.add(b.account_id);
+                        data.push({ id: b.account_id, phone_number: '', username: '', _fromBindings: true });
+                    }
+                });
+            }
+        } catch (_) {}
+    }
+    accounts = Array.isArray(data) ? data : [];
+    try {
+        const opts = accounts.map(a => {
+            const label = a._fromBindings ? ('Account #' + a.id) : (esc(a.phone_number || '') + (a.username ? ' @'+a.username : '')).trim() || ('Account #' + a.id);
+            return `<option value="${a.id}">${label}</option>`;
+        }).join('');
+        const selectIds = ['simple-account','profile-account','rules-account','bindings-account-filter'];
+        selectIds.forEach(id => {
+            const s = document.getElementById(id);
+            if (!s) return;
+            const v = s.value;
+            s.innerHTML = '<option value="">' + (id === 'bindings-account-filter' ? 'All accounts' : 'Select user') + '</option>' + opts;
+            if (v && accounts.some(a => a.id == v)) s.value = v;
+        });
+        const noAcc = document.getElementById('simple-no-account');
+        const form = document.getElementById('simple-form');
+        if (noAcc) noAcc.classList.toggle('d-none', accounts.length > 0);
+        if (form) form.classList.toggle('d-none', false);
+    } catch (e) {
+        console.error('loadAccounts render', e);
+        accounts = [];
+    }
+    return accounts;
+}
+
+async function loadTargets() {
+    try {
+        const data = await apiFetch(API + '/targets');
+        targets = Array.isArray(data) ? data : [];
+    } catch (e) { targets = []; showToast(e.message || 'Could not load groups', 'error'); }
+    renderSimpleTargets();
+}
+
+function renderSimpleTargets(filter) {
+    const accountId = document.getElementById('simple-account')?.value;
+    const listEl = document.getElementById('simple-targets-list');
+    const emptyEl = document.getElementById('simple-targets-empty');
+    if (!listEl) return;
+    if (!accountId) {
+        currentUserBoundTargetIds = new Set();
+        listEl.innerHTML = '';
+        if (emptyEl) { emptyEl.classList.remove('d-none'); emptyEl.textContent = 'Select a user to see groups.'; }
+        return;
+    }
+    const bound = currentUserBoundTargetIds;
+    const q = (filter || '').toLowerCase().trim();
+    let list = targets.filter(t => !q || formatTargetLabel(t).toLowerCase().includes(q));
+    const missingIds = [...bound].filter(id => !targets.some(t => t.id === id));
+    missingIds.forEach(id => list.push({ id, title: 'Group #' + id, invite_link: null, username: null, chat_type: 'group' }));
+    if (targets.length === 0 && missingIds.length === 0) {
+        listEl.innerHTML = '';
+        if (emptyEl) { emptyEl.classList.remove('d-none'); emptyEl.textContent = 'No groups yet. Use &quot;Load my Telegram groups&quot; to add.'; }
+    } else if (list.length === 0) {
+        listEl.innerHTML = '';
+        if (emptyEl) { emptyEl.classList.remove('d-none'); emptyEl.textContent = 'No groups match the search.'; }
+    } else {
+        if (emptyEl) emptyEl.classList.add('d-none');
+        listEl.innerHTML = list.map(t => `
+            <div class="form-check">
+                <input class="form-check-input simple-target-cb" type="checkbox" value="${t.id}" id="st-${t.id}" ${bound.has(t.id) ? 'checked' : ''}>
+                <label class="form-check-label" for="st-${t.id}">${esc(formatTargetLabel(t))}</label>
+            </div>
+        `).join('');
+    }
+}
+
+async function loadSimpleState(accountId) {
+    if (!accountId) {
+        currentUserBoundTargetIds = new Set();
+        document.getElementById('simple-current-schedule')?.classList.add('d-none');
+        document.getElementById('simple-disable-auto')?.classList.add('d-none');
+        renderSimpleTargets();
+        return;
+    }
+    const selected = new Set();
+    let msgsPerGroup = 1;
+    currentUserBoundTargetIds = new Set();
+    try {
+        const bindings = await apiFetch(API + '/bindings?account_id=' + accountId);
+        bindings.forEach(b => {
+            selected.add(b.target_id);
+            currentUserBoundTargetIds.add(b.target_id);
+            if (msgsPerGroup === 1 && b.daily_cap != null) msgsPerGroup = Math.max(1, Math.min(10, b.daily_cap));
+        });
+    } catch (_) {}
+    try {
+        const rules = await apiFetch(API + '/schedule/rules/' + accountId);
+        (rules || []).forEach(r => {
+            try {
+                const ids = JSON.parse(r.selected_target_ids_json || '[]');
+                ids.forEach(id => { currentUserBoundTargetIds.add(id); selected.add(id); });
+            } catch (_) {}
+        });
+    } catch (_) {}
+    renderSimpleTargets();
+    document.querySelectorAll('.simple-target-cb').forEach(cb => { cb.checked = selected.has(parseInt(cb.value)); });
+    const mp = document.getElementById('simple-msgs-per-group'); if (mp) mp.value = msgsPerGroup;
+
+    let body = '';
+    try {
+        const templates = await apiFetch(API + '/templates?scope=ACCOUNT');
+        const t = templates.find(x => x.account_id == accountId);
+        if (t) body = t.body || '';
+    } catch (_) {}
+    document.getElementById('simple-body').value = body;
+
+    let start = '10:00', end = '21:00';
+    let profileEnabled = false;
+    try {
+        const rules = await apiFetch(API + '/schedule/rules/' + accountId);
+        const r = rules.find(x => (x.times_json || '').includes('RANDOM'));
+        if (r && r.times_json) {
+            const m = String(r.times_json).match(/RANDOM:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/);
+            if (m) { start = m[1]; end = m[2]; }
+        }
+    } catch (_) {}
+    try {
+        const profile = await apiFetch(API + '/schedule/profile/' + accountId);
+        profileEnabled = !!profile.is_enabled;
+    } catch (_) {}
+    document.getElementById('simple-window-start').value = start;
+    document.getElementById('simple-window-end').value = end;
+    document.getElementById('simple-mode-auto').checked = profileEnabled;
+    document.getElementById('simple-mode-once').checked = !profileEnabled;
+
+    const scheduleEl = document.getElementById('simple-current-schedule');
+    const disableBtn = document.getElementById('simple-disable-auto');
+    if (scheduleEl) {
+        scheduleEl.classList.remove('d-none');
+        scheduleEl.innerHTML = profileEnabled
+            ? '<span class="badge bg-success"><i class="bi bi-play-circle"></i> Auto-send is ON</span> — change groups/message above and click <strong>Save / Update schedule</strong> to edit, or <strong>Cancel auto-send</strong> to turn off.'
+            : '<span class="badge bg-secondary"><i class="bi bi-pause-circle"></i> Auto-send is OFF</span> — choose &quot;Auto (scheduled daily)&quot; and Save to enable.';
+    }
+    if (disableBtn) {
+        if (profileEnabled) disableBtn.classList.remove('d-none'); else disableBtn.classList.add('d-none');
+    }
+    updateSimpleSummary();
+}
+
+function updateSimpleSummary() {
+    const accountId = document.getElementById('simple-account')?.value;
+    const selected = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
+    const mpEl = document.getElementById('simple-msgs-per-group');
+    const msgs = (mpEl ? parseInt(mpEl.value) : 1) || 1;
+    const acc = accounts.find(a => a.id == accountId);
+    const summary = document.getElementById('simple-summary');
+    if (!summary) return;
+    if (!accountId || selected.length === 0) { summary.classList.add('d-none'); return; }
+    const accLabel = acc ? ((acc.phone_number || '') + (acc.username ? ' @'+acc.username : '')).trim() || 'Account #'+accountId : 'Account #'+accountId;
+    const total = selected.length * msgs;
+    summary.classList.remove('d-none');
+    summary.innerHTML = `<i class="bi bi-info-circle me-1"></i> <strong>${esc(accLabel)}</strong> → ${selected.length} group(s) × ${msgs} msg/day = <strong>${total} messages per day</strong>`;
+}
+
+async function ensureSimpleBindingsAndTemplate(accountId, selected, body, messagesPerDay) {
+    const cap = Math.max(1, Math.min(10, parseInt(messagesPerDay) || 1));
+    const existingBindings = await apiFetch(API + '/bindings?account_id=' + accountId);
+    const existingIds = new Set((existingBindings || []).map(b => b.target_id));
+    const bindingIds = Object.fromEntries((existingBindings || []).map(b => [b.target_id, b.id]));
+    for (const tid of selected) {
+        if (!existingIds.has(tid)) {
+            await apiFetch(API + '/bindings', { method: 'POST', body: JSON.stringify({ account_id: parseInt(accountId), target_id: tid, can_post: true, allowed_types: 'PROMO', daily_cap: cap }) });
+        } else if (bindingIds[tid]) {
+            await apiFetch(API + '/bindings/' + bindingIds[tid], { method: 'PUT', body: JSON.stringify({ daily_cap: cap }) });
+        }
+    }
+    const templates = await apiFetch(API + '/templates?scope=ACCOUNT');
+    const toDel = (templates || []).filter(t => t.account_id == accountId);
+    for (const t of toDel) await apiFetch(API + '/templates/' + t.id, { method: 'DELETE' });
+    await apiFetch(API + '/templates', { method: 'POST', body: JSON.stringify({ type: 'PROMO', scope: 'ACCOUNT', account_id: parseInt(accountId), name: 'Simple Daily', body, is_active: true, weight: 100 }) });
+}
+
+async function simpleSave(e) {
+    e.preventDefault();
+    const accountId = document.getElementById('simple-account').value;
+    const body = document.getElementById('simple-body').value.trim();
+    const start = document.getElementById('simple-window-start').value.trim() || '10:00';
+    const end = document.getElementById('simple-window-end').value.trim() || '21:00';
+    const useRandom = document.getElementById('simple-random').checked;
+    const sendModeAuto = document.getElementById('simple-mode-auto').checked;
+
+    if (!accountId) { showToast('Select account', 'error'); return; }
+    if (!body) { showToast('Enter message text', 'error'); return; }
+    const selected = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
+    if (selected.length === 0) { showToast('Select at least one target group', 'error'); return; }
+    const messagesPerDay = parseInt(document.getElementById('simple-msgs-per-group').value) || 1;
+    if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) {
+        showToast('Invalid time format. Use HH:MM', 'error'); return;
+    }
+
+    try {
+        await ensureSimpleBindingsAndTemplate(accountId, selected, body, messagesPerDay);
+        for (const b of (await apiFetch(API + '/bindings?account_id=' + accountId)) || []) {
+            if (!selected.includes(b.target_id)) {
+                await apiFetch(API + '/bindings/' + b.id, { method: 'DELETE' });
+            }
+        }
+
+        const profileRes = await apiFetch(API + '/schedule/profile/' + accountId).catch(() => ({}));
+        await apiFetch(API + '/schedule/profile/' + accountId, {
+            method: 'PUT',
+            body: JSON.stringify({
+                ...profileRes,
+                is_enabled: sendModeAuto,
+                timezone: 'Europe/Moscow',
+                min_interval_sec: 60,
+                daily_cap_total: 999,
+                daily_cap_promo: 500,
+                daily_cap_info: 500,
+                jitter_sec: 0,
+                quiet_hours_json: '{"start":"21:00","end":"10:00"}'
+            })
+        });
+
+        const rules = await apiFetch(API + '/schedule/rules/' + accountId);
+        for (const r of rules || []) await apiFetch(API + '/schedule/rules/' + accountId + '/' + r.id, { method: 'DELETE' });
+        if (sendModeAuto) {
+            const timesJson = useRandom ? `["RANDOM:${start}-${end}"]` : JSON.stringify([start]);
+            await apiFetch(API + '/schedule/rules/' + accountId, {
+                method: 'POST',
+                body: JSON.stringify({ type: 'PROMO', times_json: timesJson, target_mode: 'ONLY_SELECTED', selected_target_ids: selected, is_enabled: true })
+            });
+        }
+
+        showToast(sendModeAuto ? 'Settings saved. Auto-send enabled.' : 'Settings saved. Use "Send now" for one-time sends.');
+        loadBindings(); loadTemplates(); loadRules(); updateSimpleSummary();
+    } catch (e) {
+        const msg = (e.response && e.response.error) ? e.response.error : e.message;
+        showToast(msg || 'Save failed', 'error');
+    }
+}
+
+async function disableAutoSend() {
+    const accountId = document.getElementById('simple-account')?.value;
+    if (!accountId) { showToast('Select a user first', 'error'); return; }
+    const btn = document.getElementById('simple-disable-auto');
+    if (btn) btn.disabled = true;
+    try {
+        const profileRes = await apiFetch(API + '/schedule/profile/' + accountId).catch(() => ({}));
+        await apiFetch(API + '/schedule/profile/' + accountId, {
+            method: 'PUT',
+            body: JSON.stringify({ ...profileRes, is_enabled: false })
+        });
+        showToast('Auto-send disabled for this user.');
+        loadSimpleState(accountId);
+    } catch (e) {
+        showToast(e.message || 'Failed to disable', 'error');
+    }
+    if (btn) btn.disabled = false;
+}
+
+async function simpleTestNow() {
+    const accountId = document.getElementById('simple-account').value;
+    const selected = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
+    const body = document.getElementById('simple-body').value.trim();
+    const messagesPerDay = parseInt(document.getElementById('simple-msgs-per-group').value) || 1;
+    if (!accountId || selected.length === 0) {
+        showToast('Select account and at least one target.', 'error'); return;
+    }
+    if (!body) {
+        showToast('Enter message text.', 'error'); return;
+    }
+    const btn = document.getElementById('simple-test-now');
+    btn.disabled = true;
+    try {
+        await ensureSimpleBindingsAndTemplate(accountId, selected, body, messagesPerDay);
+    } catch (e) {
+        const msg = (e.response && e.response.error) ? e.response.error : e.message;
+        showToast(msg || 'Could not create bindings', 'error');
+        btn.disabled = false; return;
+    }
+    let ok = 0, err = 0;
+    for (const tid of selected) {
+        try {
+            await apiFetch(API + '/jobs/run-now', { method: 'POST', body: JSON.stringify({ account_id: parseInt(accountId), target_id: tid, type: 'PROMO' }) });
+            ok++;
+        } catch (e) {
+            err++;
+            const msg = (e.response && e.response.error) ? e.response.error : e.message;
+            showToast(msg, 'error');
+        }
+    }
+    if (ok && !err) {
+        showToast(`Sent to ${ok} group(s)`);
+    } else if (ok && err) {
+        showToast(`${ok} sent, ${err} failed`, err ? 'error' : 'success');
+    } else if (err) {
+        showToast(`All ${err} failed`, 'error');
+    }
+    loadSimpleDeliveries();
+    btn.disabled = false;
+}
+
+async function loadSimpleDeliveries() {
+    const loading = document.getElementById('simple-deliveries-loading');
+    const empty = document.getElementById('simple-deliveries-empty');
+    const tbl = document.getElementById('simple-deliveries-table');
+    const summary = document.getElementById('simple-deliveries-summary');
+    if (loading) loading.classList.remove('d-none');
+    if (empty) empty.classList.add('d-none');
+    if (tbl) tbl.classList.add('d-none');
+    if (summary) summary.textContent = '';
+    const accountId = document.getElementById('simple-account')?.value;
+    let url = API + '/deliveries?limit=20';
+    if (accountId) url += '&account_id=' + accountId;
+    try {
+        const data = await apiFetch(url);
+        if (loading) loading.classList.add('d-none');
+        if (!data || !Array.isArray(data) || data.length === 0) {
+            if (empty) { empty.classList.remove('d-none'); empty.textContent = 'No deliveries yet.'; }
+            return;
+        }
+        const sent = data.filter(d => d.status === 'SENT').length;
+        const failed = data.filter(d => d.status === 'FAILED').length;
+        if (summary) summary.textContent = `(${sent} sent, ${failed} failed)`;
+        const tgtMap = Object.fromEntries((targets || []).map(t => [t.id, t]));
+        const accMap = Object.fromEntries((accounts || []).map(a => [a.id, a]));
+        if (tbl) {
+            tbl.classList.remove('d-none');
+            const thead = tbl.querySelector('thead tr');
+            if (thead && !thead.innerHTML.includes('Account')) thead.innerHTML = '<tr><th>Target</th><th>Account</th><th>Status</th><th>Sent at</th><th>Error</th></tr>';
+            tbl.querySelector('tbody').innerHTML = data.slice(0, 20).map(d => {
+                const tgt = tgtMap[d.target_id];
+                const acc = accMap[d.account_id];
+                const accLabel = acc ? esc((acc.phone_number || '') + (acc.username ? ' @'+acc.username : '') || '#'+d.account_id) : '#'+d.account_id;
+                const statusBadge = d.status === 'SENT' ? 'bg-success' : d.status === 'FAILED' ? 'bg-danger' : 'bg-secondary';
+                const err = d.status === 'FAILED' && (d.error_code || d.error_message) ? esc((d.error_code ? d.error_code + ': ' : '') + (d.error_message || '')) : '';
+                return `<tr><td>${tgt ? esc(formatTargetLabel(tgt)) : d.target_id}</td><td><small>${accLabel}</small></td><td><span class="badge ${statusBadge}">${d.status}</span></td><td>${d.sent_at ? new Date(d.sent_at).toLocaleString() : '-'}</td><td><small class="text-danger">${err || '-'}</small></td></tr>`;
+            }).join('');
+        }
+    } catch (e) {
+        if (loading) loading.classList.add('d-none');
+        if (empty) { empty.classList.remove('d-none'); empty.textContent = 'Could not load logs.'; }
+        if (summary) summary.textContent = '';
+        showToast(e.message || 'Could not load logs', 'error');
+    }
+}
+
+// ============ Advanced ============
+function renderAdvTargets() { /* Targets tab removed; groups come from Load my Telegram groups */ }
+
+let bindings = [], templates = [];
+
+async function loadBindings() {
+    const loading = document.getElementById('bindings-loading');
+    const empty = document.getElementById('bindings-empty');
+    const tbl = document.getElementById('bindings-table');
+    const accountId = document.getElementById('bindings-account-filter')?.value;
+    loading?.classList.remove('d-none'); empty?.classList.add('d-none'); tbl?.classList.add('d-none');
+    try {
+        const url = accountId ? API + '/bindings?account_id=' + accountId : API + '/bindings';
+        bindings = await apiFetch(url);
+        loading?.classList.add('d-none');
+        if (!bindings.length) { empty?.classList.remove('d-none'); return; }
+        const accMap = Object.fromEntries(accounts.map(a => [a.id, a]));
+        const tgtMap = Object.fromEntries(targets.map(t => [t.id, t]));
+        tbl?.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = bindings.map(b => {
+            const acc = accMap[b.account_id]; const tgt = tgtMap[b.target_id];
+            const cap = b.daily_cap != null ? b.daily_cap : 1;
+            return `<tr><td>${acc ? esc(acc.phone_number) : b.account_id}</td><td>${tgt ? esc(formatTargetLabel(tgt)) : b.target_id}</td><td><input type="number" class="form-control form-control-sm binding-cap" data-binding-id="${b.id}" data-target-id="${b.target_id}" value="${cap}" min="1" max="10" style="width: 60px;" title="Messages per day to this group"></td><td>${esc(b.allowed_types || '-')}</td><td><button class="btn btn-sm btn-outline-danger" onclick="deleteBinding(${b.id})"><i class="bi bi-trash"></i></button></td></tr>`;
+        }).join('');
+        tbl.querySelectorAll('.binding-cap').forEach(inp => inp.addEventListener('change', async function() {
+            const id = this.dataset.bindingId, v = Math.max(1, Math.min(10, parseInt(this.value) || 1));
+            try { await apiFetch(API + '/bindings/' + id, { method: 'PUT', body: JSON.stringify({ daily_cap: v }) }); showToast('Updated'); } catch (e) { showToast(e.message, 'error'); }
+        }));
+    } catch (e) { loading?.classList.add('d-none'); showToast(e.message, 'error'); }
+}
+
+function deleteBinding(id) {
+    if (!confirm('Remove this binding?')) return;
+    apiFetch(API + '/bindings/' + id, { method: 'DELETE' }).then(() => { showToast('Removed'); loadBindings(); }).catch(e => showToast(e.message, 'error'));
+}
+
+async function loadTemplates() {
+    const loading = document.getElementById('templates-loading');
+    const empty = document.getElementById('templates-empty');
+    const tbl = document.getElementById('templates-table');
+    loading?.classList.remove('d-none'); empty?.classList.add('d-none'); tbl?.classList.add('d-none');
+    try {
+        templates = await apiFetch(API + '/templates');
+        loading?.classList.add('d-none');
+        if (!templates.length) { empty?.classList.remove('d-none'); return; }
+        tbl?.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = templates.map(t => `<tr><td><span class="badge bg-warning">${t.type}</span></td><td>${t.scope}</td><td>${esc(t.name)}</td><td><small>${esc((t.body||'').slice(0,50))}…</small></td><td><button class="btn btn-sm btn-outline-danger" onclick="deleteTemplate(${t.id})"><i class="bi bi-trash"></i></button></td></tr>`).join('');
+    } catch (e) { loading?.classList.add('d-none'); showToast(e.message, 'error'); }
+}
+
+function deleteTemplate(id) {
+    if (!confirm('Delete this template?')) return;
+    apiFetch(API + '/templates/' + id, { method: 'DELETE' }).then(() => { showToast('Deleted'); loadTemplates(); }).catch(e => showToast(e.message, 'error'));
+}
+
+async function loadProfile() {
+    const id = document.getElementById('profile-account').value;
+    const loading = document.getElementById('profile-loading');
+    const form = document.getElementById('profile-form');
+    const noAcc = document.getElementById('profile-no-account');
+    if (!id) { loading?.classList.add('d-none'); form?.classList.add('d-none'); noAcc?.classList.remove('d-none'); return; }
+    loading?.classList.remove('d-none'); noAcc?.classList.add('d-none'); form?.classList.add('d-none');
+    try {
+        const p = await apiFetch(API + '/schedule/profile/' + id);
+        loading?.classList.add('d-none'); form?.classList.remove('d-none');
+        document.getElementById('profile-enabled').checked = !!p.is_enabled;
+        document.getElementById('profile-cap-total').value = p.daily_cap_total ?? 6;
+        document.getElementById('profile-min-interval').value = p.min_interval_sec ?? 900;
+    } catch (e) { loading?.classList.add('d-none'); showToast(e.message, 'error'); }
+}
+
+async function saveProfile(e) {
+    e.preventDefault();
+    const id = document.getElementById('profile-account').value;
+    if (!id) return;
+    try {
+        await apiFetch(API + '/schedule/profile/' + id, { method: 'PUT', body: JSON.stringify({ is_enabled: document.getElementById('profile-enabled').checked, daily_cap_total: parseInt(document.getElementById('profile-cap-total').value) || 6, min_interval_sec: parseInt(document.getElementById('profile-min-interval').value) || 900, timezone: 'Europe/Moscow', jitter_sec: 0, quiet_hours_json: '{"start":"21:00","end":"10:00"}' }) });
+        showToast('Profile saved');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function loadRules() {
+    const id = document.getElementById('rules-account').value;
+    const loading = document.getElementById('rules-loading');
+    const empty = document.getElementById('rules-empty');
+    const tbl = document.getElementById('rules-table');
+    if (!id) { loading.textContent = 'Select an account'; loading?.classList.remove('d-none'); empty?.classList.add('d-none'); tbl?.classList.add('d-none'); return; }
+    loading.textContent = 'Loading...'; loading?.classList.remove('d-none'); empty?.classList.add('d-none'); tbl?.classList.add('d-none');
+    try {
+        const rules = await apiFetch(API + '/schedule/rules/' + id);
+        loading?.classList.add('d-none');
+        if (!rules.length) { empty?.classList.remove('d-none'); return; }
+        const ts = (tj) => { try { const arr = typeof tj === 'string' ? JSON.parse(tj) : tj; return Array.isArray(arr) ? arr.join(', ') : tj; } catch(_) { return tj || '-'; } };
+        tbl?.classList.remove('d-none');
+        tbl.querySelector('tbody').innerHTML = rules.map(r => `<tr><td><span class="badge bg-warning">${r.type}</span></td><td>${ts(r.times_json)}</td><td>${r.target_mode}</td><td><button class="btn btn-sm btn-outline-danger" onclick="deleteRule(${id},${r.id})"><i class="bi bi-trash"></i></button></td></tr>`).join('');
+    } catch (e) { loading?.classList.add('d-none'); showToast(e.message, 'error'); }
+}
+
+function deleteRule(accId, ruleId) {
+    if (!confirm('Delete this rule?')) return;
+    apiFetch(API + '/schedule/rules/' + accId + '/' + ruleId, { method: 'DELETE' }).then(() => { showToast('Deleted'); loadRules(); }).catch(e => showToast(e.message, 'error'));
+}
+
+// ============ Modals ============
+async function fillBindingModal() {
+    const accVal = document.getElementById('binding-account');
+    const tgtVal = document.getElementById('binding-target');
+    const accBtn = document.getElementById('binding-account-btn');
+    const tgtBtn = document.getElementById('binding-target-btn');
+    const accOpts = document.getElementById('binding-account-options');
+    const tgtOpts = document.getElementById('binding-target-options');
+    const accFilter = document.getElementById('binding-account-filter');
+    const tgtFilter = document.getElementById('binding-target-filter');
+    if (!accVal || !tgtVal || !accBtn || !tgtBtn || !accOpts || !tgtOpts) return;
+    accVal.value = ''; tgtVal.value = ''; accBtn.textContent = 'Select account'; tgtBtn.textContent = 'Select target';
+    if (accFilter) accFilter.value = ''; if (tgtFilter) tgtFilter.value = '';
+    try {
+        const [accData, tgtData] = await Promise.all([apiFetch('/api/accounts'), apiFetch(API + '/targets')]);
+        accounts = Array.isArray(accData) ? accData : []; targets = Array.isArray(tgtData) ? tgtData : [];
+    } catch (e) { showToast('Could not load data', 'error'); return; }
+    function rAcc(f) { const q = (f||'').toLowerCase(); const list = accounts.filter(a => !q || String((a.phone_number||'')+(a.username?' @'+a.username:'')).toLowerCase().includes(q)); accOpts.innerHTML = list.length ? list.map(a => { const l = esc((a.phone_number||'')+(a.username?' @'+a.username:'')||'Account #'+a.id); return `<a class="dropdown-item text-light" href="#" data-id="${a.id}" data-label="${l}">${l}</a>`; }).join('') : '<div class="dropdown-item-text text-muted">No matches</div>'; accOpts.querySelectorAll('.dropdown-item').forEach(el => el.addEventListener('click', e => { e.preventDefault(); accVal.value = el.dataset.id; accBtn.textContent = el.dataset.label; bootstrap.Dropdown.getInstance(accBtn)?.hide(); })); }
+    function rTgt(f) { const q = (f||'').toLowerCase(); const list = targets.filter(t => !q || formatTargetLabel(t).toLowerCase().includes(q)); tgtOpts.innerHTML = list.length ? list.map(t => { const l = esc(formatTargetLabel(t)); return `<a class="dropdown-item text-light" href="#" data-id="${t.id}" data-label="${l}">${l}</a>`; }).join('') : '<div class="dropdown-item-text text-muted">No matches</div>'; tgtOpts.querySelectorAll('.dropdown-item').forEach(el => el.addEventListener('click', e => { e.preventDefault(); tgtVal.value = el.dataset.id; tgtBtn.textContent = el.dataset.label; bootstrap.Dropdown.getInstance(tgtBtn)?.hide(); })); }
+    rAcc(); rTgt();
+    if (accFilter && !accFilter.dataset.bound) { accFilter.dataset.bound = '1'; accFilter.addEventListener('input', () => rAcc(accFilter.value)); }
+    if (tgtFilter && !tgtFilter.dataset.bound) { tgtFilter.dataset.bound = '1'; tgtFilter.addEventListener('input', () => rTgt(tgtFilter.value)); }
+}
+
+async function createBinding() {
+    const accountId = document.getElementById('binding-account').value;
+    const targetId = document.getElementById('binding-target').value;
+    const dailyCap = parseInt(document.getElementById('binding-daily-cap').value) || 1;
+    if (!accountId || !targetId) { showToast('Select account and target', 'error'); return; }
+    try {
+        await apiFetch(API + '/bindings', { method: 'POST', body: JSON.stringify({ account_id: parseInt(accountId), target_id: parseInt(targetId), can_post: true, allowed_types: 'PROMO', daily_cap: Math.max(1, Math.min(10, dailyCap)) }) });
+        bootstrap.Modal.getInstance(document.getElementById('addBindingModal')).hide();
+        showToast('Binding created'); loadBindings(); renderSimpleTargets();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+function fillRuleTargets() {
+    const wrap = document.getElementById('rule-targets-wrap');
+    const mode = document.getElementById('rule-target-mode').value;
+    if (mode === 'ONLY_SELECTED') { wrap?.classList.remove('d-none'); document.getElementById('rule-targets').innerHTML = targets.map(t => `<div class="form-check"><input class="form-check-input" type="checkbox" value="${t.id}" id="rt-${t.id}"><label class="form-check-label" for="rt-${t.id}">${esc(formatTargetLabel(t))}</label></div>`).join(''); }
+    else { wrap?.classList.add('d-none'); }
+}
+
+async function createRule() {
+    const accountId = document.getElementById('rules-account').value;
+    const type = document.getElementById('rule-type').value;
+    const timesStr = document.getElementById('rule-times').value.trim() || '10:00, 18:00';
+    const targetMode = document.getElementById('rule-target-mode').value;
+    const selectedIds = []; document.querySelectorAll('#rule-targets input:checked').forEach(cb => selectedIds.push(parseInt(cb.value)));
+    if (!accountId) { showToast('Select account', 'error'); return; }
+    const times = timesStr.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    try {
+        await apiFetch(API + '/schedule/rules/' + accountId, { method: 'POST', body: JSON.stringify({ type, times_json: times, target_mode: targetMode, selected_target_ids: targetMode === 'ONLY_SELECTED' ? selectedIds : [], is_enabled: true }) });
+        bootstrap.Modal.getInstance(document.getElementById('addRuleModal')).hide();
+        showToast('Rule created'); loadRules();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function createTemplate() {
+    const type = document.getElementById('template-type').value;
+    const scope = document.getElementById('template-scope').value;
+    const body = document.getElementById('template-body').value.trim();
+    const name = document.getElementById('template-name').value.trim() || 'Template';
+    const isActive = document.getElementById('template-active').checked;
+    const weight = parseInt(document.getElementById('template-weight').value) || 100;
+    if (!body) { showToast('Enter template body', 'error'); return; }
+    try {
+        await apiFetch(API + '/templates', { method: 'POST', body: JSON.stringify({ type, scope, name, body, is_active: isActive, weight }) });
+        bootstrap.Modal.getInstance(document.getElementById('addTemplateModal')).hide();
+        document.getElementById('template-body').value = ''; document.getElementById('template-name').value = '';
+        showToast('Template created'); loadTemplates();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+// ============ Init ============
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        await loadAccounts();
+    } catch (e) {
+        console.error('Load accounts failed', e);
+        accounts = [];
+        document.getElementById('simple-no-account')?.classList.remove('d-none');
+        document.getElementById('simple-form')?.classList.add('d-none');
+        showToast('Could not load accounts', 'error');
+    }
+    try {
+        await loadTargets();
+    } catch (e) {
+        console.error('Load targets failed', e);
+        targets = [];
+    }
+    renderSimpleTargets();
+
+    document.getElementById('simple-account')?.addEventListener('change', function() {
+        loadSimpleState(this.value);
+        loadSimpleDeliveries();
+        ['profile-account','rules-account','bindings-account-filter'].forEach(id => { const s = document.getElementById(id); if (s) s.value = this.value; });
+        loadProfile(); loadRules(); loadBindings();
+    });
+    document.getElementById('simple-form')?.addEventListener('submit', simpleSave);
+    document.getElementById('simple-test-now')?.addEventListener('click', simpleTestNow);
+    document.getElementById('simple-disable-auto')?.addEventListener('click', disableAutoSend);
+    document.getElementById('simple-target-search')?.addEventListener('input', function() { renderSimpleTargets(this.value); });
+    document.getElementById('simple-deliveries-refresh')?.addEventListener('click', loadSimpleDeliveries);
+    document.getElementById('simple-msgs-per-group')?.addEventListener('input', updateSimpleSummary);
+    document.getElementById('simple-msgs-per-group')?.addEventListener('change', updateSimpleSummary);
+    document.querySelector('#simple-targets-wrap')?.addEventListener('change', updateSimpleSummary);
+
+    document.getElementById('simple-load-my-groups')?.addEventListener('click', loadMyGroupsClick);
+    document.getElementById('load-my-groups-add-selected')?.addEventListener('click', addSelectedDialogs);
+
+    document.getElementById('profile-account')?.addEventListener('change', loadProfile);
+    document.getElementById('profile-form')?.addEventListener('submit', saveProfile);
+    document.getElementById('rules-account')?.addEventListener('change', loadRules);
+    document.getElementById('bindings-account-filter')?.addEventListener('change', loadBindings);
+
+    document.getElementById('addBindingModal')?.addEventListener('shown.bs.modal', fillBindingModal);
+    document.getElementById('addRuleModal')?.addEventListener('show.bs.modal', fillRuleTargets);
+    document.getElementById('rule-target-mode')?.addEventListener('change', fillRuleTargets);
+
+    let previewT = null;
+    document.getElementById('template-body')?.addEventListener('input', () => {
+        clearTimeout(previewT);
+        previewT = setTimeout(async () => {
+            const body = document.getElementById('template-body')?.value?.trim();
+            const el = document.getElementById('template-preview');
+            if (!body || !el) { el.textContent = ''; return; }
+            try {
+                const r = await apiFetch(API + '/templates/preview', { method: 'POST', body: JSON.stringify({ body, account_name: 'Account', chat_title: 'Chat' }) });
+                el.textContent = r.rendered || '';
+            } catch (_) { el.textContent = ''; }
+        }, 300);
+    });
+
+    loadSimpleDeliveries();
+});
+</script>
+{% endblock %}

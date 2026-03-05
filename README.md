@@ -77,6 +77,24 @@ python main.py dashboard
 
 Visit `http://localhost:5000` to access the dashboard.
 
+### Local development (no deploy)
+
+Run the dashboard on your Mac for quick UI iteration—edit code, save, browser auto-refreshes:
+
+```bash
+./run_local.sh
+```
+
+Then open **http://127.0.0.1:5001/** (5001 avoids macOS AirPlay on 5000).
+
+To use real data (accounts, targets, deliveries) from the server:
+
+```bash
+./sync_db_from_server.sh              # Sync DB only
+./sync_db_from_server.sh --env         # Sync DB + .env (so Add Account & Test now work)
+./run_local.sh
+```
+
 ### Docker Deployment
 
 ```bash

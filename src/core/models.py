@@ -22,6 +22,13 @@ class AccountStatus(str, Enum):
     AUTH_REQUIRED = "auth_required"
 
 
+class AccountPurpose(str, Enum):
+    """Account purpose: autostory for stories, messaging for scheduled group messages"""
+    AUTOSTORY = "autostory"
+    MESSAGING = "messaging"
+    BOTH = "both"
+
+
 class TaskStatus(str, Enum):
     """Task status enumeration"""
     PENDING = "pending"
@@ -64,6 +71,9 @@ class Account(Base):
     actions_today = Column(Integer, default=0)
     last_action_at = Column(DateTime, nullable=True)
 
+    # Purpose: autostory (stories), messaging (scheduler), both
+    purpose = Column(String(20), default="both", nullable=False)
+
     # Metadata
     proxy_config = Column(JSON, nullable=True)
     notes = Column(Text, nullable=True)
@@ -91,6 +101,7 @@ class DiscoveredUser(Base):
     # Discovery info
     source_chat_id = Column(Integer, nullable=True)
     source_chat_title = Column(String(255), nullable=True)
+    source_chat_username = Column(String(255), nullable=True, index=True)  # group @username for filtering
     discovered_at = Column(DateTime, default=datetime.utcnow)
 
     # Engagement tracking
@@ -236,3 +247,7 @@ class SystemLog(Base):
 
     def __repr__(self):
         return f"<SystemLog {self.level} {self.component}>"
+
+
+# Import scheduler models so they're registered with Base
+from . import scheduler_models  # noqa: F401, E402
