@@ -185,7 +185,7 @@ def list_accounts():
                 "first_name": a.first_name,
                 "status": getattr(a.status, "value", str(a.status)) if a.status is not None else "inactive",
                 "purpose": p,
-                "last_active": _dt_iso(account.last_active) if a.last_active else None,
+                "last_active": _dt_iso(a.last_active) if a.last_active else None,
                 "stories_today": a.stories_today if a.stories_today is not None else 0,
             })
         return jsonify(result)
@@ -948,7 +948,7 @@ def list_campaigns():
                 "is_active": c.is_active,
                 "total_stories": c.total_stories_published,
                 "total_mentions": c.total_users_mentioned,
-                "created_at": _dt_iso(account.created_at),
+                "created_at": _dt_iso(c.created_at),
             }
             for c in campaigns
         ])
