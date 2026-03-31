@@ -1,3 +1,7 @@
+# STORYFLEET bot — requires UNIX user/group below to exist or systemd returns 217/USER.
+# Verify before enable: id storyfleet
+# See docs/OPERATIONS_STABILIZATION.md
+
 [Unit]
 Description=STORYFLEET Telegram Bot
 After=network.target postgresql.service redis.service
