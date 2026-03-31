@@ -5,7 +5,7 @@ import re
 import os
 import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 import structlog
 
@@ -73,6 +73,16 @@ def validate_media(file_path: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def utc_now() -> datetime:
+    """Timezone-aware UTC now. Replaces deprecated datetime.utcnow(). Returns naive UTC for DB compatibility."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def utc_from_timestamp(ts: float) -> datetime:
+    """Timezone-aware UTC from timestamp. Replaces deprecated datetime.utcfromtimestamp()."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+
+
 def generate_session_name(phone: str) -> str:
     """
     Generate a unique session name from phone number
@@ -83,7 +93,7 @@ def generate_session_name(phone: str) -> str:
     Returns:
         Hashed session name
     """
-    hash_input = f"{phone}_{datetime.utcnow().timestamp()}"
+    hash_input = f"{phone}_{utc_now().timestamp()}"
     return hashlib.md5(hash_input.encode()).hexdigest()[:12]
 
 
@@ -179,7 +189,7 @@ def time_ago(dt: datetime) -> str:
     Returns:
         Human-readable string
     """
-    now = datetime.utcnow()
+    now = utc_now()
     diff = now - dt
 
     seconds = diff.total_seconds()
