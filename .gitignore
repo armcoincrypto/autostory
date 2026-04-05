@@ -105,3 +105,6 @@ celerybeat.pid
 
 # Logs
 *.log
+
+# local bot session
+data/bot/storyfleet_bot.session
