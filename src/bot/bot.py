@@ -527,7 +527,7 @@ class StoryFleetBot:
                 await event.respond("⏳ Importing session...")
                 try:
                     from src.clients.manager import client_manager
-                    result = await client_manager.import_session_string(session_string)
+                    result = await client_manager.import_session_string(session_string, import_source="paste")
                     if result.get("success"):
                         await event.respond(
                             f"✅ **{result.get('message', 'Account imported!')}**\n\n"
@@ -639,12 +639,11 @@ class StoryFleetBot:
             sender = await event.get_sender()
             user_id = sender.id
 
-            # Check if there's an active account
+            # Check if there's an active account with canonical session
             with get_db_context() as db:
-                active_account = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).first()
+                active_accounts = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).all()
+            from src.core.session_paths import account_has_canonical_session
+            active_account = next((a for a in active_accounts if account_has_canonical_session(a)), None)
 
             if not active_account:
                 await event.respond(
@@ -809,14 +808,12 @@ class StoryFleetBot:
             user_id = sender.id
 
             with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
+                accounts = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).all()
                 users_count = db.query(DiscoveredUser).filter(
                     DiscoveredUser.times_mentioned == 0
                 ).count()
+            from src.core.session_paths import account_has_canonical_session
+            accounts = [a for a in accounts if account_has_canonical_session(a)]
 
             if not accounts:
                 await event.respond(
@@ -1117,14 +1114,12 @@ class StoryFleetBot:
             user_id = sender.id
 
             with get_db_context() as db:
-                accounts = db.query(Account).filter(
-                    Account.status == AccountStatus.ACTIVE,
-                    Account.session_string.isnot(None)
-                ).all()
-
+                accounts = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).all()
                 users_count = db.query(DiscoveredUser).filter(
                     DiscoveredUser.times_mentioned == 0
                 ).count()
+            from src.core.session_paths import account_has_canonical_session
+            accounts = [a for a in accounts if account_has_canonical_session(a)]
 
             if not accounts:
                 await event.respond("No active accounts. Use /login first.")

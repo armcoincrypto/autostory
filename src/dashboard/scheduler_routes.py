@@ -1,18 +1,12 @@
 """
 Scheduler API routes - Targets, Templates, Bindings, Schedule, Logs
 """
+import asyncio
 import json
-import logging
-import os
-import subprocess
-import sys
-import urllib.request
-import urllib.error
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
 
-from config.settings import settings
 from src.core.database import get_db_context
 from src.core.models import Account, AccountStatus
 from src.core.scheduler_models import (
@@ -21,65 +15,25 @@ from src.core.scheduler_models import (
     MessageType, JobStatus
 )
 from src.scheduler.renderer import render_template
+from src.scheduler.executor import execute_job
 
 scheduler_api = Blueprint('scheduler_api', __name__, url_prefix='/api/v1')
-
-
-def _proxy_to_server():
-    """When proxy URL is set, forward all scheduler API requests to the server."""
-    proxy_url = getattr(settings.dashboard, "run_now_proxy_url", None) or os.environ.get("DASHBOARD_RUN_NOW_PROXY_URL")
-    if not proxy_url:
-        return None
-    proxy_url = proxy_url.rstrip("/")
-    url = proxy_url + request.full_path  # e.g. http://server:5000/api/v1/bindings?account_id=2
-    try:
-        body = request.get_data() or None
-        headers = {"Content-Type": "application/json"} if body else {}
-        req = urllib.request.Request(url, data=body, headers=headers, method=request.method)
-        with urllib.request.urlopen(req, timeout=125) as r:
-            resp = jsonify(json.loads(r.read().decode()))
-            resp.status_code = r.status
-            return resp
-    except urllib.error.HTTPError as e:
-        try:
-            err = json.loads(e.read().decode())
-        except Exception:
-            err = {"error": str(e)}
-        resp = jsonify(err)
-        resp.status_code = e.code
-        return resp
-    except (urllib.error.URLError, OSError) as e:
-        resp = jsonify({"error": f"Proxy failed: {e}"})
-        resp.status_code = 502
-        return resp
-
-
-@scheduler_api.before_request
-def maybe_proxy():
-    """Proxy all scheduler API to server when DASHBOARD_RUN_NOW_PROXY_URL is set."""
-    rv = _proxy_to_server()
-    if rv is not None:
-        return rv
 
 
 # ============ Targets ============
 @scheduler_api.route('/targets', methods=['GET'])
 def list_targets():
-    try:
-        with get_db_context() as db:
-            targets = db.query(ChatTarget).all()
-            return jsonify([{
-                "id": t.id,
-                "tg_id": getattr(t, "tg_id", None),
-                "username": t.username,
-                "invite_link": t.invite_link,
-                "title": t.title,
-                "chat_type": t.chat_type,
-                "is_verified": getattr(t, "is_verified", False),
-            } for t in targets])
-    except Exception as e:
-        logging.getLogger(__name__).exception("list_targets failed: %s", e)
-        return jsonify([])
+    with get_db_context() as db:
+        targets = db.query(ChatTarget).all()
+        return jsonify([{
+            "id": t.id,
+            "tg_id": t.tg_id,
+            "username": t.username,
+            "invite_link": t.invite_link,
+            "title": t.title,
+            "chat_type": t.chat_type,
+            "is_verified": t.is_verified,
+        } for t in targets])
 
 
 @scheduler_api.route('/targets', methods=['POST'])
@@ -90,29 +44,11 @@ def create_target():
             username=data.get("username"),
             invite_link=data.get("invite_link"),
             tg_id=data.get("tg_id"),
-            title=data.get("title"),
             chat_type=data.get("chat_type", "channel")
         )
         db.add(t)
         db.flush()  # Persist and assign ID (refresh fails on pending instances)
         return jsonify({"id": t.id, "success": True})
-
-
-@scheduler_api.route('/targets/<int:target_id>', methods=['PATCH'])
-def update_target(target_id):
-    """Update target (e.g. set title for dialog matching when account joined manually)."""
-    data = request.get_json() or {}
-    with get_db_context() as db:
-        t = db.query(ChatTarget).filter(ChatTarget.id == target_id).first()
-        if not t:
-            return jsonify({"error": "Target not found"}), 404
-        if "title" in data:
-            t.title = data["title"] or None
-        if "username" in data:
-            t.username = data["username"] or None
-        if "invite_link" in data:
-            t.invite_link = data["invite_link"] or None
-        return jsonify({"success": True})
 
 
 @scheduler_api.route('/targets/<int:target_id>', methods=['DELETE'])
@@ -390,14 +326,13 @@ def run_job_now():
         return jsonify({"error": "account_id, target_id, type required"}), 400
     if msg_type not in ("PROMO", "INFO"):
         return jsonify({"error": "type must be PROMO or INFO"}), 400
-
     with get_db_context() as db:
         binding = db.query(AccountTargetBinding).filter(
             AccountTargetBinding.account_id == account_id,
             AccountTargetBinding.target_id == target_id
         ).first()
         if not binding:
-            return jsonify({"error": "No binding for this account-target pair. Click Save settings first."}), 400
+            return jsonify({"error": "No binding for this account-target pair"}), 400
         job = ScheduledJob(
             account_id=int(account_id),
             target_id=int(target_id),
@@ -408,28 +343,10 @@ def run_job_now():
         db.add(job)
         db.flush()
         job_id = job.id
-    # Run executor in subprocess to avoid Telethon "event loop must not change" error.
-    # capture_output=False so logs (account, resolved chat) appear in terminal for debugging
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    proc = subprocess.run(
-        [sys.executable, "-m", "scripts.run_job_now", str(job_id)],
-        cwd=project_root,
-        capture_output=False,  # show logs in terminal
-        text=True,
-        timeout=120,
-    )
-    if proc.returncode != 0:
-        with get_db_context() as db2:
-            d = db2.query(MessageDelivery).filter(
-                MessageDelivery.job_id == job_id
-            ).order_by(MessageDelivery.created_at.desc()).first()
-            err_code = (d.error_code or "SendFailed") if d else "SendFailed"
-            err_msg = (d.error_message or proc.stderr or "Send failed") if d else (proc.stderr or "Send failed")
-        return jsonify({
-            "error": err_msg.strip()[:500] if err_msg else "Send failed",
-            "error_code": err_code,
-            "job_id": job_id
-        }), 500
+    try:
+        asyncio.run(execute_job(job_id))
+    except Exception as e:
+        return jsonify({"error": str(e), "job_id": job_id}), 500
     return jsonify({"success": True, "job_id": job_id})
 
 

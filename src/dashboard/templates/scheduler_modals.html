@@ -1,3 +1,39 @@
+<!-- Add Target Modal -->
+<div class="modal fade" id="addTargetModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Chat Target</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Username (without @)</label>
+                    <input type="text" class="form-control" id="target-username" placeholder="channelname">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Or Invite Link</label>
+                    <input type="text" class="form-control" id="target-invite" placeholder="https://t.me/joinchat/...">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Chat Type</label>
+                    <select class="form-select" id="target-chat-type">
+                        <option value="channel">channel</option>
+                        <option value="group">group</option>
+                        <option value="supergroup">supergroup</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="createTarget()">
+                    <i class="bi bi-plus-circle"></i> Add Target
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Add Binding Modal -->
 <div class="modal fade" id="addBindingModal" tabindex="-1">
     <div class="modal-dialog">
@@ -40,9 +76,8 @@
                     <input type="text" class="form-control" id="binding-allowed-types" value="PROMO,INFO" placeholder="PROMO,INFO">
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Messages per day to this group</label>
-                    <input type="number" class="form-control" id="binding-daily-cap" min="1" max="10" value="1" placeholder="1">
-                    <div class="form-text">How many times this account will send to this group per day (1–10)</div>
+                    <label class="form-label">Daily cap (optional)</label>
+                    <input type="number" class="form-control" id="binding-daily-cap" placeholder="Leave empty for default">
                 </div>
             </div>
             <div class="modal-footer">

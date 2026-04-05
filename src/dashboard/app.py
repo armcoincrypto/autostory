@@ -18,6 +18,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from config.settings import settings
+from src.core.database import init_db
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +28,8 @@ csrf = CSRFProtect()
 
 def create_app() -> Flask:
     """Create and configure Flask application"""
+    # Gunicorn uses this factory directly (not main.py), so ensure DB schema matches models.
+    init_db()
     app = Flask(
         __name__,
         template_folder='templates',
@@ -43,15 +46,8 @@ def create_app() -> Flask:
     login_manager.login_view = 'auth.login'
     csrf.init_app(app)
 
-    # Root route and ping on app so they always work (before blueprints)
-    @app.route('/ping')
-    def ping():
-        return {"ok": True, "service": "autostory-web"}
-
-    @app.route('/')
-    def index_root():
-        from flask import render_template
-        return render_template('index.html')
+    from .auth_routes import auth
+    app.register_blueprint(auth)
 
     # Register blueprints
     from .routes import register_routes, api
@@ -64,15 +60,7 @@ def create_app() -> Flask:
     # Error handlers
     @app.errorhandler(404)
     def not_found(error):
-        # If browser requested HTML, serve dashboard so any path shows the app
-        from flask import request
-        if request.path.startswith('/api') or request.path.startswith('/static'):
-            return {"error": "Not found", "detail": "Not Found"}, 404
-        accept = request.headers.get('Accept', '') or ''
-        if 'text/html' in accept:
-            from flask import render_template
-            return render_template('index.html'), 200
-        return {"error": "Not found", "detail": "Not Found"}, 404
+        return {"error": "Not found"}, 404
 
     @app.errorhandler(500)
     def internal_error(error):

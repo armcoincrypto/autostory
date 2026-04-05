@@ -15,6 +15,15 @@
     </div>
 </div>
 
+<!-- Story Account Badges -->
+<div id="story-account-badges" class="mb-3 d-none">
+    <span class="badge bg-success me-2" title="General Healthy: Telegram API responds. Not enough for stories—session + precheck + warmup required.">General Healthy: <span id="badge-healthy">0</span></span>
+    <span class="badge bg-primary me-2" title="Session Available: canonical session file exists on disk">Session Available: <span id="badge-session-ready">0</span></span>
+    <span class="badge bg-success me-2" title="Story Eligible Now: can publish a story right now">Story Eligible Now: <span id="badge-story-ready">0</span></span>
+    <span class="badge bg-info me-2" title="Rate Limited: Telegram cooldown; exact date shown if known">Story Rate Limited: <span id="badge-story-rate-limited">0</span></span>
+    <span class="badge bg-warning text-dark me-2" title="Frozen/Restricted: Telegram blocked; unblock time unknown">Story Frozen: <span id="badge-story-frozen">0</span></span>
+</div>
+
 <!-- Stats Row -->
 <div class="row mb-4">
     <div class="col-md-4">
@@ -56,10 +65,11 @@
                     <th>Mentions</th>
                     <th>Views</th>
                     <th>Published</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody id="stories-table">
-                <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="8" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
 
@@ -68,6 +78,31 @@
             <ul class="pagination justify-content-center" id="pagination">
             </ul>
         </nav>
+    </div>
+</div>
+
+<!-- Edit Story Modal -->
+<div class="modal fade" id="editStoryModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Story</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-story-id">
+                <div class="mb-3">
+                    <label class="form-label">Caption</label>
+                    <textarea class="form-control" id="edit-story-caption" rows="3"></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Mentions</label>
+                    <input type="text" class="form-control" id="edit-story-mentions" placeholder="e.g. user1, user2 (optional)">
+                    <small class="text-muted">Usernames comma-separated; for display only (does not change Telegram story).</small>
+                </div>
+                <button type="button" class="btn btn-primary" onclick="saveStoryEdit()">Save</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -117,44 +152,221 @@
 
 <!-- Batch Publish Modal -->
 <div class="modal fade" id="batchPublishModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content bg-dark">
             <div class="modal-header">
                 <h5 class="modal-title">Batch Publish Stories</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div class="alert alert-info">
-                    <i class="bi bi-info-circle"></i> This will publish stories across multiple accounts with auto-selected mentions.
-                </div>
                 <div class="mb-3">
                     <label class="form-label">Media (photo or video)</label>
                     <input type="file" class="form-control" id="batch-media-file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov">
-                    <small class="text-muted">JPG, PNG, MP4</small>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Caption</label>
-                    <textarea class="form-control" id="batch-caption" rows="3"></textarea>
+                    <textarea class="form-control" id="batch-caption" rows="2"></textarea>
                 </div>
-                <div class="row">
-                    <div class="col-6">
-                        <div class="mb-3">
-                            <label class="form-label">Max Stories</label>
-                            <input type="number" class="form-control" id="batch-max" value="10">
-                        </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Stories to publish</label>
+                        <input type="number" class="form-control" id="batch-max-stories" value="0" min="0" title="0 = one per eligible account">
+                        <small class="text-muted">0 = use all eligible accounts (one story each)</small>
                     </div>
-                    <div class="col-6">
-                        <div class="mb-3">
-                            <label class="form-label">Mentions per Story</label>
-                            <input type="number" class="form-control" id="batch-mentions" value="5">
-                        </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Mentions per story</label>
+                        <input type="number" class="form-control" id="batch-mentions" value="5" min="0">
                     </div>
                 </div>
-                <button class="btn btn-primary w-100" onclick="batchPublish()">
-                    <i class="bi bi-layers"></i> Start Batch
+
+                <h6 class="text-secondary mt-3">Mention users from</h6>
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="batch-mention-source" id="batch-source-all" value="all" checked onchange="toggleMentionSourceDropdown()">
+                        <label class="form-check-label" for="batch-source-all">All discovered users</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="batch-mention-source" id="batch-source-specific" value="specific" onchange="toggleMentionSourceDropdown()">
+                        <label class="form-check-label" for="batch-source-specific">Selected groups/lists</label>
+                    </div>
+                    <div class="mt-2" id="batch-specific-source-wrap" style="display:none;">
+                        <p class="text-muted small mb-1">Choose one or more groups or lists. Mentions will be drawn from the combined pool.</p>
+                        <div class="d-flex gap-2 mb-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="batchSourceSelectAll()">Select all</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="batchSourceClearAll()">Clear all</button>
+                        </div>
+                        <input type="text" class="form-control form-control-sm mb-1" id="batch-source-search" placeholder="Filter by name..." oninput="filterBatchSources()">
+                        <div class="border rounded p-2 bg-dark" style="max-height:220px;overflow-y:auto;" id="batch-source-checkboxes">
+                            <span class="text-muted small">Loading...</span>
+                        </div>
+                        <small class="text-muted d-block mt-1" id="batch-source-selected-summary"></small>
+                        <small class="text-muted d-block mt-1" id="batch-source-count"></small>
+                        <small class="text-muted d-block mt-1" id="batch-source-empty-hint" style="display:none;">No groups yet. Go to <strong>Discovery</strong> → Scan to add groups.</small>
+                    </div>
+                </div>
+
+                <h6 class="text-secondary mt-3">Accounts to use</h6>
+                <div class="mb-2">
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="batch-account-mode" id="batch-account-all" value="all" checked onchange="toggleManualAccounts()">
+                        <label class="form-check-label" for="batch-account-all">All story-eligible accounts</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="batch-account-mode" id="batch-account-manual" value="manual" onchange="toggleManualAccounts()">
+                        <label class="form-check-label" for="batch-account-manual">Choose accounts manually</label>
+                    </div>
+                </div>
+                <div class="mb-3" id="batch-manual-accounts-wrap" style="display:none;">
+                    <p class="text-muted small mb-1">Only <strong>story-eligible</strong> accounts are listed (session + warmup + precheck passed). Frozen, restricted, re-import needed, etc. are excluded.</p>
+                    <div class="d-flex gap-2 mb-1">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="batchAccountsSelectAll()">Select all</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="batchAccountsClearAll()">Clear selection</button>
+                    </div>
+                    <input type="text" class="form-control form-control-sm mb-1" id="batch-account-search" placeholder="Search by phone or username..." oninput="filterBatchAccounts()">
+                    <label class="form-label">Select accounts</label>
+                    <div class="border rounded p-2 bg-dark" style="max-height:200px;overflow-y:auto;" id="batch-accounts-checkboxes">
+                        <span class="text-muted small">Loading...</span>
+                    </div>
+                    <small class="text-muted d-block mt-1" id="batch-accounts-selected-summary"></small>
+                    <div id="batch-accounts-warming-warn" class="alert alert-warning mt-2 small d-none" role="alert"></div>
+                </div>
+
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="batch-unique-across" checked>
+                        <label class="form-check-label" for="batch-unique-across">Do not mention the same user twice</label>
+                    </div>
+                </div>
+
+                <div id="batch-eligibility-banner" class="alert alert-warning mb-3 d-none" role="alert">
+                    <strong>No story-eligible accounts right now.</strong>
+                    <span id="batch-eligibility-reasons"></span>
+                </div>
+
+                <div class="d-flex gap-2 mt-3">
+                    <button type="button" class="btn btn-outline-info" onclick="previewBatch()">
+                        <i class="bi bi-eye"></i> Preview
+                    </button>
+                    <button class="btn btn-primary" id="batch-publish-btn" onclick="batchPublish()">
+                        <i class="bi bi-layers"></i> Publish
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="openScheduleBatchModal()">
+                        <i class="bi bi-calendar-clock"></i> Schedule
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Schedule this batch modal (from Batch Publish form) -->
+<div class="modal fade" id="scheduleBatchModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Schedule this batch</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Use current settings and media. Pick when to run.</p>
+                <div class="mb-3">
+                    <label class="form-label">Run at</label>
+                    <input type="datetime-local" class="form-control" id="schedule-batch-run-at">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Repeat</label>
+                    <select class="form-select" id="schedule-batch-repeat">
+                        <option value="">Once</option>
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                    </select>
+                </div>
+                <button type="button" class="btn btn-primary w-100" onclick="scheduleFromBatch()">
+                    <i class="bi bi-calendar-check"></i> Schedule
                 </button>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- Mention Blacklist -->
+<div class="card mt-4">
+    <div class="card-header"><h6 class="mb-0"><i class="bi bi-person-x"></i> Mention blacklist</h6></div>
+    <div class="card-body">
+        <p class="text-muted small">Blacklisted users are never used as mentions.</p>
+        <div class="row mb-3">
+            <div class="col-md-3"><input type="text" class="form-control form-control-sm" id="blacklist-username" placeholder="@username"></div>
+            <div class="col-md-2"><input type="number" class="form-control form-control-sm" id="blacklist-user-id" placeholder="User ID"></div>
+            <div class="col-md-3"><input type="text" class="form-control form-control-sm" id="blacklist-reason" placeholder="Reason (optional)"></div>
+            <div class="col-md-2"><button type="button" class="btn btn-sm btn-outline-danger" onclick="addBlacklist()">Add</button></div>
+        </div>
+        <table class="table table-sm table-dark">
+            <thead><tr><th>Username</th><th>User ID</th><th>Reason</th><th></th></tr></thead>
+            <tbody id="blacklist-tbody"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Schedule batch -->
+<div class="card mt-4">
+    <div class="card-header"><h6 class="mb-0"><i class="bi bi-calendar-clock"></i> Schedule a batch</h6></div>
+    <div class="card-body">
+        <p class="text-muted small">Run a story batch at a set time using a saved template and media.</p>
+        <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Template</label>
+                <select class="form-select form-select-sm" id="schedule-template"></select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Run at</label>
+                <input type="datetime-local" class="form-control form-control-sm" id="schedule-run-at">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Repeat</label>
+                <select class="form-select form-select-sm" id="schedule-repeat">
+                    <option value="">Once</option>
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Media (photo/video)</label>
+                <input type="file" class="form-control form-control-sm" id="schedule-media" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov">
+            </div>
+            <div class="col-md-2">
+                <button type="button" class="btn btn-sm btn-primary" onclick="createSchedule()">Schedule</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Batch Modal -->
+<div class="modal fade" id="previewBatchModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Batch Preview</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="preview-content"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Batch History -->
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0"><i class="bi bi-clock-history"></i> Batch history</h6>
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadBatchHistory()">Refresh</button>
+    </div>
+    <div class="card-body">
+        <div id="batch-history-placeholder" class="text-muted small">Loading...</div>
+        <table class="table table-sm table-dark d-none" id="batch-history-table">
+            <thead><tr><th>Run</th><th>Started</th><th>Attempted</th><th>OK</th><th>Failed</th><th>Pool</th></tr></thead>
+            <tbody id="batch-history-tbody"></tbody>
+        </table>
     </div>
 </div>
 {% endblock %}
@@ -162,18 +374,67 @@
 {% block extra_js %}
 <script>
 let currentPage = 1;
+let batchEligibleCount = 0;
+let batchExclusionReasons = [];
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function openEditStory(id) {
+    try {
+        const res = await fetch('/api/stories/' + id);
+        const s = await res.json();
+        if (!res.ok) { alert(s.error || 'Failed to load'); return; }
+        document.getElementById('edit-story-id').value = s.id;
+        document.getElementById('edit-story-caption').value = s.caption || '';
+        document.getElementById('edit-story-mentions').value = (s.mentioned_usernames || []).join(', ');
+        new bootstrap.Modal(document.getElementById('editStoryModal')).show();
+    } catch (e) {
+        alert('Failed to load story: ' + e);
+    }
+}
+
+async function saveStoryEdit() {
+    const id = document.getElementById('edit-story-id').value;
+    const caption = document.getElementById('edit-story-caption').value;
+    const mentionsStr = document.getElementById('edit-story-mentions').value;
+    const mentioned_usernames = mentionsStr ? mentionsStr.split(',').map(s => s.trim().replace(/^@/, '')).filter(Boolean) : [];
+    try {
+        const res = await fetch('/api/stories/' + id, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ caption: caption || null, mentioned_usernames })
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Save failed'); return; }
+        bootstrap.Modal.getInstance(document.getElementById('editStoryModal')).hide();
+        loadStories(currentPage);
+    } catch (e) {
+        alert('Save failed: ' + e);
+    }
+}
 
 async function loadStories(page = 1) {
     currentPage = page;
+    var tbody = document.getElementById('stories-table');
     try {
-        const response = await fetch(`/api/stories?page=${page}&per_page=20`);
-        const data = await response.json();
+        var response = await fetch('/api/stories?page=' + page + '&per_page=20', { credentials: 'same-origin' });
+        var ct = (response.headers.get('content-type') || '').toLowerCase();
+        if (ct.indexOf('application/json') === -1) {
+            throw new Error('Server returned non-JSON. Check backend.');
+        }
+        var data = await response.json();
+        if (!response.ok) {
+            throw new Error((data && data.error) || response.statusText || 'Request failed');
+        }
 
-        document.getElementById('total-stories').textContent = data.total;
+        document.getElementById('total-stories').textContent = data.total || 0;
 
-        const tbody = document.getElementById('stories-table');
-        if (data.stories.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No stories yet</td></tr>';
+        if (!data.stories || data.stories.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No stories yet</td></tr>';
             return;
         }
 
@@ -182,10 +443,11 @@ async function loadStories(page = 1) {
                 <td>${s.id}</td>
                 <td>Account #${s.account_id}</td>
                 <td><span class="badge bg-secondary">${s.media_type}</span></td>
-                <td>${s.caption || '-'}</td>
+                <td>${escapeHtml((s.caption || '-').slice(0, 80))}${(s.caption && s.caption.length > 80) ? '…' : ''}</td>
                 <td>${s.mentions}</td>
                 <td>${s.views}</td>
                 <td>${new Date(s.published_at).toLocaleString()}</td>
+                <td><button type="button" class="btn btn-sm btn-outline-secondary" onclick="openEditStory(${s.id})">Edit</button></td>
             </tr>
         `).join('');
 
@@ -195,6 +457,8 @@ async function loadStories(page = 1) {
 
     } catch (error) {
         console.error('Failed to load stories:', error);
+        var msg = (error && error.message) ? error.message : String(error);
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger"><strong>Failed to load stories:</strong> ' + String(msg).replace(/</g, '&lt;') + '</td></tr>';
     }
 }
 
@@ -212,9 +476,18 @@ function updatePagination(current, total) {
 }
 
 async function loadAccounts() {
+    var sel = document.getElementById('story-account');
     try {
-        const response = await fetch('/api/accounts');
-        const accounts = await response.json();
+        var response = await fetch('/api/accounts?limit=500', { credentials: 'same-origin' });
+        var ct = (response.headers.get('content-type') || '').toLowerCase();
+        if (ct.indexOf('application/json') === -1) {
+            throw new Error('Server returned non-JSON.');
+        }
+        var data = await response.json();
+        if (!response.ok) {
+            throw new Error((data && data.error) || response.statusText);
+        }
+        const accounts = Array.isArray(data) ? data : (data.accounts || []);
         const select = document.getElementById('story-account');
         if (!Array.isArray(accounts) || accounts.length === 0) {
             select.innerHTML = '<option value="">No accounts</option>';
@@ -276,15 +549,45 @@ async function publishStory() {
     }
 }
 
+function normalizeBatchError(err) {
+    if (!err) return 'Publish failed';
+    const s = String(err);
+    if (s.includes('NoClient') || s.includes('session') && s.toLowerCase().includes('failed')) return 'Account session unavailable. Re-add or re-import the account.';
+    if (s.includes('session_lock') || s.includes('session_db_locked')) return 'Account in use by another process. Try again shortly.';
+    if (s.includes('No eligible accounts')) return 'No story-eligible accounts right now.';
+    if (s.includes('Mention pool too small')) return 'Not enough users in mention pool. Add more or change source.';
+    if (s.includes('media_path required')) return 'Media file required.';
+    if (s.length > 120) return s.slice(0, 117) + '...';
+    return s;
+}
+
 async function batchPublish() {
     const fileInput = document.getElementById('batch-media-file');
     if (!fileInput?.files?.length) {
         alert('Please select a photo or video file.');
         return;
     }
-    const caption = document.getElementById('batch-caption').value;
-    const maxStories = parseInt(document.getElementById('batch-max').value) || 10;
-    const mentionsPerStory = parseInt(document.getElementById('batch-mentions').value) || 5;
+    const manualChecked = document.querySelector('input[name="batch-account-mode"]:checked');
+    const isManual = manualChecked && manualChecked.value === 'manual';
+    if (isManual) {
+        const checked = document.querySelectorAll('#batch-accounts-checkboxes .batch-account-cb:checked');
+        if (!checked.length) {
+            alert('Select at least one story-eligible account.');
+            return;
+        }
+    }
+    if (batchEligibleCount === 0) {
+        alert('No story-eligible accounts right now. Check warmup, precheck, or re-import.');
+        return;
+    }
+    const btn = document.getElementById('batch-publish-btn');
+    const originalLabel = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Publishing...';
+    }
+    const payload = getBatchPayload();
+    payload.media_path = null; // will set after upload
 
     try {
         const form = new FormData();
@@ -292,33 +595,662 @@ async function batchPublish() {
         const up = await fetch('/api/stories/upload-media', { method: 'POST', body: form });
         const upResult = await up.json();
         if (!upResult.success || !upResult.path) {
+            if (btn) { btn.disabled = false; btn.innerHTML = originalLabel; }
             alert('Upload failed: ' + (upResult.error || 'Unknown'));
             return;
         }
+        payload.media_path = upResult.path;
         const response = await fetch('/api/stories/batch', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                media_path: upResult.path,
-                caption,
-                max_stories: maxStories,
-                mentions_per_story: mentionsPerStory
-            })
+            body: JSON.stringify(payload)
         });
         const result = await response.json();
+
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalLabel;
+        }
+
+        if (!response.ok) {
+            alert(normalizeBatchError(result.error || response.statusText));
+            return;
+        }
+        if (result.success === false && result.error) {
+            let msg = normalizeBatchError(result.error);
+            if (result.error === 'No eligible accounts' && result.skipped_summary && result.skipped_summary.length) {
+                msg += ' Skipped: ' + result.skipped_summary.map(s => s.count + ' ' + s.reason).join(', ');
+            }
+            if (result.account_errors && result.account_errors.length) {
+                const summaries = result.account_errors.slice(0, 5).map(e => {
+                    const n = normalizeBatchError(e.error);
+                    return 'Account #' + e.account_id + ': ' + n;
+                });
+                msg += (msg ? '\n\n' : '') + summaries.join('\n');
+                if (result.account_errors.length > 5) msg += '\n… and ' + (result.account_errors.length - 5) + ' more';
+            }
+            alert(msg);
+            return;
+        }
 
         alert(`Batch complete! ${result.successful ?? 0}/${result.total_attempted ?? 0} stories published.`);
         document.getElementById('batch-media-file').value = '';
         document.getElementById('batch-caption').value = '';
+        loadBatchHistory();
         location.reload();
     } catch (error) {
-        alert('Batch failed: ' + error);
+        if (btn) { btn.disabled = false; btn.innerHTML = originalLabel; }
+        alert('Batch failed: ' + normalizeBatchError(error.message || error));
     }
+}
+
+function getBatchPayload() {
+    const mentionsPerStory = parseInt(document.getElementById('batch-mentions').value) || 5;
+    const maxStoriesEl = document.getElementById('batch-max-stories');
+    const maxStories = (maxStoriesEl && maxStoriesEl.value !== '') ? parseInt(maxStoriesEl.value) || 0 : 0;
+    const sourceAll = document.getElementById('batch-source-all');
+    const payload = {
+        media_path: null,
+        caption: document.getElementById('batch-caption').value,
+        max_stories: maxStories,
+        mentions_per_story: mentionsPerStory,
+        source_type: 'all',
+        source_id: null,
+        mention_source_type: 'all',
+        mention_source_id: null,
+        unique_mentions_across_batch: document.getElementById('batch-unique-across').checked,
+        only_alive: true
+    };
+    if (!(sourceAll && sourceAll.checked)) {
+        const checked = document.querySelectorAll('#batch-source-checkboxes input:checked');
+        const sources = Array.from(checked).map(c => c.value).filter(Boolean);
+        if (sources.length > 0) {
+            const sourceSources = sources.map(v => {
+                if (String(v).startsWith('uploaded:')) {
+                    return { source_type: 'uploaded_file', source_id: String(v).replace('uploaded:', '') };
+                }
+                return { source_type: 'discovery', source_id: v };
+            });
+            payload.source_sources = sourceSources;
+            payload.source_type = sourceSources[0].source_type;
+            payload.source_id = sourceSources[0].source_id;
+            payload.mention_source_type = sourceSources[0].source_type;
+            payload.mention_source_id = sourceSources[0].source_id;
+        }
+    }
+    const manualChecked = document.querySelector('input[name="batch-account-mode"]:checked');
+    if (manualChecked && manualChecked.value === 'manual') {
+        const checkedAcc = document.querySelectorAll('#batch-accounts-checkboxes input:checked');
+        payload.account_ids = Array.from(checkedAcc).map(c => parseInt(c.value, 10));
+    }
+    return payload;
+}
+
+function toggleMentionSourceDropdown() {
+    const wrap = document.getElementById('batch-specific-source-wrap');
+    const specific = document.getElementById('batch-source-specific');
+    if (wrap && specific) {
+        wrap.style.display = specific.checked ? 'block' : 'none';
+        if (specific.checked) loadMentionSources();
+    }
+}
+
+function toggleManualAccounts() {
+    const wrap = document.getElementById('batch-manual-accounts-wrap');
+    const manual = document.querySelector('input[name="batch-account-mode"]:checked');
+    if (!wrap || !manual) return;
+    wrap.style.display = manual.value === 'manual' ? 'block' : 'none';
+    if (manual.value === 'manual') loadEligibleAccounts();
+}
+
+async function updateBatchEligibility() {
+    const banner = document.getElementById('batch-eligibility-banner');
+    const reasonsEl = document.getElementById('batch-eligibility-reasons');
+    const btn = document.getElementById('batch-publish-btn');
+    try {
+        const res = await fetch('/api/stories/eligible-accounts');
+        const data = await res.json();
+        const accounts = data.accounts || [];
+        batchEligibleCount = accounts.length;
+        batchExclusionReasons = data.exclusion_reasons || [];
+        if (banner && reasonsEl && btn) {
+            if (batchEligibleCount === 0) {
+                banner.classList.remove('d-none');
+                const parts = batchExclusionReasons.map(e => (e.count || 0) + ' ' + (e.reason || '')).filter(Boolean);
+                reasonsEl.textContent = parts.length ? (' Reason: ' + parts.join(', ') + '.') : ' Accounts may need re-import, auth, warmup, or precheck before stories.';
+                btn.disabled = true;
+                btn.title = 'No story-eligible accounts';
+            } else {
+                banner.classList.add('d-none');
+                reasonsEl.textContent = '';
+                btn.disabled = false;
+                btn.title = '';
+            }
+        }
+    } catch (e) {
+        batchEligibleCount = 0;
+        batchExclusionReasons = [];
+        if (banner && reasonsEl && btn) {
+            banner.classList.remove('d-none');
+            reasonsEl.textContent = ' Could not load eligibility. Check server.';
+            btn.disabled = true;
+        }
+    }
+}
+
+async function loadEligibleAccounts() {
+    const container = document.getElementById('batch-accounts-checkboxes');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/stories/eligible-accounts');
+        let data;
+        try {
+            data = await res.json();
+        } catch (parseErr) {
+            container.innerHTML = '<span class="text-muted small">Invalid response (not JSON). Check server.</span>';
+            return;
+        }
+        const accounts = data.accounts || [];
+        const exclusionReasons = data.exclusion_reasons || [];
+        if (!accounts.length) {
+            batchEligibleCount = 0;
+            batchExclusionReasons = exclusionReasons;
+            let msg = 'No story-eligible accounts right now.';
+            if (exclusionReasons.length) {
+                msg += ' Exclusions: ' + exclusionReasons.map(e => (e.count || 0) + ' ' + (e.reason || e.label || '')).join(', ');
+            } else if (data.error && !res.ok) {
+                msg += ' ' + (data.detail || data.error);
+            } else {
+                msg += ' Accounts may need: re-import, auth, warmup, or precheck before stories.';
+            }
+            container.innerHTML = '<span class="text-muted small">' + escapeHtml(msg) + '</span>';
+            document.getElementById('batch-accounts-selected-summary').textContent = '';
+            updateBatchEligibilityUI();
+            return;
+        }
+        batchEligibleCount = accounts.length;
+        batchExclusionReasons = exclusionReasons;
+        container.innerHTML = accounts.map(a => {
+            const health = (a.health_status && a.health_status !== 'alive') ? a.health_status : 'Healthy';
+            const isHealthy = health === 'Healthy';
+            const riskLevel = a.risk_level || 'safe';
+            const isWarming = riskLevel === 'warming' || riskLevel === 'risky';
+            const healthBadge = health === 'Healthy' ? '<span class="badge bg-success ms-1">Healthy</span>' : '<span class="badge bg-secondary ms-1">' + escapeHtml(health) + '</span>';
+            const riskBadge = isWarming ? '<span class="badge bg-warning text-dark ms-1">Fresh/Warming</span>' : '';
+            const label = '#' + a.id + ' · ' + (a.phone_number || '') + (a.username ? ' @' + a.username : '') + healthBadge + riskBadge;
+            const searchText = ((a.phone_number || '') + ' ' + (a.username || '') + ' ' + a.id).toLowerCase().replace(/"/g, '&quot;');
+            return '<div class="form-check batch-account-row" data-search-text="' + searchText + '" data-healthy="' + (isHealthy ? '1' : '0') + '" data-risk-level="' + (isWarming ? '1' : '0') + '"><input class="form-check-input batch-account-cb" type="checkbox" value="' + a.id + '" id="batch-acc-' + a.id + '"><label class="form-check-label" for="batch-acc-' + a.id + '">' + label + '</label></div>';
+        }).join('');
+        container.querySelectorAll('.batch-account-cb').forEach(cb => {
+            cb.addEventListener('change', updateBatchAccountsSelectedSummary);
+        });
+        updateBatchAccountsSelectedSummary();
+        updateBatchEligibilityUI();
+    } catch (e) {
+        batchEligibleCount = 0;
+        container.innerHTML = '<span class="text-muted small">Failed to load accounts</span>';
+        document.getElementById('batch-accounts-selected-summary').textContent = '';
+        updateBatchEligibilityUI();
+    }
+}
+
+function updateBatchEligibilityUI() {
+    const banner = document.getElementById('batch-eligibility-banner');
+    const reasonsEl = document.getElementById('batch-eligibility-reasons');
+    const btn = document.getElementById('batch-publish-btn');
+    if (!banner || !reasonsEl || !btn) return;
+    if (batchEligibleCount === 0) {
+        banner.classList.remove('d-none');
+        const parts = batchExclusionReasons.map(e => (e.count || 0) + ' ' + (e.reason || '')).filter(Boolean);
+        reasonsEl.textContent = parts.length ? (' Reason: ' + parts.join(', ') + '.') : ' Accounts may need re-import, auth, warmup, or precheck before stories.';
+        btn.disabled = true;
+        btn.title = 'No story-eligible accounts';
+    } else {
+        banner.classList.add('d-none');
+        reasonsEl.textContent = '';
+        btn.disabled = false;
+        btn.title = '';
+    }
+}
+
+function batchAccountsSelectAll() {
+    document.querySelectorAll('#batch-accounts-checkboxes .batch-account-row[data-healthy="1"]').forEach(row => {
+        if (row.style.display !== 'none') row.querySelector('.batch-account-cb').checked = true;
+    });
+    updateBatchAccountsSelectedSummary();
+}
+
+function batchAccountsClearAll() {
+    document.querySelectorAll('#batch-accounts-checkboxes .batch-account-cb').forEach(cb => { cb.checked = false; });
+    updateBatchAccountsSelectedSummary();
+}
+
+function filterBatchAccounts() {
+    const q = (document.getElementById('batch-account-search').value || '').trim().toLowerCase();
+    document.querySelectorAll('#batch-accounts-checkboxes .batch-account-row').forEach(row => {
+        const text = (row.getAttribute('data-search-text') || '').toLowerCase();
+        row.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
+    });
+    updateBatchAccountsSelectedSummary();
+}
+
+function updateBatchAccountsSelectedSummary() {
+    const el = document.getElementById('batch-accounts-selected-summary');
+    const warnEl = document.getElementById('batch-accounts-warming-warn');
+    if (!el) return;
+    const checked = document.querySelectorAll('#batch-accounts-checkboxes .batch-account-cb:checked');
+    const n = checked.length;
+    let warmingCount = 0;
+    checked.forEach(cb => {
+        const row = cb.closest('.batch-account-row');
+        if (row && row.getAttribute('data-risk-level') === '1') warmingCount++;
+    });
+    el.textContent = n > 0 ? n + ' account(s) selected' : '';
+    if (warnEl) {
+        if (warmingCount > 1) {
+            warnEl.classList.remove('d-none');
+            warnEl.textContent = 'Warning: ' + warmingCount + ' fresh/warming accounts selected. Consider testing with one canary first.';
+        } else {
+            warnEl.classList.add('d-none');
+            warnEl.textContent = '';
+        }
+    }
+}
+
+async function previewBatch() {
+    const payload = getBatchPayload();
+    delete payload.media_path;
+    try {
+        const response = await fetch('/api/stories/preview-batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        const el = document.getElementById('preview-content');
+        let html = '';
+        html += '<p><strong>Eligible accounts:</strong> ' + (data.eligible_accounts || []).length + '</p>';
+        if ((data.skipped_accounts || []).length) {
+            html += '<p class="text-warning"><strong>Skipped:</strong> ' + data.skipped_accounts.length + '</p>';
+        }
+        html += '<p><strong>Mention pool size:</strong> ' + (data.mention_pool_size ?? 0) + ' (total available: ' + (data.mention_pool_total_available ?? 0) + ')</p>';
+        html += '<p><strong>Estimated stories:</strong> ' + (data.estimated_stories ?? 0) + '</p>';
+        if ((data.sample_mentions || []).length) {
+            html += '<p><strong>Sample mentions:</strong> ' + data.sample_mentions.slice(0, 5).map(m => m.username || m.user_id).join(', ') + '</p>';
+        }
+        if ((data.warnings || []).length) {
+            html += '<div class="alert alert-warning">' + data.warnings.join('<br>') + '</div>';
+        }
+        el.innerHTML = html;
+        new bootstrap.Modal(document.getElementById('previewBatchModal')).show();
+    } catch (e) {
+        alert('Preview failed: ' + e);
+    }
+}
+
+let mentionSourcesData = { discovery_sources: [], uploaded_sources: [], discovered_total: 0 };
+
+async function loadMentionSources() {
+    try {
+        const response = await fetch('/api/stories/mention-sources');
+        const data = await response.json();
+        mentionSourcesData = {
+            discovery_sources: data.discovery_sources || [],
+            uploaded_sources: data.uploaded_sources || [],
+            discovered_total: data.discovered_total || 0
+        };
+        updateBatchSourceDropdown();
+        const countEl = document.getElementById('batch-source-count');
+        if (countEl) countEl.textContent = mentionSourcesData.discovered_total ? 'Total discovered: ' + mentionSourcesData.discovered_total : '';
+    } catch (e) {
+        console.error('Mention sources:', e);
+    }
+}
+
+function updateBatchSourceDropdown() {
+    const container = document.getElementById('batch-source-checkboxes');
+    if (!container) return;
+    const discovery = mentionSourcesData.discovery_sources || [];
+    const uploaded = mentionSourcesData.uploaded_sources || [];
+    const total = mentionSourcesData.discovered_total || 0;
+
+    let html = '';
+    let idx = 0;
+    if (discovery.length > 0) {
+        html += '<div class="text-secondary small fw-bold mb-1">Discovered groups</div>';
+        discovery.forEach(s => {
+            const val = (s.username || s.id || '');
+            const label = (val && !String(val).startsWith('id:')) ? ('@' + val) : (s.title || val || '');
+            const count = (s.count || 0);
+            const id = 'batch-src-' + (idx++);
+            const searchLabel = (label + ' ' + val).toLowerCase().replace(/"/g, '&quot;');
+            html += '<div class="form-check batch-source-row" data-user-count="' + count + '" data-search-label="' + searchLabel + '"><input class="form-check-input batch-source-cb" type="checkbox" value="' + String(val).replace(/"/g, '&quot;') + '" id="' + id + '"><label class="form-check-label" for="' + id + '">' + escapeHtml(label) + ' <span class="text-muted">(' + count + ')</span></label></div>';
+        });
+    }
+    if (uploaded.length > 0) {
+        html += '<div class="text-secondary small fw-bold mb-1 mt-2">Uploaded lists</div>';
+        uploaded.forEach(s => {
+            const val = 'uploaded:' + (s.id != null ? s.id : s);
+            const name = (s.name || 'List ' + s.id);
+            const count = (s.count || 0);
+            const id = 'batch-src-' + (idx++);
+            const searchLabel = (name + ' list').toLowerCase().replace(/"/g, '&quot;');
+            html += '<div class="form-check batch-source-row" data-user-count="' + count + '" data-search-label="' + searchLabel + '"><input class="form-check-input batch-source-cb" type="checkbox" value="' + val + '" id="' + id + '"><label class="form-check-label" for="' + id + '">' + escapeHtml(name) + ' <span class="text-muted">(' + count + ')</span></label></div>';
+        });
+    }
+    if (!html) {
+        container.innerHTML = '<span class="text-muted small">No groups or lists. Go to Discovery → Scan to add groups.</span>';
+    } else {
+        container.innerHTML = html;
+        container.querySelectorAll('.batch-source-cb').forEach(cb => {
+            cb.addEventListener('change', updateBatchSourceSelectedSummary);
+        });
+    }
+
+    const countEl = document.getElementById('batch-source-count');
+    if (countEl) countEl.textContent = total ? 'Total discovered users: ' + total : '';
+    const emptyHint = document.getElementById('batch-source-empty-hint');
+    if (emptyHint) emptyHint.style.display = (discovery.length === 0 && uploaded.length === 0) ? 'block' : 'none';
+    updateBatchSourceSelectedSummary();
+}
+
+function batchSourceSelectAll() {
+    document.querySelectorAll('#batch-source-checkboxes .batch-source-row').forEach(row => {
+        if (row.style.display !== 'none') row.querySelector('.batch-source-cb').checked = true;
+    });
+    updateBatchSourceSelectedSummary();
+}
+
+function batchSourceClearAll() {
+    document.querySelectorAll('#batch-source-checkboxes .batch-source-cb').forEach(cb => { cb.checked = false; });
+    updateBatchSourceSelectedSummary();
+}
+
+function filterBatchSources() {
+    const q = (document.getElementById('batch-source-search').value || '').trim().toLowerCase();
+    document.querySelectorAll('#batch-source-checkboxes .batch-source-row').forEach(row => {
+        const label = (row.getAttribute('data-search-label') || '').toLowerCase();
+        row.style.display = (!q || label.indexOf(q) !== -1) ? '' : 'none';
+    });
+    updateBatchSourceSelectedSummary();
+}
+
+function updateBatchSourceSelectedSummary() {
+    const el = document.getElementById('batch-source-selected-summary');
+    if (!el) return;
+    const checked = document.querySelectorAll('#batch-source-checkboxes .batch-source-cb:checked');
+    const rows = document.querySelectorAll('#batch-source-checkboxes .batch-source-row');
+    let totalUsers = 0;
+    checked.forEach(cb => {
+        const row = cb.closest('.batch-source-row');
+        if (row) totalUsers += parseInt(row.getAttribute('data-user-count') || '0', 10);
+    });
+    const n = checked.length;
+    if (n === 0) {
+        el.textContent = '';
+    } else {
+        el.textContent = n + ' selected' + (totalUsers > 0 ? ' · ~' + totalUsers + ' users (estimated, before dedup)' : '');
+    }
+}
+
+async function loadBatchHistory() {
+    const placeholder = document.getElementById('batch-history-placeholder');
+    const table = document.getElementById('batch-history-table');
+    const tbody = document.getElementById('batch-history-tbody');
+    try {
+        const response = await fetch('/api/stories/batch-history');
+        const data = await response.json();
+        const list = Array.isArray(data) ? data : (data.runs || []);
+        if (!list.length) {
+            placeholder.textContent = 'No batch runs yet.';
+            table.classList.add('d-none');
+            return;
+        }
+        placeholder.classList.add('d-none');
+        table.classList.remove('d-none');
+        tbody.innerHTML = list.map(r => `
+            <tr>
+                <td>#${r.id}</td>
+                <td>${new Date(r.started_at).toLocaleString()}</td>
+                <td>${r.total_attempted ?? 0}</td>
+                <td>${r.successful ?? 0}</td>
+                <td>${r.failed ?? 0}</td>
+                <td>${r.mention_pool_size ?? '-'}</td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        placeholder.textContent = 'Failed to load history.';
+        table.classList.add('d-none');
+    }
+}
+
+async function loadStoryAccountBadges() {
+    try {
+        const res = await fetch('/api/accounts?summary=1&limit=500', { credentials: 'same-origin' });
+        const data = await res.json();
+        const summary = data.summary || {};
+        const badges = document.getElementById('story-account-badges');
+        if (badges) {
+            badges.classList.remove('d-none');
+            document.getElementById('badge-healthy').textContent = summary.general_healthy ?? 0;
+            document.getElementById('badge-session-ready').textContent = summary.canonical_session_ready ?? 0;
+            document.getElementById('badge-story-ready').textContent = summary.story_available ?? 0;
+            document.getElementById('badge-story-rate-limited').textContent = summary.story_rate_limited ?? 0;
+            document.getElementById('badge-story-frozen').textContent = summary.story_frozen ?? 0;
+        }
+    } catch (e) { console.error('Story badges:', e); }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
     loadStories();
     loadAccounts();
+    loadStoryAccountBadges();
+    loadMentionSources();
+    loadBatchHistory();
+    loadTemplates();
+    loadBlacklist();
+    const batchModal = document.getElementById('batchPublishModal');
+    if (batchModal) {
+        batchModal.addEventListener('shown.bs.modal', () => {
+            loadMentionSources();
+            loadStoryAccountBadges();
+            toggleMentionSourceDropdown();
+            updateBatchEligibility();
+        });
+    }
 });
+
+async function loadTemplates() {
+    try {
+        const res = await fetch('/api/stories/templates');
+        const list = await res.json();
+        const scheduleSel = document.getElementById('schedule-template');
+        if (scheduleSel) {
+            scheduleSel.innerHTML = '<option value="">— Select template —</option>';
+            (list || []).forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name;
+                scheduleSel.appendChild(opt);
+            });
+        }
+    } catch (e) { console.error('Templates:', e); }
+}
+
+async function loadTemplateIntoBatch() {
+    const idEl = document.getElementById('batch-template');
+    if (!idEl || !idEl.value) return;
+    try {
+        const res = await fetch('/api/stories/templates');
+        const list = await res.json();
+        const t = (list || []).find(x => x.id == idEl.value);
+        if (!t) return;
+        document.getElementById('batch-caption').value = t.caption || '';
+        document.getElementById('batch-mentions').value = t.mentions_per_story || 5;
+        const isAll = (t.mention_source_type === 'all' || !t.mention_source_id);
+        const radioAll = document.getElementById('batch-source-all');
+        const radioSpecific = document.getElementById('batch-source-specific');
+        if (radioAll) radioAll.checked = isAll;
+        if (radioSpecific) radioSpecific.checked = !isAll;
+        if (!isAll && t.mention_source_id) {
+            document.querySelectorAll('#batch-source-checkboxes input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+            const wantVal = (t.mention_source_type === 'uploaded_file') ? ('uploaded:' + t.mention_source_id) : t.mention_source_id;
+            const match = document.querySelector('#batch-source-checkboxes input[value="' + String(wantVal).replace(/"/g, '&quot;') + '"]');
+            if (match) match.checked = true;
+        }
+        if (document.getElementById('batch-max-stories')) document.getElementById('batch-max-stories').value = t.max_stories != null ? t.max_stories : 0;
+        document.getElementById('batch-unique-across').checked = t.unique_mentions_across_batch !== false;
+        toggleMentionSourceDropdown();
+    } catch (e) { alert('Failed to load template'); }
+}
+
+async function saveBatchAsTemplate() {
+    const name = prompt('Template name:');
+    if (!name || !name.trim()) return;
+    const payload = getBatchPayload();
+    delete payload.media_path;
+    payload.name = name.trim();
+    try {
+        const res = await fetch('/api/stories/templates', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        loadTemplates();
+        alert('Saved.');
+    } catch (e) { alert('Failed to save'); }
+}
+
+async function uploadMentionSource() {
+    const fileInput = document.getElementById('batch-upload-txt');
+    if (!fileInput?.files?.length) { alert('Select a .txt file'); return; }
+    const name = document.getElementById('batch-upload-name').value.trim() || fileInput.files[0].name.replace(/\.txt$/i, '');
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    form.append('name', name);
+    try {
+        const res = await fetch('/api/stories/mention-sources/upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        loadMentionSources();
+        fileInput.value = '';
+        document.getElementById('batch-upload-name').value = '';
+    } catch (e) { alert('Upload failed'); }
+}
+
+async function loadBlacklist() {
+    try {
+        const res = await fetch('/api/stories/blacklist');
+        const list = await res.json();
+        const tbody = document.getElementById('blacklist-tbody');
+        if (!list || list.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No entries</td></tr>'; return; }
+        tbody.innerHTML = list.map(r => `
+            <tr>
+                <td>${r.username || '-'}</td>
+                <td>${r.user_id != null ? r.user_id : '-'}</td>
+                <td>${r.reason || '-'}</td>
+                <td><button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteBlacklist(${r.id})">Remove</button></td>
+            </tr>
+        `).join('');
+    } catch (e) { console.error('Blacklist:', e); }
+}
+
+async function addBlacklist() {
+    const username = document.getElementById('blacklist-username').value.trim().replace(/^@/, '') || null;
+    const userId = document.getElementById('blacklist-user-id').value.trim() || null;
+    const reason = document.getElementById('blacklist-reason').value.trim() || null;
+    if (!username && !userId) { alert('Enter username or user ID'); return; }
+    try {
+        const res = await fetch('/api/stories/blacklist', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ username: username || undefined, user_id: userId ? parseInt(userId) : undefined, reason })
+        });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        document.getElementById('blacklist-username').value = '';
+        document.getElementById('blacklist-user-id').value = '';
+        document.getElementById('blacklist-reason').value = '';
+        loadBlacklist();
+    } catch (e) { alert('Failed'); }
+}
+
+async function deleteBlacklist(id) {
+    try {
+        await fetch('/api/stories/blacklist/' + id, { method: 'DELETE' });
+        loadBlacklist();
+    } catch (e) { alert('Failed'); }
+}
+
+async function createSchedule() {
+    const templateId = document.getElementById('schedule-template').value;
+    const runAt = document.getElementById('schedule-run-at').value;
+    const repeat = document.getElementById('schedule-repeat').value;
+    const fileInput = document.getElementById('schedule-media');
+    if (!templateId || !runAt) { alert('Select template and run time'); return; }
+    if (!fileInput?.files?.length) { alert('Select media file for this schedule'); return; }
+    try {
+        const form = new FormData();
+        form.append('file', fileInput.files[0]);
+        const up = await fetch('/api/stories/upload-media', { method: 'POST', body: form });
+        const upResult = await up.json();
+        if (!upResult.success || !upResult.path) { alert('Upload failed: ' + (upResult.error || 'Unknown')); return; }
+        const res = await fetch('/api/stories/schedules', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ story_template_id: parseInt(templateId), run_at: new Date(runAt).toISOString(), media_path: upResult.path, repeat: repeat || null })
+        });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        alert('Scheduled.');
+        fileInput.value = '';
+    } catch (e) { alert('Failed: ' + e); }
+}
+
+function openScheduleBatchModal() {
+    const fileInput = document.getElementById('batch-media-file');
+    if (!fileInput?.files?.length) {
+        alert('Select media first.');
+        return;
+    }
+    const runAtEl = document.getElementById('schedule-batch-run-at');
+    if (runAtEl) {
+        const d = new Date();
+        d.setMinutes(d.getMinutes() + 30);
+        runAtEl.value = d.toISOString().slice(0, 16);
+    }
+    new bootstrap.Modal(document.getElementById('scheduleBatchModal')).show();
+}
+
+async function scheduleFromBatch() {
+    const runAtEl = document.getElementById('schedule-batch-run-at');
+    const runAt = runAtEl ? runAtEl.value : '';
+    const repeat = document.getElementById('schedule-batch-repeat');
+    const repeatVal = repeat ? repeat.value : '';
+    if (!runAt) { alert('Pick run time'); return; }
+    const fileInput = document.getElementById('batch-media-file');
+    if (!fileInput?.files?.length) { alert('Select media in the batch form'); return; }
+    const payload = getBatchPayload();
+    delete payload.media_path;
+    payload.name = 'Scheduled ' + new Date().toLocaleString();
+    try {
+        const tRes = await fetch('/api/stories/templates', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        const tData = await tRes.json();
+        if (tData.error) { alert(tData.error); return; }
+        const form = new FormData();
+        form.append('file', fileInput.files[0]);
+        const up = await fetch('/api/stories/upload-media', { method: 'POST', body: form });
+        const upResult = await up.json();
+        if (!upResult.success || !upResult.path) { alert('Upload failed'); return; }
+        const sRes = await fetch('/api/stories/schedules', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ story_template_id: tData.id, run_at: new Date(runAt).toISOString(), media_path: upResult.path, repeat: repeatVal || null })
+        });
+        const sData = await sRes.json();
+        if (sData.error) { alert(sData.error); return; }
+        bootstrap.Modal.getInstance(document.getElementById('scheduleBatchModal')).hide();
+        alert('Scheduled.');
+        loadTemplates();
+    } catch (e) { alert('Failed: ' + e); }
+}
 </script>
 {% endblock %}

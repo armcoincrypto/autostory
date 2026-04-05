@@ -2,7 +2,6 @@
 Pytest Configuration and Fixtures
 """
 import pytest
-import asyncio
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,14 +10,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.database import Base
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop for async tests"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture(scope="session")

@@ -217,6 +217,8 @@ def reset_daily_counters() -> Dict[str, Any]:
         for account in accounts:
             account.stories_today = 0
             account.actions_today = 0
+            if hasattr(account, "story_attempts_today"):
+                account.story_attempts_today = 0
 
     return {"success": True, "accounts_reset": len(accounts)}
 

@@ -188,6 +188,8 @@ print(f"Found {result['total_new_users']} new users")
 
 ## ⚙️ Configuration
 
+Production operations (bot systemd `217/USER`, story-precheck pool vs session-file fallback, logrotate): see **[docs/OPERATIONS_STABILIZATION.md](docs/OPERATIONS_STABILIZATION.md)**.
+
 Key configuration options in `.env`:
 
 | Variable | Description | Default |

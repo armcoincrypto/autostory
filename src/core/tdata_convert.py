@@ -29,21 +29,6 @@ _SESSION_STRUCT_PREFORMAT = ">B{}sH256s"
 _SESSION_VERSION = "1"
 
 
-def _session_to_string(session) -> str:
-    """Build a session string from a session object that has dc_id, server_address, port, auth_key."""
-    if not getattr(session, "auth_key", None) or not session.auth_key:
-        return ""
-    ip = ipaddress.ip_address(session.server_address).packed
-    data = struct.pack(
-        _SESSION_STRUCT_PREFORMAT.format(len(ip)),
-        session.dc_id,
-        ip,
-        session.port,
-        session.auth_key.key,
-    )
-    return _SESSION_VERSION + base64.urlsafe_b64encode(data).decode("ascii")
-
-
 def _has_map_json(d: Path) -> bool:
     """True if this directory contains map.json (case-insensitive)."""
     if not d.is_dir():
@@ -90,88 +75,34 @@ def find_tdata_root(extracted_dir: Path) -> Path:
     if not extracted_dir.is_dir():
         raise ValueError("Not a directory")
 
-    # Direct tdata folder (extracted_dir/tdata)
+    # Direct tdata folder
     tdata_sub = extracted_dir / "tdata"
-    if tdata_sub.is_dir():
-        if _has_map_json(tdata_sub):
-            return tdata_sub
-        for f in tdata_sub.rglob("*"):
-            if f.is_file() and f.name.lower() == "map.json":
-                return f.parent
+    if tdata_sub.is_dir() and _has_map_json(tdata_sub):
         return tdata_sub
-    # Case-insensitive: any direct child dir named tdata (e.g. Tdata, TDATA)
-    for p in extracted_dir.iterdir():
-        if p.is_dir() and p.name.lower() == "tdata":
-            if _has_map_json(p):
-                return p
-            for f in p.rglob("*"):
-                if f.is_file() and f.name.lower() == "map.json":
-                    return f.parent
-            return p
     # Contents at root (map.json in extracted dir)
     if _has_map_json(extracted_dir):
         return extracted_dir
-    # Single subdirectory (e.g. 50-us-27.01/map.json or account_folder/tdata)
+    # Single subdirectory that contains map.json (e.g. 50-us-27.01/map.json)
     subs = [p for p in extracted_dir.iterdir() if p.is_dir()]
     if len(subs) == 1:
         one = subs[0]
-        if one.name.lower() == "tdata":
-            if _has_map_json(one):
-                return one
-            for f in one.rglob("*"):
-                if f.is_file() and f.name.lower() == "map.json":
-                    return f.parent
-            return one
         if _has_map_json(one):
             return one
         nested_tdata = one / "tdata"
-        if nested_tdata.is_dir():
-            if _has_map_json(nested_tdata):
-                return nested_tdata
-            for f in nested_tdata.rglob("*"):
-                if f.is_file() and f.name.lower() == "map.json":
-                    return f.parent
+        if nested_tdata.is_dir() and _has_map_json(nested_tdata):
             return nested_tdata
-        for p2 in one.iterdir():
-            if p2.is_dir() and p2.name.lower() == "tdata":
-                if _has_map_json(p2):
-                    return p2
-                for f in p2.rglob("*"):
-                    if f.is_file() and f.name.lower() == "map.json":
-                        return f.parent
-                return p2
-    # Search any subdir for map.json or dir named tdata (multiple top-level items)
+    # Search any subdir for map.json (multiple top-level items)
     for d in subs:
-        if d.name.lower() == "tdata":
-            if _has_map_json(d):
-                return d
-            for f in d.rglob("*"):
-                if f.is_file() and f.name.lower() == "map.json":
-                    return f.parent
-            return d
         if _has_map_json(d):
             return d
         nested = d / "tdata"
-        if nested.is_dir():
-            if _has_map_json(nested):
-                return nested
-            for f in nested.rglob("*"):
-                if f.is_file() and f.name.lower() == "map.json":
-                    return f.parent
+        if nested.is_dir() and _has_map_json(nested):
             return nested
-        for p2 in d.iterdir():
-            if p2.is_dir() and p2.name.lower() == "tdata":
-                if _has_map_json(p2):
-                    return p2
-                for f in p2.rglob("*"):
-                    if f.is_file() and f.name.lower() == "map.json":
-                        return f.parent
-                return p2
         for sub2 in d.iterdir():
             if sub2.is_dir() and _has_map_json(sub2):
                 return sub2
     # Recursive search: e.g. session/tdata, portable/Telegram Desktop/tdata, session/xxx/tdata
-    max_depth = 8
+    max_depth = 4
     def search_recursive(parent: Path, depth: int) -> Path | None:
         if depth > max_depth:
             return None
@@ -187,10 +118,6 @@ def find_tdata_root(extracted_dir: Path) -> Path:
     found = search_recursive(extracted_dir, 0)
     if found is not None:
         return found
-    # Fallback: any file named map.json (any depth, case-insensitive) — use its parent as tdata root
-    for f in extracted_dir.rglob("*"):
-        if f.is_file() and f.name.lower() == "map.json":
-            return f.parent
     # Helpful error: show what we found
     top = list(extracted_dir.iterdir())
     top_names = [p.name for p in top[:20]]
@@ -406,10 +333,8 @@ async def tdata_to_session_string(tdata_path: str | Path, passcode: str | None =
     if not tdesk.isLoaded():
         raise ValueError("No authorized account in tdata. Log in to Telegram Desktop first.")
 
-    # Pass session=None: opentele has a bug where session=StringSession() leaves auth_session unset (UnboundLocalError).
-    # With None, it uses SQLiteSession(None) or MemorySession; we then save() to get the session string.
     client = await tdesk.ToTelethon(
-        session=None,
+        session=StringSession(),
         flag=UseCurrentSession,
         api=api,
     )
@@ -417,12 +342,7 @@ async def tdata_to_session_string(tdata_path: str | Path, passcode: str | None =
     try:
         if not await client.is_user_authorized():
             raise ValueError("Session not authorized.")
-        # session=None makes opentele use SQLiteSession/MemorySession; their save() doesn't return a string.
         session_string = client.session.save()
-        if not session_string and getattr(client.session, "auth_key", None):
-            session_string = _session_to_string(client.session)
-        if not session_string:
-            raise ValueError("Could not export session string from tdata.")
         return session_string
     finally:
         await client.disconnect()

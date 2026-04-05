@@ -83,8 +83,6 @@ def run_beat():
 
 def run_scheduler():
     """Run Auto Message Scheduler worker"""
-    import logging
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     from src.scheduler.worker import main as scheduler_main
 
     logger.info("Starting Auto Message Scheduler")
@@ -172,94 +170,6 @@ def show_status():
     print("\n" + "="*50 + "\n")
 
 
-def show_status():
-    """Show system status"""
-    from src.core.database import get_db_context, init_db
-    from src.core.models import Account, Story, DiscoveredUser, Campaign, AccountStatus
-
-    init_db()
-
-    with get_db_context() as db:
-        accounts = db.query(Account).count()
-        active = db.query(Account).filter(Account.status == AccountStatus.ACTIVE).count()
-        stories = db.query(Story).count()
-        users = db.query(DiscoveredUser).count()
-        campaigns = db.query(Campaign).filter(Campaign.is_active == True).count()
-
-    print("\n" + "="*50)
-    print("         STORYFLEET Status")
-    print("="*50)
-    print(f"\n  📱 Accounts:     {active}/{accounts} active")
-    print(f"  📸 Stories:      {stories} published")
-    print(f"  👥 Users:        {users} discovered")
-    print(f"  🎯 Campaigns:    {campaigns} active")
-    print("\n" + "="*50 + "\n")
-
-
-def check_accounts_cmd(args=None):
-    """Check accounts: alive / deleted / banned / auth_required. Use --account-id and --verbose for diagnostics."""
-    from src.core.database import init_db
-    from src.clients.manager import client_manager
-
-    if args is not None:
-        account_id = getattr(args, "account_id", None)
-        verbose = getattr(args, "verbose", False)
-        update_status = getattr(args, "update_status", False)
-    else:
-        account_id = None
-        verbose = False
-        update_status = False
-        for i, a in enumerate(sys.argv):
-            if a == "--account-id" and i + 1 < len(sys.argv):
-                try:
-                    account_id = int(sys.argv[i + 1])
-                except ValueError:
-                    pass
-            elif a == "--verbose":
-                verbose = True
-            elif a == "--update-status":
-                update_status = True
-
-    init_db()
-
-    account_ids = [account_id] if account_id is not None else None
-
-    async def run():
-        return await client_manager.check_accounts_health(
-            update_status=update_status,
-            account_ids=account_ids,
-            verbose=verbose,
-        )
-
-    results = asyncio.run(run())
-
-    print("\n" + "="*60)
-    print("         Account health check")
-    print("="*60)
-    alive = sum(1 for r in results if r["status"] == "alive")
-    deleted = sum(1 for r in results if r["status"] == "deleted")
-    banned = sum(1 for r in results if r["status"] == "banned")
-    auth_required = sum(1 for r in results if r["status"] == "auth_required")
-    flood_wait = sum(1 for r in results if r["status"] == "flood_wait")
-    frozen = sum(1 for r in results if r["status"] == "frozen")
-    errors = sum(1 for r in results if r["status"] == "error")
-    restricted = sum(1 for r in results if r["status"] == "restricted")
-    print(f"\n  Alive:          {alive}")
-    print(f"  Deleted:        {deleted}")
-    print(f"  Banned:        {banned}")
-    print(f"  Restricted:    {restricted}")
-    print(f"  Frozen:        {frozen}")
-    print(f"  Auth required: {auth_required}")
-    print(f"  Flood wait:    {flood_wait}")
-    print(f"  Error:         {errors}")
-    print("\n  Per account (reason_code in brackets):")
-    for r in results:
-        status_icon = {"alive": "✅", "deleted": "🗑", "banned": "🚫", "restricted": "⚠", "frozen": "🧊", "auth_required": "🔑", "flood_wait": "⏳", "error": "❌"}.get(r["status"], "?")
-        reason = r.get("reason_code", "")
-        print(f"    {status_icon} #{r['account_id']} {r['phone']}: {r['status']} [{reason}] — {r['message']}")
-    print("\n" + "="*60 + "\n")
-
-
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -273,19 +183,14 @@ Examples:
   python main.py init         # Initialize database
   python main.py add-account  # Add new account interactively
   python main.py status       # Show system status
-  python main.py check-accounts  # Check if accounts are alive/deleted/banned
-  python main.py check-accounts --account-id 1 --verbose  # Single account, diagnostic logs
         """
     )
 
     parser.add_argument(
         "command",
-        choices=["dashboard", "bot", "worker", "beat", "scheduler", "init", "add-account", "status", "check-accounts"],
+        choices=["dashboard", "bot", "worker", "beat", "scheduler", "init", "add-account", "status"],
         help="Command to run"
     )
-    parser.add_argument("--account-id", type=int, default=None, help="For check-accounts: check only this account ID")
-    parser.add_argument("--verbose", action="store_true", help="For check-accounts: verbose diagnostic logging")
-    parser.add_argument("--update-status", action="store_true", help="For check-accounts: update DB status for non-alive accounts")
 
     args = parser.parse_args()
 
@@ -298,14 +203,10 @@ Examples:
         "init": init_database,
         "add-account": add_account_interactive,
         "status": show_status,
-        "check-accounts": check_accounts_cmd,
     }
 
     try:
-        if args.command == "check-accounts":
-            check_accounts_cmd(args)
-        else:
-            commands[args.command]()
+        commands[args.command]()
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         sys.exit(0)

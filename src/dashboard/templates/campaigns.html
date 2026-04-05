@@ -58,11 +58,25 @@
 {% block extra_js %}
 <script>
 async function loadCampaigns() {
+    var grid = document.getElementById('campaigns-grid');
+    if (!grid) return;
     try {
-        const response = await fetch('/api/campaigns');
-        const campaigns = await response.json();
-
-        const grid = document.getElementById('campaigns-grid');
+        var response = await fetch('/api/campaigns', { credentials: 'same-origin' });
+        var ct = (response.headers.get('content-type') || '');
+        if (ct.indexOf('application/json') === -1) {
+            throw new Error('Server returned non-JSON. Check backend.');
+        }
+        var campaigns = [];
+        try {
+            campaigns = await response.json();
+        } catch (e) {
+            throw new Error('Invalid JSON: ' + (e.message || String(e)));
+        }
+        if (!response.ok) {
+            var err = (campaigns && campaigns.error) ? campaigns.error : response.statusText;
+            throw new Error(err || 'Request failed');
+        }
+        if (!Array.isArray(campaigns)) campaigns = [];
 
         if (campaigns.length === 0) {
             grid.innerHTML = `
@@ -113,6 +127,7 @@ async function loadCampaigns() {
 
     } catch (error) {
         console.error('Failed to load campaigns:', error);
+        grid.innerHTML = '<div class="col-12 text-center py-5 text-danger"><strong>Failed to load campaigns:</strong> ' + String((error && error.message) || error).replace(/</g, '&lt;') + '</div>';
     }
 }
 
@@ -175,6 +190,10 @@ async function deleteCampaign(id) {
     }
 }
 
-document.addEventListener('DOMContentLoaded', loadCampaigns);
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', loadCampaigns);
+} else {
+    loadCampaigns();
+}
 </script>
 {% endblock %}

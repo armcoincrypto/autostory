@@ -1,0 +1,13 @@
+# Install: sudo cp deploy/logrotate.d-storyfleet /etc/logrotate.d/storyfleet
+# Adjust paths if logs are not under /var/log/storyfleet.
+
+/var/log/storyfleet/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

@@ -5,20 +5,9 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-people"></i> Accounts</h2>
-    <div class="d-flex gap-2">
-        <button class="btn btn-outline-primary" id="btn-check-accounts" onclick="checkAccounts()">
-            <i class="bi bi-heart-pulse"></i> Check if accounts are alive
-        </button>
-        <button class="btn btn-outline-secondary" onclick="openBulkSetUsernameModal()" title="Set username for all accounts (prefix_1, prefix_2, ...)">
-            <i class="bi bi-at"></i> Set all usernames
-        </button>
-        <button class="btn btn-outline-secondary" onclick="openBulkSetProfilePhotoModal()" title="Set same profile photo for all accounts">
-            <i class="bi bi-images"></i> Set all profile photos
-        </button>
-        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
-            <i class="bi bi-plus-circle"></i> Add Account
-        </button>
-    </div>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
+        <i class="bi bi-plus-circle"></i> Add Account
+    </button>
 </div>
 
 <div class="alert alert-info mb-4">
@@ -27,15 +16,172 @@
     Then it will appear in <a href="/scheduler" class="alert-link">Scheduler</a> when you choose "Select user".
 </div>
 
+<div class="alert alert-secondary border mb-4">
+    <strong><i class="bi bi-info-circle"></i> Operator console — two different checks:</strong>
+    <ul class="mb-0 small mt-2">
+        <li><strong>General health</strong> (sync or fleet): Can this session talk to Telegram? Outcomes like <em>alive</em>, <em>frozen</em>, <em>auth_required</em> refer to this layer only.</li>
+        <li><strong>Story readiness</strong> (precheck / safety policy): May the account post <em>stories</em> right now? An account can be <em>alive</em> but still need <em>story precheck</em> (never run or expired). That is expected — use the story precheck card below when ready.</li>
+    </ul>
+    <p class="mb-0 small mt-2 text-muted"><strong>Suggested order:</strong> Run <em>general</em> health first (sync selected rows or fleet), then use <em>Story readiness — controlled precheck</em> when the table shows <span class="badge rounded-pill text-bg-info text-dark" style="font-size:0.65rem;">Story: precheck</span>. In the table <strong>Publish</strong> column: <strong>YES/NO</strong> plus short Reason/Action; open <strong>Details</strong> for full policy text, diagnostics, and raw precheck errors.</p>
+</div>
+
+<div class="card border-success mb-4" id="story-precheck-card">
+    <div class="card-body">
+        <h6 class="card-title mb-2"><i class="bi bi-bookmark-check"></i> Story readiness — controlled precheck</h6>
+        <p class="small text-muted mb-3">
+            This uses the <strong>story</strong> layer only (Telegram <code>CanSendStoryRequest</code>), not general account health.
+            <strong>Does not publish stories</strong> — no media is uploaded; it only asks Telegram whether story posting would be allowed right now.
+            <strong>Candidates</strong> are accounts that: status <em>active</em>, have a canonical session file, and show <em>needs_precheck</em> in story readiness (never run or TTL expired).
+            Server rules still apply: hourly cap, and multi-account batches require explicit confirmation (<code>canary_batch_ok</code>) in line with backend safeguards.
+        </p>
+        <div class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+                <label class="form-label small mb-0" for="sp-precheck-purpose">Purpose filter</label>
+                <select class="form-select form-select-sm" id="sp-precheck-purpose" title="Same as accounts list filter">
+                    <option value="">All purposes</option>
+                    <option value="autostory">Stories only</option>
+                    <option value="messaging">Messaging (Scheduler)</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <button type="button" class="btn btn-sm btn-outline-success" id="btn-sp-load-candidates">
+                    <i class="bi bi-arrow-down-circle"></i> Load candidates
+                </button>
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-0" for="sp-precheck-batch">Batch size</label>
+                <input type="number" class="form-control form-control-sm" id="sp-precheck-batch" min="1" value="1" style="width:5rem;" title="How many candidate IDs to send (from top of list)">
+            </div>
+            <div class="col-auto">
+                <button type="button" class="btn btn-sm btn-success" id="btn-sp-run" disabled>
+                    <i class="bi bi-play-fill"></i> Run story precheck
+                </button>
+            </div>
+        </div>
+        <div id="sp-candidates-summary" class="small text-muted mb-2 d-none"></div>
+        <div id="sp-candidates-ids" class="small font-monospace text-break mb-2 d-none" style="max-height:6rem;overflow:auto;"></div>
+        <div id="sp-results-wrap" class="d-none">
+            <hr class="my-2">
+            <div class="small fw-semibold mb-1">Last run</div>
+            <div id="sp-results-meta" class="small mb-2"></div>
+            <div class="table-responsive" style="max-height:14rem;">
+                <table class="table table-sm table-bordered mb-0">
+                    <thead><tr><th>Account</th><th>Status</th><th>Reason</th><th>Checked</th></tr></thead>
+                    <tbody id="sp-results-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        <div id="sp-error" class="alert alert-danger small py-2 d-none mt-2 mb-0" role="alert"></div>
+    </div>
+</div>
+
 <div class="card">
     <div class="card-body">
-        <table class="table table-hover">
+        <div id="readiness-ops-panel" class="border rounded mb-3 py-2 px-3 bg-body-secondary">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                <strong class="small mb-0 text-nowrap"><i class="bi bi-speedometer2"></i> Story readiness — ops view</strong>
+                <span id="readiness-total-line" class="small text-muted text-end">Loading…</span>
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2" role="tablist" aria-label="Filter by story readiness bucket">
+                <button type="button" class="btn btn-sm btn-outline-secondary readiness-filter-btn active" data-readiness-filter="all" title="Show every loaded account">All</button>
+                <button type="button" class="btn btn-sm btn-outline-info readiness-filter-btn" data-readiness-filter="needs_precheck" title="story_ui_status needs_precheck — run story precheck">Precheck <span class="badge rounded-pill text-bg-info text-dark ms-1 readiness-count-pill" data-count-for="needs_precheck">0</span></button>
+                <button type="button" class="btn btn-sm btn-outline-primary readiness-filter-btn" data-readiness-filter="eligible" title="Can publish now (API) or legacy is_story_ready — policy-eligible snapshot">Eligible <span class="badge rounded-pill text-bg-primary ms-1 readiness-count-pill" data-count-for="eligible">0</span></button>
+                <button type="button" class="btn btn-sm btn-outline-success readiness-filter-btn text-dark" data-readiness-filter="publish_ready" title="Eligible per policy and purpose is Stories or Both (excludes Messaging-only)">Publish-ready <span class="badge rounded-pill text-bg-success ms-1 readiness-count-pill" data-count-for="publish_ready">0</span></button>
+                <button type="button" class="btn btn-sm btn-outline-danger readiness-filter-btn" data-readiness-filter="frozen" title="Story layer blocked: frozen / restricted / denied / blocked (diagnostic badges) — not necessarily whole-account frozen unless Gen health says so">Story blocked <span class="badge rounded-pill text-bg-danger ms-1 readiness-count-pill" data-count-for="frozen">0</span></button>
+                <button type="button" class="btn btn-sm btn-outline-warning readiness-filter-btn text-dark" data-readiness-filter="rate_limited" title="story_ui_status rate_limited">Rate lim <span class="badge rounded-pill text-bg-warning text-dark ms-1 readiness-count-pill" data-count-for="rate_limited">0</span></button>
+                <button type="button" class="btn btn-sm btn-outline-dark readiness-filter-btn" data-readiness-filter="manual" title="manual_review_required on account">Manual <span class="badge rounded-pill text-bg-dark ms-1 readiness-count-pill" data-count-for="manual">0</span></button>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2 small">
+                <span class="text-muted text-nowrap">General health batch:</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-sel-visible-hc" title="Check every row in the current filter">Select visible</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-sel-first10-hc" title="Check first N keys for sync healthcheck (max 10)">First 10 visible</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-clear-hc-sel">Clear</button>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2 small mt-2 pt-2 border-top border-secondary-subtle">
+                <span class="text-muted text-nowrap"><i class="bi bi-clipboard2-data"></i> Copy / export (no Telegram):</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-copy-visible-ids" title="Comma-separated account IDs for rows in the current table filter">Copy visible IDs</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-copy-publish-ready-ids" title="IDs that are eligible for story publish and have purpose Stories or Both">Copy publish-ready IDs</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-export-visible-tsv" title="TSV: id, publish fields, story_ui_status, is_story_ready — visible rows only">Export visible TSV</button>
+            </div>
+            <div class="small mt-2 p-2 rounded border border-secondary-subtle bg-body-secondary">
+                <strong class="text-nowrap"><i class="bi bi-journal-check"></i> Publish prep workspace (Milestone F)</strong>
+                <ol class="mb-2 mt-1 small ps-3">
+                    <li><strong>General health</strong> — Sync (≤10) or fleet so <em>Gen</em> badges reflect Telegram; not story proof.</li>
+                    <li><strong>Story precheck</strong> — Until <span class="badge rounded-pill text-bg-primary" style="font-size:0.65rem;">Story: ready</span> / policy OK; precheck never publishes.</li>
+                    <li><strong>Publish-ready filter</strong> — Shortlist: policy-eligible <em>and</em> purpose Stories or Both (stricter than Eligible alone).</li>
+                    <li><strong>Canary pick</strong> — Use suggested order below as a <em>starting point</em>; confirm <strong>Publish</strong> YES, Action line, and <strong>Details</strong> when unsure.</li>
+                    <li><strong>Manual / risky</strong> — <strong>Manual</strong> filter overrides; do not scale until cleared or acknowledged.</li>
+                    <li><strong>Publish</strong> — Server enforces canary batch size and hourly caps; finalize media/audience in your publish UI.</li>
+                </ol>
+                <details class="small mb-2">
+                    <summary class="fw-semibold" style="cursor:pointer;">Publish-ready: what is included / excluded</summary>
+                    <ul class="mb-0 mt-1 ps-3 text-muted">
+                        <li><strong>Included</strong> — Same snapshot as <strong>Eligible</strong> (active, alive, session, fresh story precheck for publish TTL, warmup/cooldown/caps clear per policy) <em>and</em> purpose is <strong>Stories only</strong> or <strong>Both</strong>.</li>
+                        <li><strong>Excluded vs Eligible</strong> — <strong>Messaging-only</strong> accounts (scheduler) never appear in Publish-ready.</li>
+                        <li><strong>Excluded from Eligible entirely</strong> — <strong>Manual</strong> (manual_review_required), precheck needed/stale, frozen/restricted/rate-limited story layer, and other policy blocks (see <strong>Publish</strong> Reason / <strong>Details</strong>).</li>
+                        <li><strong>Not a publish command</strong> — This page prepares lists only; actual publish paths still run safety checks.</li>
+                    </ul>
+                </details>
+            </div>
+            <div id="canary-suggestions-wrap" class="small mt-2 p-2 rounded border border-warning border-opacity-50 bg-body-secondary">
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                    <strong class="text-nowrap"><i class="bi bi-flag-fill"></i> Canary suggestions (heuristic)</strong>
+                    <button type="button" class="btn btn-sm btn-outline-warning text-dark" id="btn-copy-canary-top" title="Copy single best-ranked ID (Publish-ready pool)">Copy top ID</button>
+                    <button type="button" class="btn btn-sm btn-outline-warning text-dark" id="btn-copy-canary-top3" title="Copy three best-ranked IDs">Copy top 3 IDs</button>
+                </div>
+                <p class="text-muted small mb-0">Ranked only within the loaded <strong>Publish-ready</strong> set (≤500). Prefers lower risk, prior successful stories, older imports; penalizes identity-verify-suggested and non-alive health. <strong>No Telegram calls.</strong> Confirm before production use.</p>
+                <ul id="canary-suggestions-list" class="mb-0 small ps-3 mt-2"><li class="text-muted">Loading…</li></ul>
+            </div>
+            <p id="readiness-filter-hint" class="small text-muted mb-0 mt-2 fst-italic"></p>
+        </div>
+        <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+            <span class="text-muted small me-1">Telegram health (general):</span>
+            <button type="button" class="btn btn-sm btn-outline-info" id="btn-hc-sync" title="Sync check for ticked rows (max 10 per request)">
+                <i class="bi bi-heart-pulse"></i> Check selected (sync, ≤10)
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-primary" id="btn-hc-fleet" title="Background job for all eligible accounts (or filter via API)">
+                <i class="bi bi-cloud-arrow-up"></i> Fleet check (all eligible)
+            </button>
+            <div class="form-check mb-0 ms-1">
+                <input class="form-check-input" type="checkbox" id="hc-update-status">
+                <label class="form-check-label small" for="hc-update-status">Update account status in DB</label>
+            </div>
+            <span id="hc-job-status" class="text-muted small ms-auto" aria-live="polite"></span>
+        </div>
+        <div id="hc-fleet-panel" class="mb-3 d-none">
+            <div class="card border-info bg-body-secondary">
+                <div class="card-body py-2 px-3">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                        <strong class="small" id="hc-fleet-title">Fleet health job</strong>
+                        <span class="small text-muted" id="hc-fleet-checked-line"></span>
+                        <span class="badge text-bg-light text-dark border" id="hc-fleet-state-badge"></span>
+                    </div>
+                    <div class="progress mb-2" id="hc-fleet-progress-wrap" style="height:10px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" id="hc-fleet-progress-bar" role="progressbar" style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <div class="small mb-2" id="hc-fleet-counts"></div>
+                    <p class="small text-muted mb-1 fst-italic" id="hc-fleet-note"></p>
+                    <div class="alert alert-warning py-2 px-3 mb-0 small d-none" id="hc-fleet-continue" role="alert"></div>
+                </div>
+            </div>
+        </div>
+        <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle">
             <thead>
                 <tr>
+                    <th style="width:2rem;" title="Select for sync healthcheck">
+                        <input type="checkbox" class="form-check-input mt-0" id="hc-select-all" aria-label="Select all rows for healthcheck">
+                    </th>
                     <th>ID</th>
                     <th>Phone</th>
                     <th>Username</th>
-                    <th>Status</th>
+                    <th>General health <small class="text-muted fw-normal d-block">session / account — not story</small></th>
+                    <th>Publish <small class="text-muted fw-normal d-block">scan · open Details for full text</small></th>
+                    <th>Identity</th>
+                    <th>Story readiness <small class="text-muted fw-normal d-block">from story_ui_status</small></th>
+                    <th>Precheck</th>
+                    <th>Precheck raw</th>
+                    <th>Risk / flags</th>
                     <th>Purpose <small class="text-muted" title="Messaging = use in Scheduler only">(Scheduler / Stories)</small></th>
                     <th>Stories Today</th>
                     <th>Last Active</th>
@@ -43,9 +189,10 @@
                 </tr>
             </thead>
             <tbody id="accounts-table">
-                <tr><td colspan="8" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="15" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 
@@ -141,80 +288,6 @@
     </div>
 </div>
 
-<!-- Import tdata results modal -->
-<div class="modal fade" id="importTdataResultsModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-cloud-upload"></i> Import results</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small mb-2"><span id="import-results-summary"></span></p>
-                <p class="text-muted small mb-2"><strong>Imported</strong> = new account added to the list. <strong>Updated</strong> = existing account (same Telegram user) session refreshed. <strong>Failed</strong> = session invalid or revoked.</p>
-                <div class="table-responsive">
-                    <table class="table table-sm table-dark">
-                        <thead>
-                            <tr>
-                                <th>#</th>
-                                <th>Source</th>
-                                <th>Status</th>
-                                <th>Account / Phone / Username</th>
-                                <th>Reason / Error</th>
-                                <th>Time</th>
-                            </tr>
-                        </thead>
-                        <tbody id="import-results-tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary" id="import-results-close-btn" data-bs-dismiss="modal">Close and refresh list</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Check Accounts Modal -->
-<div class="modal fade" id="checkAccountsModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-heart-pulse"></i> Account health check</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small">Connect to each account, run get_me(), GetFullUser, and get_dialogs to detect alive, deleted, banned, or restricted.</p>
-                <div class="form-check mb-3">
-                    <input class="form-check-input" type="checkbox" id="check-update-status" value="1">
-                    <label class="form-check-label" for="check-update-status">Update status in DB (mark deleted/banned as auth_required or banned)</label>
-                </div>
-                <div id="check-accounts-progress" class="d-none mb-3">
-                    <div class="spinner-border text-primary"></div>
-                    <span class="ms-2">Checking accounts...</span>
-                </div>
-                <div id="check-accounts-results" class="d-none">
-                    <p class="small text-muted mb-2">Alive = all checks passed (get_dialogs, get_me, GetFullUser, GetAccountTTL). Reason code shows why we chose that status. Use <strong>Delete</strong> to remove an account from the database.</p>
-                    <table class="table table-sm table-dark">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Phone</th>
-                                <th>Status</th>
-                                <th>Reason</th>
-                                <th>Message</th>
-                                <th>Checked at</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="check-accounts-tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- Get Login Code Modal (for phone login without SMS) -->
 <div class="modal fade" id="loginCodeModal" tabindex="-1">
     <div class="modal-dialog">
@@ -238,133 +311,619 @@
         </div>
     </div>
 </div>
-
-<!-- Set Username Modal -->
-<div class="modal fade" id="setUsernameModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Set Telegram Username</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small">Account <span id="set-username-account-id"></span>. Username without @ (5–32 characters).</p>
-                <div class="mb-3">
-                    <label class="form-label">Username</label>
-                    <input type="text" class="form-control" id="set-username-input" placeholder="myusername" maxlength="32">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="set-username-submit" onclick="submitSetUsername()">
-                    <i class="bi bi-check"></i> Set username
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Set Profile Photo Modal -->
-<div class="modal fade" id="setProfilePhotoModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Set Profile Photo</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small">Account <span id="set-photo-account-id"></span>. Choose an image (JPG/PNG).</p>
-                <div class="mb-3">
-                    <label class="form-label">Photo</label>
-                    <input type="file" class="form-control" id="set-profile-photo-input" accept="image/jpeg,image/png,image/jpg">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="set-profile-photo-submit" onclick="submitSetProfilePhoto()">
-                    <i class="bi bi-upload"></i> Upload and set
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Bulk Set Username Modal -->
-<div class="modal fade" id="bulkSetUsernameModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Set username for all accounts</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small">Telegram requires a unique username per account. Enter a prefix; each account will get <strong>prefix_1</strong>, <strong>prefix_2</strong>, etc. (e.g. <code>mybrand</code> → mybrand_1, mybrand_2, …).</p>
-                <div class="mb-3">
-                    <label class="form-label">Username prefix</label>
-                    <input type="text" class="form-control" id="bulk-username-prefix" placeholder="mybrand" maxlength="28">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="bulk-set-username-submit" onclick="submitBulkSetUsername()">
-                    <i class="bi bi-check"></i> Set for all accounts
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Bulk Set Profile Photo Modal -->
-<div class="modal fade" id="bulkSetProfilePhotoModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Set profile photo for all accounts</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted small">The same image will be set as profile photo for every account that has a session.</p>
-                <div class="mb-3">
-                    <label class="form-label">Photo</label>
-                    <input type="file" class="form-control" id="bulk-profile-photo-input" accept="image/jpeg,image/png,image/jpg">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="bulk-set-profile-photo-submit" onclick="submitBulkSetProfilePhoto()">
-                    <i class="bi bi-upload"></i> Set for all accounts
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
 let authData = {};
 
-async function loadAccounts() {
-    try {
-        const response = await fetch('/api/accounts');
-        const accounts = await response.json();
+/** Cached GET /api/accounts?limit=500 for client-side readiness buckets (no extra Telegram calls). */
+let accountsListCache = [];
+let readinessFilterKey = 'all';
+/** Top 3 account IDs from canary heuristic (publish-ready pool); refreshes with list load. */
+let canarySuggestedTopIds = [];
 
-        const tbody = document.getElementById('accounts-table');
-        if (accounts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No accounts added yet</td></tr>';
-            return;
-        }
+const ACCOUNTS_COL_COUNT = 15;
+document.querySelectorAll('#accounts-table td[colspan]').forEach(function (td) { td.colSpan = ACCOUNTS_COL_COUNT; });
 
-        tbody.innerHTML = accounts.map(a => {
-            const purpose = a.purpose || 'both';
-            const status = String(a.status || 'inactive').replace(/'/g, "\\'");
-            const badgeClass = { active: 'success', banned: 'danger', deleted: 'danger', frozen: 'warning', restricted: 'warning', auth_required: 'warning', flood_wait: 'info', inactive: 'secondary', error: 'secondary' }[status] || 'secondary';
-            return `
-            <tr>
-                <td>${a.id}</td>
-                <td>${a.phone_number}</td>
-                <td>${a.username || '-'}</td>
-                <td><span class="badge bg-${badgeClass}">${status}</span></td>
+function escHtml(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function dashCell(v) {
+    if (v == null || v === '') return '-';
+    return escHtml(String(v));
+}
+
+function cellTwoLines(main, sub) {
+    const m = dashCell(main);
+    const s = (sub != null && sub !== '') ? escHtml(String(sub)) : null;
+    if (m === '-' && !s) return '-';
+    if (!s || s === '-') return m === '-' ? '-' : m;
+    return m + '<br><small class="text-muted text-break">' + s + '</small>';
+}
+
+/**
+ * General health column: trust only general_health_label / general_health_reason from GET /api/accounts.
+ * No inference from story_ui_status, publish_*, or precheck fields (see Details for raw health_status).
+ */
+function generalHealthFromAccount(a) {
+    const lblIn = a.general_health_label;
+    const reasonIn = a.general_health_reason;
+    const label = (lblIn != null && String(lblIn).trim() !== '') ? String(lblIn).trim() : 'Unknown';
+    let reason = (reasonIn != null && String(reasonIn).trim() !== '') ? String(reasonIn).trim() : '';
+    if (!reason) {
+        reason = label === 'Unknown'
+            ? 'API did not return general_health_reason; reload after deploying dashboard or run healthcheck.'
+            : 'No additional detail.';
+    }
+    return { label: label, reason: reason };
+}
+
+function generalHealthBadgeClass(label) {
+    if (label === 'Alive') return 'text-bg-success';
+    if (label === 'Inactive / auth required') return 'text-bg-warning text-dark';
+    if (label === 'Frozen') return 'text-bg-secondary';
+    return 'text-bg-light text-dark border';
+}
+
+function generalHealthScanCell(a) {
+    const gh = generalHealthFromAccount(a);
+    const badge = '<span class="badge rounded-pill ' + generalHealthBadgeClass(gh.label) + ' px-2 py-1 text-wrap text-start" style="max-width:11rem;line-height:1.15;">' + escHtml(gh.label) + '</span>';
+    const reason = gh.reason ? (gh.reason.length > 44 ? gh.reason.slice(0, 42) + '…' : gh.reason) : '';
+    const reasonLine = reason
+        ? '<div class="small text-muted text-truncate mt-1" style="max-width:11rem;" title="' + escHtml(gh.reason) + '">' + escHtml(reason) + '</div>'
+        : '';
+    return '<div class="acc-gen-health-cell small align-top" style="max-width:12rem;">' + badge + reasonLine + '</div>';
+}
+
+/** Story-layer readiness for main row only (story_ui_status + queue hint). Not general health, not raw precheck columns. */
+function storyReadinessSummaryLabel(a) {
+    const ui = String(a.story_ui_status || '').toLowerCase();
+    const qd = a.story_precheck_queue_detail;
+    if (ui === 'ready') return 'Ready';
+    if (ui === 'needs_precheck') {
+        return qd === 'precheck_never_run' ? 'Precheck needed' : 'Precheck expired';
+    }
+    if (ui === 'rate_limited') return 'Rate limited';
+    if (ui === 'frozen') return 'Story frozen';
+    if (ui === 'telegram_denied' || ui === 'blocked' || ui === 'restricted' || ui === 'warmup_hold') return 'Blocked';
+    if (!ui || ui === 'unknown') return 'Blocked';
+    return 'Blocked';
+}
+
+function storyReadinessBadgeClass(label) {
+    if (label === 'Ready') return 'text-bg-primary';
+    if (label === 'Precheck needed' || label === 'Precheck expired') return 'text-bg-info text-dark';
+    if (label === 'Rate limited') return 'text-bg-warning text-dark';
+    if (label === 'Story frozen') return 'text-bg-danger';
+    return 'text-bg-secondary';
+}
+
+function storyReadinessScanCell(a) {
+    const label = storyReadinessSummaryLabel(a);
+    return '<div class="small" style="max-width:8rem;"><span class="badge rounded-pill ' + storyReadinessBadgeClass(label) + ' text-wrap text-start" style="line-height:1.15;max-width:7.5rem;">' + escHtml(label) + '</span></div>';
+}
+
+function identityCell(a) {
+    const idSt = a.identity_audit_status ?? a.identity_status;
+    const idR = a.identity_audit_reason ?? a.identity_reason;
+    const capSt = a.profile_capability_status;
+    const capR = a.profile_capability_reason;
+    const line1 = cellTwoLines(idSt, idR);
+    const line2 = cellTwoLines(capSt, capR);
+    if (line1 === '-' && line2 === '-') return '-';
+    const bits = [];
+    if (line1 !== '-') bits.push('<span class="text-nowrap">ID</span>: ' + line1);
+    if (line2 !== '-') bits.push('<span class="text-nowrap">Cap</span>: ' + line2);
+    return bits.join('<br>');
+}
+
+function precheckCell(a) {
+    const stale = a.story_precheck_stale === true || a.story_precheck_stale === 'true';
+    const status = dashCell(a.story_precheck_status);
+    if (status === '-' && !stale) return '-';
+    let out = status;
+    if (stale) {
+        out += ' <span class="badge rounded-pill text-bg-warning text-dark" title="Precheck result is stale">Stale</span>';
+    }
+    return out;
+}
+
+function precheckDetailCell(a) {
+    const raw = a.story_precheck_reason != null ? String(a.story_precheck_reason).trim() : '';
+    if (!raw) return '<span class="text-muted">—</span>';
+    if (raw.length <= 28) return '<span class="text-muted small" title="' + escHtml(raw) + '">' + escHtml(raw) + '</span>';
+    return '<span class="text-muted small" title="' + escHtml(raw) + '">' + escHtml(raw.slice(0, 26)) + '…</span>';
+}
+
+/** Main Publish YES/NO: list_accounts publish decision only (never story_ui_status / precheck / legacy readiness). */
+function accountPublishYes(a) {
+    const ps = a.publish_story_status != null ? String(a.publish_story_status).trim().toLowerCase() : '';
+    if (ps === 'yes') return true;
+    if (ps === 'no') return false;
+    if (a.can_publish_story_now != null) {
+        if (a.can_publish_story_now === true || a.can_publish_story_now === 'true') return true;
+        if (a.can_publish_story_now === false || a.can_publish_story_now === 'false') return false;
+    }
+    return false;
+}
+
+function accountFullPublishReason(a) {
+    const pr = (a.publish_story_reason != null && String(a.publish_story_reason).trim() !== '')
+        ? String(a.publish_story_reason).trim()
+        : ((a.story_safety_human_reason != null && String(a.story_safety_human_reason).trim() !== '')
+            ? String(a.story_safety_human_reason).trim() : '');
+    return pr;
+}
+
+function accountFullOperatorAction(a) {
+    return (a.publish_story_operator_action != null && String(a.publish_story_operator_action).trim() !== '')
+        ? String(a.publish_story_operator_action).trim()
+        : ((a.operator_action != null && String(a.operator_action).trim() !== '') ? String(a.operator_action).trim() : '');
+}
+
+/** Short operator-facing reason for table scan; primary text from publish_story_reason, not story_ui_status / precheck columns. */
+function shortPublishReasonLabel(a, yes) {
+    if (yes) return 'Ready';
+    if (a.manual_review_required === true || a.manual_review_required === 'true') return 'Manual review';
+    const pubReason = (a.publish_story_reason != null && String(a.publish_story_reason).trim() !== '')
+        ? String(a.publish_story_reason).trim()
+        : '';
+    if (pubReason) {
+        return pubReason.length > 36 ? pubReason.slice(0, 34) + '…' : pubReason;
+    }
+    const code = String(a.publish_story_reason_code || a.story_safety_reason || '').toLowerCase();
+    const ui = String(a.story_ui_status || '').toLowerCase();
+    const hs = String(a.health_status || '').toLowerCase();
+    const st = String(a.status || '').toLowerCase();
+    if (st !== 'active') return 'Auth required';
+    if (hs && hs !== 'alive') {
+        if (hs === 'auth_required') return 'Auth required';
+        return 'Health not alive';
+    }
+    if (code === 'no_session') return 'No session';
+    if (code === 'auth_required') return 'Auth required';
+    if (code === 'story_precheck_failed' || ui === 'needs_precheck') {
+        const det = a.story_precheck_queue_detail;
+        if (det === 'precheck_never_run') return 'Precheck needed';
+        return 'Precheck expired';
+    }
+    if (code === 'story_rate_limited' || ui === 'rate_limited') return 'Rate limited';
+    if (code === 'story_frozen' || ui === 'frozen') return 'Story frozen';
+    if (code === 'story_telegram_denied' || ui === 'telegram_denied') return 'Story denied';
+    if (code === 'story_restricted' || ui === 'restricted') return 'Story restricted';
+    if (code === 'story_blocked' || ui === 'blocked') return 'Story blocked';
+    if (code === 'warmup_pending' || ui === 'warmup_hold') return 'Warmup';
+    if (code === 'story_cooldown') return 'Cooldown';
+    if (code === 'daily_cap') return 'Daily cap';
+    if (code === 'too_many_recent_story_attempts') return 'Attempt cap';
+    if (code === 'manual_review_required') return 'Manual review';
+    return 'Blocked';
+}
+
+function shortOperatorActionLabel(a, yes) {
+    if (yes) return '—';
+    const op = accountFullOperatorAction(a);
+    if (!op) return '—';
+    const lower = op.toLowerCase();
+    if (lower.includes('re-import')) return 'Re-import session';
+    if (lower.includes('check account health')) return 'Check health';
+    if (lower.includes('run health check') || lower.includes('run health')) return 'Run health check';
+    if (lower.includes('story precheck')) return 'Run story precheck';
+    if (lower.includes('wait for warmup')) return 'Wait warmup';
+    if (lower.includes('cooldown')) return 'Wait cooldown';
+    if (lower.includes('try tomorrow')) return 'Try tomorrow';
+    if (lower.includes('manual_review') || lower.includes('clear manual')) return 'Clear manual review';
+    if (lower.includes('wait or run')) return 'Wait / precheck';
+    return op.length > 36 ? op.slice(0, 34) + '…' : op;
+}
+
+/** Verbose diagnostics for <details> (full sentences, badges, raw precheck). */
+function buildAccountRowDetailsHtml(a) {
+    const yes = accountPublishYes(a);
+    const pr = accountFullPublishReason(a);
+    const op = accountFullOperatorAction(a);
+    const nextAt = (a.publish_story_next_allowed_at != null && String(a.publish_story_next_allowed_at).trim() !== '')
+        ? String(a.publish_story_next_allowed_at).trim() : '';
+    const bits = [];
+    bits.push('<div class="fw-semibold mb-1">Full policy text</div>');
+    if (pr) bits.push('<div class="mb-1">' + escHtml(pr) + '</div>');
+    else bits.push('<div class="text-muted mb-1">—</div>');
+    if (op && op !== pr) bits.push('<div class="text-muted mb-1"><span class="text-secondary">Action:</span> ' + escHtml(op) + '</div>');
+    if (nextAt) bits.push('<div class="text-muted mb-1"><span class="text-secondary">Next allowed:</span> <span class="font-monospace">' + escHtml(nextAt) + '</span></div>');
+    bits.push('<div class="fw-semibold mt-2 mb-1">Diagnostics (layers)</div>');
+    bits.push('<div class="mb-2">' + (operatorHealthStoryBadgesInner(a) || '<span class="text-muted">—</span>') + '</div>');
+    const gh = generalHealthFromAccount(a);
+    bits.push('<div class="fw-semibold mb-1">General health — table summary</div>');
+    bits.push('<div class="mb-2">' + cellTwoLines(gh.label, gh.reason || null) + '</div>');
+    bits.push('<div class="fw-semibold mb-1">Account status (DB record)</div>');
+    bits.push('<div class="mb-2">' + dashCell(a.status) + '</div>');
+    bits.push('<div class="fw-semibold mb-1">General health — raw healthcheck fields</div>');
+    bits.push('<div class="mb-2">' + cellTwoLines(a.health_status, a.health_reason) + '</div>');
+    bits.push('<div class="fw-semibold mb-1">Story readiness — table summary</div>');
+    bits.push('<div class="mb-2">' + escHtml(storyReadinessSummaryLabel(a)) + ' <span class="text-muted">(story_ui_status=' + escHtml(String(a.story_ui_status || '—')) + ')</span></div>');
+    bits.push('<div class="fw-semibold mb-1">Identity / capability</div>');
+    bits.push('<div class="mb-2">' + identityCell(a) + '</div>');
+    bits.push('<div class="fw-semibold mb-1">Story status (DB)</div>');
+    bits.push('<div class="mb-2">' + cellTwoLines(a.story_status, a.story_status_reason) + '</div>');
+    bits.push('<div class="fw-semibold mb-1">Precheck detail</div>');
+    bits.push('<div class="mb-0">' + cellTwoLines(a.story_precheck_status, a.story_precheck_reason) + '</div>');
+    const qd = a.story_precheck_queue_detail;
+    if (qd) bits.push('<div class="small text-muted mt-1">Queue: ' + escHtml(String(qd)) + '</div>');
+    bits.push('<div class="small text-muted mt-2 mb-0">Code: ' + escHtml(String(a.publish_story_reason_code || a.story_safety_reason || '—')) + '</div>');
+    return bits.join('');
+}
+
+/** Same badge markup as operatorHealthStoryBadges without outer wrapper / heading. */
+function operatorHealthStoryBadgesInner(a) {
+    const hs = String(a.health_status || '').toLowerCase();
+    const ui = String(a.story_ui_status || '').toLowerCase();
+    const parts = [];
+    if (hs === 'alive') {
+        parts.push('<span class="badge rounded-pill text-bg-success" title="General Telegram healthcheck">Gen: alive</span>');
+    } else if (hs === 'frozen') {
+        parts.push('<span class="badge rounded-pill text-bg-secondary" title="General health: limited / frozen at API">Gen: frozen</span>');
+    } else if (hs === 'restricted') {
+        parts.push('<span class="badge rounded-pill text-bg-danger" title="General health: restricted">Gen: restricted</span>');
+    } else if (hs === 'auth_required') {
+        parts.push('<span class="badge rounded-pill text-bg-warning text-dark" title="General health: session / auth">Gen: auth required</span>');
+    } else if (hs === 'flood_wait') {
+        parts.push('<span class="badge rounded-pill text-bg-warning text-dark" title="General health: rate limited">Gen: flood wait</span>');
+    } else if (hs === 'deleted' || hs === 'banned') {
+        parts.push('<span class="badge rounded-pill text-bg-dark" title="General health">' + escHtml(hs) + '</span>');
+    } else if (hs) {
+        parts.push('<span class="badge rounded-pill text-bg-light text-dark border" title="General health">Gen: ' + escHtml(hs) + '</span>');
+    }
+    if (ui === 'needs_precheck') {
+        const det = a.story_precheck_queue_detail === 'precheck_never_run' ? 'never run' : 'stale / expired';
+        parts.push('<span class="badge rounded-pill text-bg-info text-dark" title="Story readiness">Story: precheck (' + escHtml(det) + ')</span>');
+    } else if (ui === 'frozen') {
+        parts.push('<span class="badge rounded-pill text-bg-danger" title="Story layer: high-confidence frozen">Story: frozen</span>');
+    } else if (ui === 'telegram_denied') {
+        parts.push('<span class="badge rounded-pill text-bg-secondary" title="Story layer: ambiguous denial">Story: denied</span>');
+    } else if (ui === 'blocked') {
+        parts.push('<span class="badge rounded-pill text-bg-secondary" title="Story layer: blocked">Story: blocked</span>');
+    } else if (ui === 'restricted') {
+        parts.push('<span class="badge rounded-pill text-bg-danger" title="Story layer: restricted">Story: restricted</span>');
+    } else if (ui === 'rate_limited') {
+        parts.push('<span class="badge rounded-pill text-bg-warning text-dark" title="Story layer: rate limited">Story: rate limited</span>');
+    } else if (ui === 'ready') {
+        parts.push('<span class="badge rounded-pill text-bg-primary" title="Story layer ready">Story: ready</span>');
+    } else if (ui && ui !== 'unknown') {
+        parts.push('<span class="badge rounded-pill text-bg-light text-dark border">Story: ' + escHtml(ui) + '</span>');
+    }
+    if (isPublishReadyAccount(a)) {
+        parts.push('<span class="badge rounded-pill text-bg-success" title="Publish-ready pool">Publish-ready</span>');
+    }
+    return parts.length ? '<div class="d-flex flex-wrap gap-1">' + parts.join('') + '</div>' : '';
+}
+
+function operatorPublishScanCell(a) {
+    const yes = accountPublishYes(a);
+    const reasonLabel = shortPublishReasonLabel(a, yes);
+    const actionLabel = shortOperatorActionLabel(a, yes);
+    const badgeClass = yes ? 'text-bg-success' : 'text-bg-danger';
+    const label = yes ? 'YES' : 'NO';
+    return (
+        '<div class="acc-scan-cell" style="max-width:13rem;">' +
+        '<div class="d-flex align-items-center flex-wrap gap-1 mb-1">' +
+        '<span class="text-muted small text-nowrap">Publish</span>' +
+        '<span class="badge rounded-pill ' + badgeClass + ' px-2 py-1">' + label + '</span></div>' +
+        '<div class="small text-nowrap text-truncate" style="max-width:12.5rem;" title="' + escHtml(reasonLabel) + '">' +
+        '<span class="text-muted">Reason</span> · <span class="fw-semibold">' + escHtml(reasonLabel) + '</span></div>' +
+        '<div class="small text-nowrap text-truncate mb-1" style="max-width:12.5rem;" title="' + escHtml(actionLabel) + '">' +
+        '<span class="text-muted">Action</span> · <span>' + escHtml(actionLabel) + '</span></div>' +
+        '<details class="acc-row-details small">' +
+        '<summary class="text-muted user-select-none py-1" style="cursor:pointer;width:fit-content;list-style-position:outside">Details</summary>' +
+        '<div class="border-top border-secondary-subtle pt-2 mt-1">' + buildAccountRowDetailsHtml(a) + '</div>' +
+        '</details></div>'
+    );
+}
+
+function identityShortCell(a) {
+    const idSt = a.identity_audit_status ?? a.identity_status;
+    const capSt = a.profile_capability_status;
+    const bits = [];
+    if (idSt != null && String(idSt).trim() !== '' && String(idSt) !== '-') bits.push('<span class="text-nowrap">' + escHtml(String(idSt)) + '</span>');
+    if (capSt != null && String(capSt).trim() !== '' && String(capSt) !== '-') bits.push('<span class="text-nowrap text-muted">Cap ' + escHtml(String(capSt)) + '</span>');
+    return bits.length ? '<div class="small d-flex flex-column gap-1" style="max-width:7rem;">' + bits.join('') + '</div>' : '<span class="text-muted">—</span>';
+}
+
+function riskFlagsCell(a) {
+    const manual = a.manual_review_required === true || a.manual_review_required === 'true';
+    const risk = String(a.risk_level || '—').trim();
+    const bits = [];
+    if (manual) bits.push('<span class="badge rounded-pill text-bg-dark" title="manual_review_required">Manual</span>');
+    if (risk && risk !== '—') bits.push('<span class="badge rounded-pill text-bg-secondary" title="Warmup/risk heuristics">' + escHtml(risk) + '</span>');
+    if (!bits.length) return '<span class="text-muted small">—</span>';
+    return '<div class="d-flex flex-wrap gap-1">' + bits.join('') + '</div>';
+}
+
+/** Standalone diagnostics strip (e.g. tooltips elsewhere); table rows use Details instead. */
+function operatorHealthStoryBadges(a) {
+    const inner = operatorHealthStoryBadgesInner(a);
+    if (!inner) return '';
+    return '<div class="mt-1 pt-1 border-top border-secondary-subtle"><div class="text-muted small mb-1" style="font-size:0.7rem;">Diagnostics (layers / purpose)</div>' + inner + '</div>';
+}
+
+/** True when account purpose includes story posting (excludes Messaging-only / Scheduler-only rows). */
+function purposeAllowsStories(a) {
+    const p = String(a.purpose || 'both').toLowerCase();
+    return p === 'both' || p === 'autostory';
+}
+
+/**
+ * Single primary story-readiness bucket per account for ops filtering.
+ * Order: manual_review > needs_precheck > eligible > frozen > rate_limited > other.
+ * Eligible prefers publish_story_status / can_publish_story_now from list_accounts (story_publish decision); falls back to legacy is_story_ready / story_ui_status.
+ */
+function storyReadinessBucket(a) {
+    const manual = a.manual_review_required === true || a.manual_review_required === 'true';
+    if (manual) return 'manual';
+    const ui = String(a.story_ui_status || '').toLowerCase();
+    if (ui === 'needs_precheck') return 'needs_precheck';
+    const ps = a.publish_story_status != null ? String(a.publish_story_status).toLowerCase().trim() : '';
+    const canPubTrue = ps === 'yes' || a.can_publish_story_now === true || a.can_publish_story_now === 'true';
+    const canPubFalse = ps === 'no' || a.can_publish_story_now === false || a.can_publish_story_now === 'false';
+    if (canPubTrue) return 'eligible';
+    if (ui === 'frozen' || ui === 'restricted' || ui === 'telegram_denied' || ui === 'blocked') return 'frozen';
+    if (ui === 'rate_limited') return 'rate_limited';
+    const readyFlag = a.is_story_ready === true || a.is_story_ready === 'true';
+    if (!canPubFalse && (readyFlag || ui === 'ready')) return 'eligible';
+    return 'other';
+}
+
+/** Eligible per policy (same bucket as Eligible) and purpose is Stories or Both — operator publish batch lens. */
+function isPublishReadyAccount(a) {
+    return storyReadinessBucket(a) === 'eligible' && purposeAllowsStories(a);
+}
+
+function parseIsoMs(val) {
+    if (val == null || val === '') return null;
+    const t = Date.parse(String(val));
+    return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Higher = preferred first canary (publish-ready accounts only). Uses API fields only.
+ * Not a guarantee — operator confirms Publish Details, identity, and caps.
+ */
+function canaryPrepScore(a) {
+    if (!isPublishReadyAccount(a)) return Number.NEGATIVE_INFINITY;
+    let s = 0;
+    const risk = String(a.risk_level || '').toLowerCase();
+    if (risk === 'safe') s += 400;
+    else if (risk === 'warming') s += 200;
+    else if (risk === 'risky') s += 80;
+    else if (risk === 'blocked') s -= 500;
+    const succ = parseInt(String(a.successful_story_count != null ? a.successful_story_count : 0), 10);
+    const succN = Number.isFinite(succ) ? Math.min(Math.max(0, succ), 20) : 0;
+    s += succN * 50;
+    const imp = parseIsoMs(a.imported_at);
+    if (imp) {
+        const days = (Date.now() - imp) / 86400000;
+        s += Math.min(Math.max(0, days), 90) * 2;
+    }
+    if (a.identity_verify_suggested === true || a.identity_verify_suggested === 'true') s -= 100;
+    if (String(a.health_status || '').toLowerCase() !== 'alive') s -= 200;
+    return s;
+}
+
+function computeCanaryRanking() {
+    const pool = accountsListCache.filter(isPublishReadyAccount);
+    return pool.map(function (a) {
+        return { a: a, score: canaryPrepScore(a) };
+    }).sort(function (x, y) {
+        if (y.score !== x.score) return y.score - x.score;
+        const ida = x.a.id != null ? parseInt(x.a.id, 10) : 0;
+        const idb = y.a.id != null ? parseInt(y.a.id, 10) : 0;
+        return ida - idb;
+    });
+}
+
+function renderCanarySuggestions() {
+    const ul = document.getElementById('canary-suggestions-list');
+    if (!ul) return;
+    const ranked = computeCanaryRanking();
+    canarySuggestedTopIds = ranked.slice(0, 3).map(function (x) { return x.a.id; });
+    if (!ranked.length) {
+        ul.innerHTML = '<li class="text-muted">No publish-ready accounts in this load. Run general health + story precheck, then refresh.</li>';
+        return;
+    }
+    ul.innerHTML = ranked.slice(0, 8).map(function (item, idx) {
+        const a = item.a;
+        const bits = [];
+        bits.push('ID <strong>' + escHtml(String(a.id)) + '</strong>');
+        if (a.phone_number) bits.push(escHtml(String(a.phone_number)));
+        bits.push('risk=' + escHtml(String(a.risk_level || '—')));
+        bits.push('ok_stories=' + escHtml(String(a.successful_story_count != null ? a.successful_story_count : 0)));
+        if (a.imported_at) bits.push('imported ' + escHtml(String(a.imported_at).slice(0, 10)));
+        return '<li class="mb-1"><span class="badge text-bg-secondary me-1">' + (idx + 1) + '</span> ' + bits.join(' · ') +
+            ' <span class="text-muted">(score ' + String(Math.round(item.score)) + ')</span></li>';
+    }).join('');
+}
+
+function canaryRankBadgeHtml(a) {
+    const idx = canarySuggestedTopIds.indexOf(a.id);
+    if (idx < 0 || !isPublishReadyAccount(a)) return '';
+    const labels = ['Canary 1', 'Canary 2', 'Canary 3'];
+    const cls = ['text-bg-warning text-dark', 'text-bg-warning text-dark', 'text-bg-secondary'];
+    return ' <span class="badge rounded-pill ' + cls[idx] + '" title="Heuristic canary rank (publish-ready pool, loaded data)">' + labels[idx] + '</span>';
+}
+
+function computeReadinessCounts(accounts) {
+    const c = {
+        manual: 0,
+        needs_precheck: 0,
+        eligible: 0,
+        publish_ready: 0,
+        frozen: 0,
+        rate_limited: 0,
+        other: 0,
+    };
+    for (let i = 0; i < accounts.length; i++) {
+        const a = accounts[i];
+        const b = storyReadinessBucket(a);
+        if (c[b] != null) c[b]++;
+        else c.other++;
+        if (isPublishReadyAccount(a)) c.publish_ready++;
+    }
+    return c;
+}
+
+function filterAccountsByReadiness(accounts, key) {
+    if (!key || key === 'all') return accounts.slice();
+    if (key === 'publish_ready') {
+        return accounts.filter(isPublishReadyAccount);
+    }
+    return accounts.filter(function (a) { return storyReadinessBucket(a) === key; });
+}
+
+function setReadinessFilter(key) {
+    readinessFilterKey = key || 'all';
+    document.querySelectorAll('.readiness-filter-btn').forEach(function (b) {
+        const k = b.getAttribute('data-readiness-filter');
+        b.classList.toggle('active', k === readinessFilterKey);
+    });
+}
+
+function updateReadinessOpsUI() {
+    const line = document.getElementById('readiness-total-line');
+    const counts = computeReadinessCounts(accountsListCache);
+    document.querySelectorAll('.readiness-count-pill').forEach(function (el) {
+        const k = el.getAttribute('data-count-for');
+        if (k && counts[k] != null) el.textContent = String(counts[k]);
+    });
+    const filtered = filterAccountsByReadiness(accountsListCache, readinessFilterKey);
+    if (line) {
+        const lim = accountsListCache.length >= 500 ? ' (API limit 500)' : '';
+        line.textContent = accountsListCache.length + ' account(s) loaded' + lim + ' · showing ' + filtered.length + ' row(s)' +
+            ' · other bucket: ' + counts.other;
+    }
+    const hint = document.getElementById('readiness-filter-hint');
+    if (hint) {
+        const hints = {
+            all: 'Filters use the same story snapshot as the table (DB + safety policy). They do not call Telegram.',
+            needs_precheck: 'Use the story precheck card above for the story layer. Row checkboxes remain for general (sync) health only — max 10 per request.',
+            eligible: 'Eligible per current policy — still verify canary rules and hourly caps before bulk publish.',
+            publish_ready: 'Subset of Eligible: purpose Stories or Both. Use copy/export below for batch prep; server still enforces canary and hourly caps.',
+            frozen: 'Story layer blocked (includes ambiguous “denied” when precheck text was unclear). Check Gen vs precheck raw error; do not treat as whole-account frozen unless general health says so.',
+            rate_limited: 'Respect cooldowns and Publish Action / Details. General healthcheck does not clear story rate limits.',
+            manual: 'manual_review_required is set — resolve in DB or workflow before scaling this account.',
+        };
+        hint.textContent = hints[readinessFilterKey] || hints.all;
+    }
+    renderCanarySuggestions();
+}
+
+function accountIdsFromAccountsList(list) {
+    return list.map(function (a) { return a.id; }).filter(function (id) { return id != null; });
+}
+
+function copyAccountsListIdsToClipboard(list, label) {
+    const ids = accountIdsFromAccountsList(list);
+    const text = ids.join(', ');
+    if (!text) {
+        alert('No account IDs in ' + label + '.');
+        return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+            alert('Copied ' + ids.length + ' ID(s) (' + label + ') to clipboard.');
+        }).catch(function () {
+            window.prompt('Copy IDs (' + label + '):', text);
+        });
+    } else {
+        window.prompt('Copy IDs (' + label + '):', text);
+    }
+}
+
+function exportVisibleAccountsTsv() {
+    const filtered = filterAccountsByReadiness(accountsListCache, readinessFilterKey);
+    if (!filtered.length) {
+        alert('No rows to export for this filter.');
+        return;
+    }
+    const lines = ['id\tphone\tusername\tgeneral_health_label\tstory_readiness_summary\tpurpose\tcan_publish_story_now\tpublish_story_status\tpublish_story_reason\tpublish_story_next_allowed_at\tstory_ui_status\tis_story_ready\tmanual_review_required\trisk_level\tsuccessful_story_count\timported_at'];
+    for (let i = 0; i < filtered.length; i++) {
+        const a = filtered[i];
+        const row = [
+            a.id,
+            a.phone_number || '',
+            a.username || '',
+            generalHealthFromAccount(a).label,
+            storyReadinessSummaryLabel(a),
+            a.purpose || 'both',
+            a.can_publish_story_now === true || a.can_publish_story_now === 'true' ? 'true' : 'false',
+            a.publish_story_status || '',
+            a.publish_story_reason != null ? String(a.publish_story_reason) : '',
+            a.publish_story_next_allowed_at != null ? String(a.publish_story_next_allowed_at) : '',
+            a.story_ui_status || '',
+            a.is_story_ready === true || a.is_story_ready === 'true' ? 'true' : 'false',
+            a.manual_review_required === true || a.manual_review_required === 'true' ? 'true' : 'false',
+            a.risk_level || '',
+            a.successful_story_count != null ? String(a.successful_story_count) : '0',
+            a.imported_at ? String(a.imported_at) : '',
+        ].map(function (cell) {
+            return String(cell).replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+        });
+        lines.push(row.join('\t'));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/tab-separated-values;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'storyfleet-accounts-visible-' + new Date().toISOString().slice(0, 10) + '.tsv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function syncHcSelectAllMaster() {
+    const master = document.getElementById('hc-select-all');
+    if (!master) return;
+    const boxes = document.querySelectorAll('.hc-acc-cb');
+    if (!boxes.length) {
+        master.checked = false;
+        master.indeterminate = false;
+        return;
+    }
+    const n = Array.from(boxes).filter(function (c) { return c.checked; }).length;
+    master.checked = n === boxes.length;
+    master.indeterminate = n > 0 && n < boxes.length;
+}
+
+function accountRowHtml(a) {
+    const purpose = a.purpose || 'both';
+    const publishScan = operatorPublishScanCell(a);
+    const identityHtml = identityShortCell(a);
+    const genHealthHtml = generalHealthScanCell(a);
+    const storyReadyHtml = storyReadinessScanCell(a);
+    const preHtml = precheckCell(a);
+    const preDetailHtml = precheckDetailCell(a);
+    const riskFlags = riskFlagsCell(a);
+    const uname = dashCell(a.username);
+    return `
+            <tr data-readiness-bucket="${escHtml(storyReadinessBucket(a))}">
+                <td><input type="checkbox" class="form-check-input hc-acc-cb mt-0" data-account-id="${a.id}" aria-label="Select account ${a.id} for healthcheck"></td>
+                <td>${a.id}${canaryRankBadgeHtml(a)}</td>
+                <td>${escHtml(a.phone_number || '')}</td>
+                <td>${uname}</td>
+                <td class="small align-top">${genHealthHtml}</td>
+                <td class="small align-top">${publishScan}</td>
+                <td class="small align-top">${identityHtml}</td>
+                <td class="small align-top">${storyReadyHtml}</td>
+                <td class="small align-top text-nowrap">${preHtml}</td>
+                <td class="small align-top">${preDetailHtml}</td>
+                <td class="small align-top">${riskFlags}</td>
                 <td>
                 <select class="form-select form-select-sm purpose-select" style="width:auto;" data-account-id="${a.id}" title="Messaging = Scheduler only, Autostory = Stories only, Both = both">
                         <option value="both" ${purpose === 'both' ? 'selected' : ''}>Both</option>
@@ -372,7 +931,7 @@ async function loadAccounts() {
                         <option value="messaging" ${purpose === 'messaging' ? 'selected' : ''}>Messaging (Scheduler)</option>
                     </select>
                 </td>
-                <td>${a.stories_today != null ? a.stories_today : 0}</td>
+                <td>${a.stories_today}</td>
                 <td>${a.last_active ? new Date(a.last_active).toLocaleString() : 'Never'}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-secondary" onclick="viewAccount(${a.id})">
@@ -381,30 +940,475 @@ async function loadAccounts() {
                     <button class="btn btn-sm btn-outline-info" onclick="openLoginCodeModal(${a.id})" title="Get login code for phone">
                         <i class="bi bi-phone"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-primary" onclick="openSetUsernameModal(${a.id}, '${(a.username || '').replace(/'/g, "\\'")}')" title="Set Telegram username">
-                        <i class="bi bi-at"></i> Username
-                    </button>
-                    <button class="btn btn-sm btn-outline-primary" onclick="openSetProfilePhotoModal(${a.id})" title="Set profile photo">
-                        <i class="bi bi-image"></i> Photo
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="toggleAccount(${a.id}, '${status}')">
+                    <button class="btn btn-sm btn-outline-danger" onclick="toggleAccount(${a.id}, '${a.status}')">
                         <i class="bi bi-power"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount(${a.id})" title="Delete account from database">
-                        <i class="bi bi-trash"></i> Delete
                     </button>
                 </td>
             </tr>
         `;
-        }).join('');
-    } catch (error) {
-        console.error('Failed to load accounts:', error);
+}
+
+function renderAccountsTableFromCache() {
+    const tbody = document.getElementById('accounts-table');
+    if (!tbody) return;
+    if (!accountsListCache.length) {
+        tbody.innerHTML = '<tr><td colspan="' + ACCOUNTS_COL_COUNT + '" class="text-center text-muted py-4">No accounts yet. Use <strong>Add Account</strong> (phone, QR, or session string). After import, run general health, then story precheck for publishing.</td></tr>';
+        syncHcSelectAllMaster();
+        return;
+    }
+    const filtered = filterAccountsByReadiness(accountsListCache, readinessFilterKey);
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="' + ACCOUNTS_COL_COUNT + '" class="text-center text-muted py-4">No accounts in this readiness filter. Choose <strong>All</strong> or another bucket.</td></tr>';
+        syncHcSelectAllMaster();
+        return;
+    }
+    tbody.innerHTML = filtered.map(accountRowHtml).join('');
+    syncHcSelectAllMaster();
+}
+
+function renderFleetJobPanel(jobId, data) {
+    const panel = document.getElementById('hc-fleet-panel');
+    if (!panel) return;
+    panel.classList.remove('d-none');
+    const tot = Number(data.total);
+    const chk = Number(data.checked);
+    let pct = 0;
+    if (Number.isFinite(tot) && tot > 0 && Number.isFinite(chk)) {
+        pct = Math.min(100, Math.round((chk / tot) * 100));
+    }
+    const bar = document.getElementById('hc-fleet-progress-bar');
+    const line = document.getElementById('hc-fleet-checked-line');
+    const countsEl = document.getElementById('hc-fleet-counts');
+    const noteEl = document.getElementById('hc-fleet-note');
+    const contEl = document.getElementById('hc-fleet-continue');
+    const titleEl = document.getElementById('hc-fleet-title');
+    const stateBadge = document.getElementById('hc-fleet-state-badge');
+    if (titleEl) titleEl.textContent = 'Fleet health job #' + jobId;
+    if (line) {
+        line.textContent = (Number.isFinite(chk) && Number.isFinite(tot)) ? (chk + ' / ' + tot + ' accounts') : '';
+    }
+    if (bar) {
+        bar.style.width = pct + '%';
+        bar.setAttribute('aria-valuenow', String(pct));
+    }
+    const sc = data.status_counts && typeof data.status_counts === 'object' ? data.status_counts : {};
+    const keys = Object.keys(sc).sort();
+    const countBits = keys.map(function (k) {
+        return '<span class="badge rounded-pill text-bg-light text-dark border me-1 mb-1">' + escHtml(k) + ': ' + escHtml(String(sc[k])) + '</span>';
+    }).join(' ');
+    if (countsEl) {
+        countsEl.innerHTML = countBits ? ('<span class="me-1 fw-semibold">Status mix (general):</span>' + countBits) : '';
+    }
+    if (noteEl) noteEl.textContent = data.healthcheck_note || '';
+    const st = data.status || '';
+    if (stateBadge) {
+        stateBadge.textContent = st ? String(st) : '…';
+        stateBadge.className = 'badge rounded-pill ' + (st === 'success' ? 'text-bg-success' : st === 'timeout' ? 'text-bg-warning text-dark' : st === 'error' ? 'text-bg-danger' : st === 'running' ? 'text-bg-info text-dark' : 'text-bg-secondary');
+    }
+    const showContinue = !!(data.can_continue && data.continue_hint) || (st === 'timeout' && data.continue_hint) || (data.partial && (data.remaining > 0) && data.continue_hint);
+    if (contEl) {
+        if (showContinue && data.continue_hint) {
+            contEl.classList.remove('d-none');
+            contEl.textContent = data.continue_hint;
+        } else if (data.partial && Number(data.remaining) > 0 && !data.can_continue) {
+            contEl.classList.remove('d-none');
+            contEl.textContent = data.continue_hint || ('Partial result: about ' + data.remaining + ' account(s) may still need checking. See API docs or run a fresh fleet job.');
+        } else {
+            contEl.classList.add('d-none');
+            contEl.textContent = '';
+        }
+    }
+    if (bar) {
+        if (st === 'success' || st === 'error' || st === 'timeout') {
+            bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+        } else {
+            bar.classList.add('progress-bar-striped', 'progress-bar-animated');
+        }
     }
 }
 
+function resetFleetPanelForNewJob() {
+    const panel = document.getElementById('hc-fleet-panel');
+    if (panel) panel.classList.remove('d-none');
+    const titleEl = document.getElementById('hc-fleet-title');
+    if (titleEl) titleEl.textContent = 'Fleet health job';
+    const line = document.getElementById('hc-fleet-checked-line');
+    if (line) line.textContent = 'Starting…';
+    const bar = document.getElementById('hc-fleet-progress-bar');
+    if (bar) {
+        bar.style.width = '0%';
+        bar.setAttribute('aria-valuenow', '0');
+        bar.classList.add('progress-bar-striped', 'progress-bar-animated');
+    }
+    const countsEl = document.getElementById('hc-fleet-counts');
+    if (countsEl) countsEl.innerHTML = '';
+    const noteEl = document.getElementById('hc-fleet-note');
+    if (noteEl) {
+        noteEl.textContent = 'General Telegram health only; story readiness is unchanged until the story precheck is run.';
+    }
+    const contEl = document.getElementById('hc-fleet-continue');
+    if (contEl) {
+        contEl.classList.add('d-none');
+        contEl.textContent = '';
+    }
+    const stateBadge = document.getElementById('hc-fleet-state-badge');
+    if (stateBadge) {
+        stateBadge.textContent = 'starting';
+        stateBadge.className = 'badge rounded-pill text-bg-secondary';
+    }
+}
+
+let spCandidateIds = [];
+
+function spHideError() {
+    const el = document.getElementById('sp-error');
+    if (el) {
+        el.classList.add('d-none');
+        el.textContent = '';
+    }
+}
+
+function spShowError(msg) {
+    const el = document.getElementById('sp-error');
+    if (!el) return;
+    el.textContent = msg || 'Error';
+    el.classList.remove('d-none');
+}
+
+async function loadPrecheckCandidates() {
+    spHideError();
+    const sumEl = document.getElementById('sp-candidates-summary');
+    const idsEl = document.getElementById('sp-candidates-ids');
+    const runBtn = document.getElementById('btn-sp-run');
+    const purpose = (document.getElementById('sp-precheck-purpose') || {}).value || '';
+    let url = '/api/accounts/story-precheck-candidates?limit=500';
+    if (purpose) url += '&purpose=' + encodeURIComponent(purpose);
+    if (sumEl) {
+        sumEl.classList.remove('d-none');
+        sumEl.textContent = 'Loading candidates…';
+    }
+    if (idsEl) idsEl.classList.add('d-none');
+    if (runBtn) runBtn.disabled = true;
+    spCandidateIds = [];
+    try {
+        const r = await fetch(url);
+        const data = await r.json().catch(() => ({}));
+        if (!data.success) {
+            if (sumEl) sumEl.textContent = '';
+            spShowError(data.error || ('HTTP ' + r.status));
+            return;
+        }
+        spCandidateIds = Array.isArray(data.account_ids) ? data.account_ids.map(function (x) { return parseInt(x, 10); }).filter(function (n) { return !Number.isNaN(n); }) : [];
+        const total = data.matched_total != null ? data.matched_total : spCandidateIds.length;
+        const trunc = data.truncated ? ' (list truncated at limit; total matched: ' + total + ')' : '';
+        if (sumEl) {
+            sumEl.textContent = spCandidateIds.length + ' ID(s) loaded for this request · ' + total + ' matched in DB' + trunc + (data.nothing_to_run ? ' — none need precheck for this filter (all caught up, wrong purpose filter, or no canonical session).' : '');
+        }
+        if (idsEl) {
+            if (spCandidateIds.length) {
+                idsEl.classList.remove('d-none');
+                idsEl.textContent = spCandidateIds.join(', ');
+            } else {
+                idsEl.classList.add('d-none');
+            }
+        }
+        if (runBtn) runBtn.disabled = spCandidateIds.length === 0;
+        const batchIn = document.getElementById('sp-precheck-batch');
+        if (batchIn && spCandidateIds.length > 0) {
+            batchIn.max = String(spCandidateIds.length);
+            let v = parseInt(batchIn.value, 10);
+            if (!Number.isFinite(v) || v < 1) v = 1;
+            if (v > spCandidateIds.length) v = spCandidateIds.length;
+            batchIn.value = String(v);
+        } else if (batchIn && spCandidateIds.length === 0) {
+            batchIn.removeAttribute('max');
+        }
+    } catch (e) {
+        if (sumEl) sumEl.textContent = '';
+        spShowError('Failed to load candidates: ' + e.message);
+    }
+}
+
+async function runStoryPrecheck() {
+    spHideError();
+    const resultsWrap = document.getElementById('sp-results-wrap');
+    const metaEl = document.getElementById('sp-results-meta');
+    const tbody = document.getElementById('sp-results-tbody');
+    if (!spCandidateIds.length) {
+        spShowError('Load candidates first.');
+        return;
+    }
+    const batchIn = document.getElementById('sp-precheck-batch');
+    let batch = batchIn ? parseInt(batchIn.value, 10) : 1;
+    if (!Number.isFinite(batch) || batch < 1) batch = 1;
+    batch = Math.min(batch, spCandidateIds.length);
+    const ids = spCandidateIds.slice(0, batch);
+    let canaryBatchOk = false;
+    if (ids.length > 1) {
+        const ok = confirm(
+            'You are about to run story precheck on ' + ids.length + ' accounts in one request.\n\n' +
+            'This will set canary_batch_ok=true on the server (explicit batch acknowledgment). Hourly caps still apply.\n\nContinue?'
+        );
+        if (!ok) return;
+        canaryBatchOk = true;
+    }
+    const runBtn = document.getElementById('btn-sp-run');
+    if (runBtn) {
+        runBtn.disabled = true;
+        runBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running…';
+    }
+    try {
+        const r = await fetch('/api/accounts/story-precheck', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_ids: ids, canary_batch_ok: canaryBatchOk }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!data.success) {
+            spShowError(data.error || ('HTTP ' + r.status));
+            if (resultsWrap) resultsWrap.classList.add('d-none');
+            return;
+        }
+        if (resultsWrap) resultsWrap.classList.remove('d-none');
+        if (metaEl) {
+            const cap = data.max_per_hour != null ? ' · Hourly precheck usage before this run: ' + data.recent_count + '/' + data.max_per_hour : '';
+            metaEl.textContent =
+                'Processed: ' + (data.processed_count || 0) +
+                ' · eligible sent: ' + (data.eligible_account_count != null ? data.eligible_account_count : ids.length) +
+                ' · skipped (no session): ' + (data.skipped_no_session_count != null ? data.skipped_no_session_count : (data.skipped_count || 0)) +
+                cap;
+        }
+        if (tbody) {
+            const rows = data.results || [];
+            tbody.innerHTML = rows.map(function (row) {
+                const aid = row.account_id != null ? row.account_id : '—';
+                const st = row.status != null ? row.status : '—';
+                const re = row.reason != null ? String(row.reason) : '';
+                const ca = row.checked_at != null ? String(row.checked_at) : '—';
+                return '<tr><td>' + escHtml(String(aid)) + '</td><td>' + escHtml(String(st)) + '</td><td class="text-break">' + escHtml(re) + '</td><td class="text-nowrap small">' + escHtml(ca) + '</td></tr>';
+            }).join('');
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No result rows (nothing processed).</td></tr>';
+            }
+        }
+        await loadAccounts();
+        await loadPrecheckCandidates();
+    } catch (e) {
+        spShowError('Precheck request failed: ' + e.message);
+        if (resultsWrap) resultsWrap.classList.add('d-none');
+    } finally {
+        if (runBtn) {
+            runBtn.disabled = spCandidateIds.length === 0;
+            runBtn.innerHTML = '<i class="bi bi-play-fill"></i> Run story precheck';
+        }
+    }
+}
+
+async function loadAccounts() {
+    const tbody = document.getElementById('accounts-table');
+    try {
+        const response = await fetch('/api/accounts?limit=500', { cache: 'no-store' });
+        const accounts = await response.json();
+
+        if (!Array.isArray(accounts)) {
+            accountsListCache = [];
+            const msg = escHtml(accounts.detail || accounts.error || 'Invalid response');
+            if (document.getElementById('readiness-total-line')) {
+                document.getElementById('readiness-total-line').textContent = 'Could not load accounts';
+            }
+            document.querySelectorAll('.readiness-count-pill').forEach(function (el) { el.textContent = '0'; });
+            tbody.innerHTML = '<tr><td colspan="' + ACCOUNTS_COL_COUNT + '" class="text-center text-danger">Failed to load accounts' + (msg && msg !== '-' ? ': ' + msg : '') + '</td></tr>';
+            return;
+        }
+
+        accountsListCache = accounts;
+        setReadinessFilter(readinessFilterKey);
+        updateReadinessOpsUI();
+        renderAccountsTableFromCache();
+    } catch (error) {
+        console.error('Failed to load accounts:', error);
+        accountsListCache = [];
+        if (document.getElementById('readiness-total-line')) {
+            document.getElementById('readiness-total-line').textContent = 'Load failed';
+        }
+        document.querySelectorAll('.readiness-count-pill').forEach(function (el) { el.textContent = '0'; });
+        tbody.innerHTML = '<tr><td colspan="' + ACCOUNTS_COL_COUNT + '" class="text-center text-danger">Failed to load accounts</td></tr>';
+    }
+}
+
+function selectedHealthcheckIds() {
+    return Array.from(document.querySelectorAll('.hc-acc-cb:checked'))
+        .map(el => parseInt(el.getAttribute('data-account-id'), 10))
+        .filter(id => !Number.isNaN(id));
+}
+
+async function pollHealthcheckJob(jobId, statusEl) {
+    const t0 = Date.now();
+    const maxMs = 3600 * 1000;
+    while (Date.now() - t0 < maxMs) {
+        const r = await fetch('/api/accounts/healthcheck/' + encodeURIComponent(jobId));
+        const data = await r.json().catch(() => ({}));
+        if (!data.success) {
+            statusEl.textContent = data.error || 'Poll failed';
+            const noteEl = document.getElementById('hc-fleet-note');
+            if (noteEl) noteEl.textContent = data.error || 'Poll failed';
+            const stateBadge = document.getElementById('hc-fleet-state-badge');
+            if (stateBadge) {
+                stateBadge.textContent = 'poll error';
+                stateBadge.className = 'badge rounded-pill text-bg-danger';
+            }
+            return;
+        }
+        const st = data.status || '';
+        const chk = data.checked != null ? data.checked : '';
+        const tot = data.total != null ? data.total : '';
+        renderFleetJobPanel(jobId, data);
+        statusEl.textContent = 'Job #' + jobId + ': ' + st + (tot !== '' ? ' (' + chk + '/' + tot + ')' : '');
+        if (st === 'success' || st === 'error' || st === 'timeout') {
+            if (data.continue_hint) {
+                statusEl.textContent += ' — see panel below';
+            } else if (st === 'success') {
+                statusEl.textContent += ' — general health only; refresh story readiness with the precheck card if needed.';
+            }
+            loadAccounts();
+            return;
+        }
+        await new Promise(res => setTimeout(res, 2500));
+    }
+    statusEl.textContent = 'Job #' + jobId + ': polling stopped (timeout UI)';
+}
+
+document.getElementById('hc-select-all')?.addEventListener('change', function () {
+    const on = this.checked;
+    document.querySelectorAll('.hc-acc-cb').forEach(cb => { cb.checked = on; });
+    syncHcSelectAllMaster();
+});
+
+document.getElementById('btn-sel-visible-hc')?.addEventListener('click', function () {
+    document.querySelectorAll('.hc-acc-cb').forEach(function (cb) { cb.checked = true; });
+    syncHcSelectAllMaster();
+});
+
+document.getElementById('btn-sel-first10-hc')?.addEventListener('click', function () {
+    const boxes = document.querySelectorAll('.hc-acc-cb');
+    boxes.forEach(function (cb) { cb.checked = false; });
+    const n = Math.min(10, boxes.length);
+    for (let i = 0; i < n; i++) boxes[i].checked = true;
+    syncHcSelectAllMaster();
+});
+
+document.getElementById('btn-clear-hc-sel')?.addEventListener('click', function () {
+    document.querySelectorAll('.hc-acc-cb').forEach(function (cb) { cb.checked = false; });
+    const master = document.getElementById('hc-select-all');
+    if (master) { master.checked = false; master.indeterminate = false; }
+});
+
+document.getElementById('btn-hc-sync')?.addEventListener('click', async function () {
+    const ids = selectedHealthcheckIds();
+    const statusEl = document.getElementById('hc-job-status');
+    if (!ids.length) {
+        alert('Tick at least one account, or use Fleet check for all eligible accounts.');
+        return;
+    }
+    if (ids.length > 10) {
+        alert('Sync healthcheck allows at most 10 accounts per request. Untick some rows or use Fleet check (all eligible).');
+        return;
+    }
+    const update = document.getElementById('hc-update-status').checked;
+    statusEl.textContent = 'Running sync healthcheck…';
+    try {
+        const r = await fetch('/api/accounts/healthcheck', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_ids: ids, update_status: update, verbose: false }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!data.success) {
+            statusEl.textContent = data.error || ('HTTP ' + r.status);
+            if (data.retry_after_sec) alert(data.error || 'Throttled');
+            return;
+        }
+        const rid = data.run_id != null ? String(data.run_id) : '';
+        statusEl.textContent = rid
+            ? ('Sync done (run ' + rid + '). General health only — story readiness still follows the precheck / safety columns.')
+            : ('Sync done. General health only — story readiness still follows the precheck / safety columns.');
+        loadAccounts();
+    } catch (e) {
+        statusEl.textContent = 'Failed: ' + e.message;
+    }
+});
+
+document.getElementById('btn-hc-fleet')?.addEventListener('click', async function () {
+    const statusEl = document.getElementById('hc-job-status');
+    const update = document.getElementById('hc-update-status').checked;
+    if (!confirm('Start background fleet healthcheck for all eligible accounts? This runs on the server; you can leave the page.')) return;
+    statusEl.textContent = 'Starting fleet job…';
+    resetFleetPanelForNewJob();
+    try {
+        const r = await fetch('/api/accounts/healthcheck/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ update_status: update, verbose: false }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!data.success) {
+            document.getElementById('hc-fleet-panel')?.classList.add('d-none');
+            statusEl.textContent = data.error || ('HTTP ' + r.status);
+            if (data.retry_after_sec) alert(data.error || 'Throttled');
+            return;
+        }
+        const jobId = data.job_id;
+        const t = document.getElementById('hc-fleet-title');
+        if (t) t.textContent = 'Fleet health job #' + jobId;
+        statusEl.textContent = 'Job #' + jobId + ' started; polling…';
+        await pollHealthcheckJob(jobId, statusEl);
+    } catch (e) {
+        document.getElementById('hc-fleet-panel')?.classList.add('d-none');
+        statusEl.textContent = 'Failed: ' + e.message;
+    }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
     loadAccounts();
+    document.querySelectorAll('.readiness-filter-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const k = btn.getAttribute('data-readiness-filter') || 'all';
+            setReadinessFilter(k);
+            const master = document.getElementById('hc-select-all');
+            if (master) { master.checked = false; master.indeterminate = false; }
+            updateReadinessOpsUI();
+            renderAccountsTableFromCache();
+        });
+    });
+    document.getElementById('btn-sp-load-candidates')?.addEventListener('click', loadPrecheckCandidates);
+    document.getElementById('btn-sp-run')?.addEventListener('click', runStoryPrecheck);
+    document.getElementById('btn-copy-visible-ids')?.addEventListener('click', function () {
+        const filtered = filterAccountsByReadiness(accountsListCache, readinessFilterKey);
+        copyAccountsListIdsToClipboard(filtered, 'visible filter');
+    });
+    document.getElementById('btn-copy-publish-ready-ids')?.addEventListener('click', function () {
+        const list = accountsListCache.filter(isPublishReadyAccount);
+        copyAccountsListIdsToClipboard(list, 'publish-ready (loaded accounts)');
+    });
+    document.getElementById('btn-export-visible-tsv')?.addEventListener('click', exportVisibleAccountsTsv);
+    document.getElementById('btn-copy-canary-top')?.addEventListener('click', function () {
+        const ranked = computeCanaryRanking();
+        if (!ranked.length) {
+            alert('No publish-ready accounts to rank. Run precheck and refresh.');
+            return;
+        }
+        copyAccountsListIdsToClipboard([ranked[0].a], 'top canary');
+    });
+    document.getElementById('btn-copy-canary-top3')?.addEventListener('click', function () {
+        const ranked = computeCanaryRanking();
+        const top = ranked.slice(0, 3).map(function (x) { return x.a; });
+        copyAccountsListIdsToClipboard(top, 'top 3 canary');
+    });
     document.getElementById('accounts-table')?.addEventListener('change', async (e) => {
+        if (e.target.classList.contains('hc-acc-cb')) {
+            syncHcSelectAllMaster();
+            return;
+        }
         if (e.target.classList.contains('purpose-select')) {
             const id = e.target.dataset.accountId;
             const purpose = e.target.value;
@@ -447,6 +1451,7 @@ async function fetchCodeInAuthFlow() {
         const phoneNorm = authData.phone_number.replace(/\s|-/g, '');
         const accResp = await fetch('/api/accounts');
         const accounts = await accResp.json();
+        if (!Array.isArray(accounts)) return;
         const match = accounts.find(a => {
             const p = (a.phone_number || '').replace(/\s|-/g, '');
             return p && (p === phoneNorm || p.slice(-9) === phoneNorm.slice(-9));
@@ -465,7 +1470,7 @@ async function fetchCodeInAuthFlow() {
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Waiting...';
     resultEl.classList.add('d-none');
     try {
-        const r = await fetch(`/api/accounts/${authData.existing_account_id}/get-login-code`, { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        const r = await fetch(`/api/accounts/${accountId}/get-login-code`, { method: 'POST', headers: {'Content-Type': 'application/json'} });
         const data = await r.json();
         resultEl.classList.remove('d-none');
         if (data.success && data.code) {
@@ -517,49 +1522,6 @@ async function completeAuth() {
         }
     } catch (error) {
         alert('Failed to verify: ' + error);
-    }
-}
-
-async function checkAccounts() {
-    const btn = document.getElementById('btn-check-accounts');
-    const progress = document.getElementById('check-accounts-progress');
-    const resultsDiv = document.getElementById('check-accounts-results');
-    const tbody = document.getElementById('check-accounts-tbody');
-    const updateStatus = document.getElementById('check-update-status').checked;
-    const modalEl = document.getElementById('checkAccountsModal');
-    progress.classList.remove('d-none');
-    resultsDiv.classList.add('d-none');
-    tbody.innerHTML = '';
-    new bootstrap.Modal(modalEl).show();
-    btn.disabled = true;
-    try {
-        const r = await fetch('/api/accounts/check', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ update_status: updateStatus })
-        });
-        const data = await r.json();
-        progress.classList.add('d-none');
-        if (!data.success) {
-            alert('Check failed: ' + (data.error || r.statusText));
-            return;
-        }
-        const statusBadge = (s) => {
-            const c = { alive: 'success', deleted: 'danger', banned: 'danger', restricted: 'warning', frozen: 'warning', auth_required: 'warning', flood_wait: 'info', error: 'secondary' }[s] || 'secondary';
-            return `<span class="badge bg-${c}">${s}</span>`;
-        };
-        tbody.innerHTML = (data.results || []).map(r => {
-            const checked = r.checked_at ? new Date(r.checked_at).toLocaleString() : '-';
-            const reason = r.reason_code || '-';
-            return `<tr><td>${r.account_id}</td><td>${r.phone}</td><td>${statusBadge(r.status)}</td><td class="small">${reason}</td><td>${r.message || '-'}</td><td class="small text-muted">${checked}</td><td><button class="btn btn-sm btn-outline-danger" onclick="deleteAccountFromRow(${r.account_id}, this)" title="Remove this account from database"><i class="bi bi-trash"></i> Delete</button></td></tr>`;
-        }).join('');
-        resultsDiv.classList.remove('d-none');
-        if (updateStatus) loadAccounts();
-    } catch (e) {
-        progress.classList.add('d-none');
-        alert('Check failed: ' + e.message);
-    } finally {
-        btn.disabled = false;
     }
 }
 
@@ -650,58 +1612,28 @@ async function importTdataZip() {
     const btn = document.getElementById('btn-import-tdata');
     const origText = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Uploading and converting... (may take 1–2 min for many accounts)';
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Uploading and converting...';
     try {
         const form = new FormData();
         if (file) form.append('file', file);
         if (passcode) form.append('passcode', passcode);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
         const response = await fetch('/api/accounts/import-tdata', {
             method: 'POST',
-            body: form,
-            signal: controller.signal
+            body: form
         });
-        clearTimeout(timeoutId);
         const result = await response.json().catch(() => ({}));
-        if (result.success || (result.results && result.results.length > 0)) {
-            const total = result.total_discovered ?? result.total ?? 0;
-            const results = result.results || [];
-            if (results.length > 0) {
-                document.getElementById('import-results-summary').textContent =
-                    'Discovered ' + total + ' candidate(s). ' + (result.imported || 0) + ' imported, ' + (result.updated || 0) + ' updated, ' + (result.failed || 0) + ' failed.' + (result.success ? '' : ' Some imports failed.');
-                const tbody = document.getElementById('import-results-tbody');
-                tbody.innerHTML = '';
-                results.forEach(function(r) {
-                    const status = r.status === 'ok' ? '<span class="badge bg-success">OK</span>' : '<span class="badge bg-danger">FAILED</span>';
-                    const accountInfo = r.status === 'ok'
-                        ? (r.account_id ? '#' + r.account_id : '') + (r.phone_number ? ' ' + r.phone_number : '') + (r.username ? ' @' + r.username : '') + (r.first_name ? ' ' + r.first_name : '')
-                        : '—';
-                    const reason = r.status === 'ok' ? (r.message || '—') : (r.error || r.error_type || '—');
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + (r.index ?? '') + '</td><td>' + (r.source ?? '') + '</td><td>' + status + '</td><td class="text-break">' + accountInfo + '</td><td class="text-break small">' + (reason || '—') + '</td><td class="small text-muted">' + (r.timestamp || '') + '</td>';
-                    tbody.appendChild(tr);
-                });
-                const modal = new bootstrap.Modal(document.getElementById('importTdataResultsModal'));
-                document.getElementById('importTdataResultsModal').addEventListener('hidden.bs.modal', function onHide() {
-                    document.getElementById('importTdataResultsModal').removeEventListener('hidden.bs.modal', onHide);
-                    loadAccounts();
-                }, { once: true });
-                modal.show();
-                loadAccounts();
-            } else {
-                alert(result.message || 'Account imported from tdata!');
-                location.reload();
+        if (result.success) {
+            let msg = result.message || 'Account imported from tdata!';
+            if (result.failed > 0 && result.errors && result.errors.length > 0) {
+                msg += '\n\nFirst errors:\n' + result.errors.slice(0, 3).map(e => e.error || e).join('\n');
             }
+            alert(msg);
+            location.reload();
         } else {
             alert('Error: ' + (result.error || response.statusText || 'Import failed'));
         }
     } catch (error) {
-        if (error.name === 'AbortError') {
-            alert('Request timed out. The server may still be importing; refresh the page in a minute. For 10+ accounts, try importing in smaller batches.');
-        } else {
-            alert('Failed: ' + error.message);
-        }
+        alert('Failed: ' + error.message);
     } finally {
         btn.disabled = false;
         btn.innerHTML = origText;
@@ -719,187 +1651,6 @@ async function toggleAccount(id, currentStatus) {
         loadAccounts();
     } catch (error) {
         alert('Failed to update status: ' + error);
-    }
-}
-
-let setUsernameAccountId = null;
-function openSetUsernameModal(accountId, currentUsername) {
-    setUsernameAccountId = accountId;
-    document.getElementById('set-username-account-id').textContent = '#' + accountId;
-    document.getElementById('set-username-input').value = (currentUsername || '').replace(/^@/, '');
-    new bootstrap.Modal(document.getElementById('setUsernameModal')).show();
-}
-async function submitSetUsername() {
-    if (!setUsernameAccountId) return;
-    const username = document.getElementById('set-username-input').value.trim().replace(/^@/, '');
-    if (!username || username.length < 5) {
-        alert('Username must be 5–32 characters (without @).');
-        return;
-    }
-    const btn = document.getElementById('set-username-submit');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    try {
-        const r = await fetch('/api/accounts/' + setUsernameAccountId + '/set-username', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username })
-        });
-        const data = await r.json();
-        if (r.ok && data.success) {
-            bootstrap.Modal.getInstance(document.getElementById('setUsernameModal')).hide();
-            loadAccounts();
-            alert('Username set to @' + username);
-        } else {
-            alert(data.error || 'Failed to set username');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-check"></i> Set username';
-    }
-}
-
-let setProfilePhotoAccountId = null;
-function openSetProfilePhotoModal(accountId) {
-    setProfilePhotoAccountId = accountId;
-    document.getElementById('set-photo-account-id').textContent = '#' + accountId;
-    document.getElementById('set-profile-photo-input').value = '';
-    new bootstrap.Modal(document.getElementById('setProfilePhotoModal')).show();
-}
-async function submitSetProfilePhoto() {
-    if (!setProfilePhotoAccountId) return;
-    const input = document.getElementById('set-profile-photo-input');
-    if (!input.files || !input.files[0]) {
-        alert('Please choose an image file.');
-        return;
-    }
-    const btn = document.getElementById('set-profile-photo-submit');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    try {
-        const form = new FormData();
-        form.append('photo', input.files[0]);
-        const r = await fetch('/api/accounts/' + setProfilePhotoAccountId + '/set-profile-photo', {
-            method: 'POST',
-            body: form
-        });
-        const data = await r.json();
-        if (r.ok && data.success) {
-            bootstrap.Modal.getInstance(document.getElementById('setProfilePhotoModal')).hide();
-            loadAccounts();
-            alert('Profile photo updated.');
-        } else {
-            alert(data.error || 'Failed to set profile photo');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-upload"></i> Upload and set';
-    }
-}
-
-function openBulkSetUsernameModal() {
-    document.getElementById('bulk-username-prefix').value = '';
-    new bootstrap.Modal(document.getElementById('bulkSetUsernameModal')).show();
-}
-async function submitBulkSetUsername() {
-    const prefix = document.getElementById('bulk-username-prefix').value.trim().replace(/^@/, '');
-    if (!prefix || prefix.length < 2) {
-        alert('Enter a prefix (at least 2 characters). Example: mybrand → mybrand_1, mybrand_2, ...');
-        return;
-    }
-    const btn = document.getElementById('bulk-set-username-submit');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    try {
-        const r = await fetch('/api/accounts/bulk-set-username', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username_prefix: prefix })
-        });
-        const data = await r.json();
-        if (r.ok && data.success) {
-            bootstrap.Modal.getInstance(document.getElementById('bulkSetUsernameModal')).hide();
-            loadAccounts();
-            const results = data.results || [];
-            const names = results.slice(0, 5).map(x => '@' + x.username).join(', ');
-            const more = results.length > 5 ? ' ...' : '';
-            alert('Updated ' + (data.updated || 0) + ' of ' + (data.total || 0) + ' accounts.' + (names ? '\n' + names + more : ''));
-        } else {
-            alert(data.error || 'Failed');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-check"></i> Set for all accounts';
-    }
-}
-
-function openBulkSetProfilePhotoModal() {
-    document.getElementById('bulk-profile-photo-input').value = '';
-    new bootstrap.Modal(document.getElementById('bulkSetProfilePhotoModal')).show();
-}
-async function submitBulkSetProfilePhoto() {
-    const input = document.getElementById('bulk-profile-photo-input');
-    if (!input.files || !input.files[0]) {
-        alert('Please choose an image file.');
-        return;
-    }
-    const btn = document.getElementById('bulk-set-profile-photo-submit');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    try {
-        const form = new FormData();
-        form.append('photo', input.files[0]);
-        const r = await fetch('/api/accounts/bulk-set-profile-photo', { method: 'POST', body: form });
-        const data = await r.json();
-        if (r.ok && data.success) {
-            bootstrap.Modal.getInstance(document.getElementById('bulkSetProfilePhotoModal')).hide();
-            loadAccounts();
-            alert('Profile photo set for ' + (data.updated || 0) + ' of ' + (data.total || 0) + ' accounts.');
-        } else {
-            alert(data.error || 'Failed');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-upload"></i> Set for all accounts';
-    }
-}
-
-async function deleteAccount(id) {
-    if (!confirm('Delete account #' + id + ' from the database? This cannot be undone.')) return;
-    try {
-        const r = await fetch('/api/accounts/' + id, { method: 'DELETE' });
-        const data = await r.json();
-        if (r.ok && data.success) {
-            loadAccounts();
-        } else {
-            alert(data.error || 'Failed to delete account');
-        }
-    } catch (error) {
-        alert('Failed to delete: ' + error);
-    }
-}
-
-async function deleteAccountFromRow(id, btnEl) {
-    if (!confirm('Delete account #' + id + ' from the database? This cannot be undone.')) return;
-    try {
-        const r = await fetch('/api/accounts/' + id, { method: 'DELETE' });
-        const data = await r.json();
-        if (r.ok && data.success) {
-            if (btnEl && btnEl.closest('tr')) btnEl.closest('tr').remove();
-            loadAccounts();
-        } else {
-            alert(data.error || 'Failed to delete account');
-        }
-    } catch (error) {
-        alert('Failed to delete: ' + error);
     }
 }
 

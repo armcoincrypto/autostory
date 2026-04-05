@@ -20,10 +20,9 @@ from telethon.tl.types import (
     InputPrivacyValueAllowAll,
     InputPrivacyValueAllowContacts,
     InputPrivacyValueDisallowAll,
+    MessageEntityMentionName,
     DocumentAttributeVideo,
     User,
-    InputPeerSelf,
-    MessageEntityMention,
 )
 from telethon.errors import (
     FloodWaitError,
@@ -119,7 +118,7 @@ class StoryPublisher:
         account_id: int,
         media_path: str,
         caption: str = "",
-        mention_user_ids: List[Any] = None,  # Can be list of ints or list of dicts
+        mention_user_ids: List[int] = None,
         privacy: str = "public",  # public, contacts, private
         retry_count: int = 3,
     ) -> Dict[str, Any]:
@@ -130,7 +129,7 @@ class StoryPublisher:
             account_id: Account to publish from
             media_path: Path to photo or video file
             caption: Story caption text
-            mention_user_ids: List of user_ids (int) or dicts with user_id/username
+            mention_user_ids: List of user IDs to mention
             privacy: Story privacy setting
             retry_count: Number of retries on failure
 
@@ -142,7 +141,6 @@ class StoryPublisher:
             "account_id": account_id,
             "story_id": None,
             "mentions_added": 0,
-            "mentioned_user_ids": [],
             "error": None,
         }
 
@@ -198,51 +196,49 @@ class StoryPublisher:
                 else:
                     media = InputMediaUploadedPhoto(file=file)
 
-                # Build caption with @username mentions (plain text, no entities)
+                # Build caption with mentions
+                entities = []
                 final_caption = caption
-                mentioned_ids = []
 
                 if mention_user_ids:
-                    # Build @username mention list
-                    mention_usernames = []
+                    # Add mentions at the end of caption
+                    mention_text = "\n\n"
+                    offset = len(caption) + 2  # +2 for the newlines
 
-                    for user_data in mention_user_ids[:10]:  # Max 10 mentions per story
+                    for user_id in mention_user_ids[:10]:  # Max 10 mentions per story
                         try:
-                            # Handle both dict format and int format
-                            if isinstance(user_data, dict):
-                                user_id = user_data.get("user_id")
-                                username = user_data.get("username")
-                            else:
-                                # Legacy: just user_id, skip (can't mention without username)
-                                continue
+                            # Get user entity
+                            user_entity = await client.get_input_entity(user_id)
 
-                            if username:
-                                mention_usernames.append(f"@{username}")
-                                mentioned_ids.append(user_id)
-                                result["mentions_added"] += 1
-                                logger.info("Added mention", username=username, user_id=user_id)
+                            # Add invisible mention (zero-width space)
+                            mention_text += "\u200b"  # Zero-width space
+
+                            entities.append(MessageEntityMentionName(
+                                offset=offset,
+                                length=1,
+                                user_id=user_id
+                            ))
+
+                            offset += 1
+                            result["mentions_added"] += 1
 
                         except Exception as e:
-                            logger.warning("Failed to process mention", error=str(e))
+                            logger.warning(
+                                "Failed to add mention",
+                                user_id=user_id,
+                                error=str(e)
+                            )
 
-                    # Add mentions to caption as plain text
-                    if mention_usernames:
-                        mentions_text = " ".join(mention_usernames)
-                        if caption:
-                            final_caption = caption + "\n\n" + mentions_text
-                        else:
-                            final_caption = mentions_text
-
-                result["mentioned_user_ids"] = mentioned_ids
+                    final_caption = caption + mention_text
 
                 # Set privacy rules
                 privacy_rules = self._get_privacy_rules(privacy)
 
-                # Send story WITHOUT entities (entities require Premium)
+                # Send story
                 story_result = await client(SendStoryRequest(
-                    peer=InputPeerSelf(),
                     media=media,
                     caption=final_caption if final_caption else None,
+                    entities=entities if entities else None,
                     privacy_rules=privacy_rules,
                     pinned=False,
                     noforwards=False,
@@ -266,9 +262,9 @@ class StoryPublisher:
                 await self._save_story_record(
                     account_id=account_id,
                     story_id=story_id,
-                    caption=final_caption,
+                    caption=caption,
                     media_path=media_path,
-                    mentions=mentioned_ids,
+                    mentions=mention_user_ids[:result["mentions_added"]],
                 )
 
                 logger.info(
@@ -341,15 +337,21 @@ class StoryPublisher:
                 account = db.query(Account).filter(Account.id == account_id).first()
                 if account:
                     account.stories_today += 1
+                    account.total_stories_published += 1
                     account.last_active = datetime.utcnow()
 
-                # Determine media type from file extension
-                ext = Path(media_path).suffix.lower() if media_path else ""
-                is_video = ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']
-                media_type = "video" if is_video else "photo"
+                # Create story record
+                story = Story(
+                    account_id=account_id,
+                    story_id=story_id,
+                    caption=caption,
+                    media_path=media_path,
+                    mentions_count=len(mentions),
+                    published_at=datetime.utcnow(),
+                )
+                db.add(story)
 
-                # Get usernames for mentioned users
-                mentioned_usernames = []
+                # Update mentioned users
                 for user_id in mentions:
                     user = db.query(DiscoveredUser).filter(
                         DiscoveredUser.user_id == user_id
@@ -357,24 +359,8 @@ class StoryPublisher:
                     if user:
                         user.times_mentioned += 1
                         user.last_mentioned_at = datetime.utcnow()
-                        if user.username:
-                            mentioned_usernames.append(user.username)
-
-                # Create story record with correct fields
-                story = Story(
-                    account_id=account_id,
-                    story_id=story_id,
-                    caption=caption,
-                    media_path=media_path,
-                    media_type=media_type,
-                    mentioned_user_ids=mentions,
-                    mentioned_usernames=mentioned_usernames,
-                    published_at=datetime.utcnow(),
-                )
-                db.add(story)
 
                 db.commit()
-                logger.info("Story record saved", story_id=story_id, mentions_count=len(mentions))
 
         except Exception as e:
             logger.error("Failed to save story record", error=str(e))
@@ -410,19 +396,18 @@ class StoryPublisher:
 
         return None
 
-    async def get_users_for_mention(self, count: int = 5) -> List[Dict[str, Any]]:
-        """Get users suitable for mentioning (with usernames)"""
+    async def get_users_for_mention(self, count: int = 5) -> List[int]:
+        """Get user IDs suitable for mentioning"""
         with get_db_context() as db:
             users = db.query(DiscoveredUser).filter(
                 DiscoveredUser.is_blocked == False,
                 DiscoveredUser.times_mentioned == 0,
-                DiscoveredUser.username.isnot(None),  # Only users with usernames
+                DiscoveredUser.username.isnot(None),  # Prefer users with usernames
             ).order_by(
                 DiscoveredUser.discovered_at.desc()
             ).limit(count).all()
 
-            # Return both user_id and username for mention
-            return [{"user_id": u.user_id, "username": u.username} for u in users]
+            return [u.user_id for u in users]
 
     async def publish_with_auto_mentions(
         self,

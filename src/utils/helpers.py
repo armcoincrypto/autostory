@@ -4,21 +4,12 @@ Utility Helper Functions
 import re
 import os
 import hashlib
-import secrets
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 import structlog
 
 logger = structlog.get_logger(__name__)
-
-# Import secure crypto utils
-try:
-    from src.security.crypto_utils import SecureCrypto
-    USE_SECURE_CRYPTO = True
-except ImportError:
-    USE_SECURE_CRYPTO = False
-    logger.warning("SecureCrypto not available, using fallback")
 
 
 def format_phone(phone: str) -> str:
@@ -82,26 +73,28 @@ def validate_media(file_path: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def utc_now() -> datetime:
+    """Timezone-aware UTC now. Replaces deprecated datetime.utcnow(). Returns naive UTC for DB compatibility."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def utc_from_timestamp(ts: float) -> datetime:
+    """Timezone-aware UTC from timestamp. Replaces deprecated datetime.utcfromtimestamp()."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+
+
 def generate_session_name(phone: str) -> str:
     """
     Generate a unique session name from phone number
-
-    SECURITY FIX: Uses SHA-256 with cryptographic salt instead of MD5
 
     Args:
         phone: Phone number
 
     Returns:
-        Secure hashed session name
+        Hashed session name
     """
-    if USE_SECURE_CRYPTO:
-        return SecureCrypto.generate_session_name(phone)
-
-    # Fallback to SHA-256 if secure crypto module not available
-    salt = secrets.token_hex(16)
-    timestamp = str(int(datetime.utcnow().timestamp() * 1000000))
-    hash_input = f"{phone}_{salt}_{timestamp}"
-    return hashlib.sha256(hash_input.encode()).hexdigest()[:20]
+    hash_input = f"{phone}_{utc_now().timestamp()}"
+    return hashlib.md5(hash_input.encode()).hexdigest()[:12]
 
 
 def chunk_list(lst: List, chunk_size: int) -> List[List]:
@@ -196,7 +189,7 @@ def time_ago(dt: datetime) -> str:
     Returns:
         Human-readable string
     """
-    now = datetime.utcnow()
+    now = utc_now()
     diff = now - dt
 
     seconds = diff.total_seconds()

@@ -250,6 +250,18 @@ function showToast(msg, type = 'success') {
 
 function esc(s) { return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+function normalizeSchedulerError(msg) {
+    if (!msg) return 'Send failed';
+    const s = String(msg).toLowerCase();
+    if (s.includes('no session') || s.includes('noclient') || s.includes('re-add') || s.includes('re-import')) return msg;
+    if (s.includes('invalid target') || s.includes('invalid username')) return 'Invalid target username. Use invite link (t.me/+xxx) for private groups.';
+    if (s.includes('invite') && s.includes('expired')) return 'Invite link has expired. Update target with a new link.';
+    if (s.includes('cannot find') || s.includes('entity')) return 'Target inaccessible. Update target with valid username or invite link.';
+    if (s.includes('username') && (s.includes('invalid') || s.includes('not occupied'))) return 'Invalid target username. Use invite link (t.me/+xxx) for private groups.';
+    if (msg.length > 120) return msg.slice(0, 117) + '...';
+    return msg;
+}
+
 let accounts = [], targets = [];
 let loadedDialogs = [];
 let currentUserBoundTargetIds = new Set();
@@ -339,16 +351,23 @@ function formatTargetShort(t) {
     return 'Group #' + t.id;
 }
 
+function isValidTarget(t) {
+    return !!(t && (t.tg_id || (t.username && String(t.username).trim()) || (t.invite_link && String(t.invite_link).trim())));
+}
+
 // ============ Simple Daily Mode ============
 async function loadAccounts() {
     let data = [];
     try {
-        data = await apiFetch('/api/accounts?purpose=messaging');
-    } catch (_) {}
+        data = await apiFetch('/api/accounts?purpose=messaging&limit=500');
+        data = Array.isArray(data) ? data : (data.accounts || []);
+    } catch (e) {
+        showToast(e.message || 'Could not load accounts', 'error');
+    }
     if (!Array.isArray(data) || data.length === 0) {
         try {
-            const all = await apiFetch('/api/accounts');
-            data = Array.isArray(all) ? all : [];
+            const all = await apiFetch('/api/accounts?limit=500');
+            data = Array.isArray(all) ? all : (all.accounts || []);
         } catch (_) {
             data = [];
         }
@@ -368,7 +387,11 @@ async function loadAccounts() {
             }
         } catch (_) {}
     }
-    accounts = Array.isArray(data) ? data : [];
+    let rawAccounts = Array.isArray(data) ? data : [];
+    accounts = rawAccounts.filter(a => a.has_session === true);
+    if (accounts.length === 0 && rawAccounts.length > 0) {
+        accounts = rawAccounts;
+    }
     try {
         const opts = accounts.map(a => {
             const label = a._fromBindings ? ('Account #' + a.id) : (esc(a.phone_number || '') + (a.username ? ' @'+a.username : '')).trim() || ('Account #' + a.id);
@@ -384,7 +407,12 @@ async function loadAccounts() {
         });
         const noAcc = document.getElementById('simple-no-account');
         const form = document.getElementById('simple-form');
-        if (noAcc) noAcc.classList.toggle('d-none', accounts.length > 0);
+        if (noAcc) {
+            noAcc.classList.toggle('d-none', accounts.length > 0);
+            noAcc.innerHTML = rawAccounts.length > 0 && accounts.length === 0
+                ? '<i class="bi bi-exclamation-triangle"></i> No messaging accounts have a valid session. Re-add or re-import in <a href="/accounts">Accounts</a>.'
+                : '<i class="bi bi-info-circle"></i> Select a user (messaging account) to configure.';
+        }
         if (form) form.classList.toggle('d-none', false);
     } catch (e) {
         console.error('loadAccounts render', e);
@@ -416,7 +444,7 @@ function renderSimpleTargets(filter) {
     const q = (filter || '').toLowerCase().trim();
     let list = targets.filter(t => !q || formatTargetLabel(t).toLowerCase().includes(q));
     const missingIds = [...bound].filter(id => !targets.some(t => t.id === id));
-    missingIds.forEach(id => list.push({ id, title: 'Group #' + id, invite_link: null, username: null, chat_type: 'group' }));
+    missingIds.forEach(id => list.push({ id, title: 'Group #' + id, invite_link: null, username: null, chat_type: 'group', _invalid: true }));
     if (targets.length === 0 && missingIds.length === 0) {
         listEl.innerHTML = '';
         if (emptyEl) { emptyEl.classList.remove('d-none'); emptyEl.textContent = 'No groups yet. Use &quot;Load my Telegram groups&quot; to add.'; }
@@ -425,13 +453,21 @@ function renderSimpleTargets(filter) {
         if (emptyEl) { emptyEl.classList.remove('d-none'); emptyEl.textContent = 'No groups match the search.'; }
     } else {
         if (emptyEl) emptyEl.classList.add('d-none');
-        listEl.innerHTML = list.map(t => `
-            <div class="form-check">
-                <input class="form-check-input simple-target-cb" type="checkbox" value="${t.id}" id="st-${t.id}" ${bound.has(t.id) ? 'checked' : ''}>
-                <label class="form-check-label" for="st-${t.id}">${esc(formatTargetLabel(t))}</label>
-            </div>
-        `).join('');
+        listEl.innerHTML = list.map(t => {
+            const valid = isValidTarget(t) && !t._invalid;
+            const invalidBadge = valid ? '' : ' <span class="badge bg-warning text-dark" title="Add tg_id, username, or invite link">Invalid</span>';
+            return `<div class="form-check" data-target-valid="${valid ? '1' : '0'}">
+                <input class="form-check-input simple-target-cb" type="checkbox" value="${t.id}" data-valid="${valid ? '1' : '0'}" id="st-${t.id}" ${bound.has(t.id) ? 'checked' : ''}>
+                <label class="form-check-label" for="st-${t.id}">${esc(formatTargetLabel(t))}${invalidBadge}</label>
+            </div>`;
+        }).join('');
     }
+}
+
+function getValidSelectedTargetIds() {
+    const targetMap = Object.fromEntries(targets.map(t => [t.id, t]));
+    const checked = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
+    return checked.filter(id => isValidTarget(targetMap[id]));
 }
 
 async function loadSimpleState(accountId) {
@@ -509,7 +545,7 @@ async function loadSimpleState(accountId) {
 
 function updateSimpleSummary() {
     const accountId = document.getElementById('simple-account')?.value;
-    const selected = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
+    const selected = getValidSelectedTargetIds();
     const mpEl = document.getElementById('simple-msgs-per-group');
     const msgs = (mpEl ? parseInt(mpEl.value) : 1) || 1;
     const acc = accounts.find(a => a.id == accountId);
@@ -550,9 +586,11 @@ async function simpleSave(e) {
     const sendModeAuto = document.getElementById('simple-mode-auto').checked;
 
     if (!accountId) { showToast('Select account', 'error'); return; }
+    const acc = accounts.find(a => a.id == accountId);
+    if (acc && acc.has_session !== true) { showToast('Account has no valid session. Re-add or re-import in Accounts.', 'error'); return; }
     if (!body) { showToast('Enter message text', 'error'); return; }
-    const selected = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
-    if (selected.length === 0) { showToast('Select at least one target group', 'error'); return; }
+    const selected = getValidSelectedTargetIds();
+    if (selected.length === 0) { showToast('Select at least one valid target. Add tg_id, username, or invite link to targets.', 'error'); return; }
     const messagesPerDay = parseInt(document.getElementById('simple-msgs-per-group').value) || 1;
     if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) {
         showToast('Invalid time format. Use HH:MM', 'error'); return;
@@ -621,15 +659,14 @@ async function disableAutoSend() {
 
 async function simpleTestNow() {
     const accountId = document.getElementById('simple-account').value;
-    const selected = [...document.querySelectorAll('.simple-target-cb:checked')].map(cb => parseInt(cb.value));
+    const selected = getValidSelectedTargetIds();
     const body = document.getElementById('simple-body').value.trim();
     const messagesPerDay = parseInt(document.getElementById('simple-msgs-per-group').value) || 1;
-    if (!accountId || selected.length === 0) {
-        showToast('Select account and at least one target.', 'error'); return;
-    }
-    if (!body) {
-        showToast('Enter message text.', 'error'); return;
-    }
+    if (!accountId) { showToast('Select account.', 'error'); return; }
+    const acc = accounts.find(a => a.id == accountId);
+    if (acc && acc.has_session !== true) { showToast('Account has no valid session. Re-add or re-import in Accounts.', 'error'); return; }
+    if (selected.length === 0) { showToast('Select at least one valid target. Add tg_id, username, or invite link to targets.', 'error'); return; }
+    if (!body) { showToast('Enter message text.', 'error'); return; }
     const btn = document.getElementById('simple-test-now');
     btn.disabled = true;
     try {
@@ -647,7 +684,7 @@ async function simpleTestNow() {
         } catch (e) {
             err++;
             const msg = (e.response && e.response.error) ? e.response.error : e.message;
-            showToast(msg, 'error');
+            showToast(normalizeSchedulerError(msg), 'error');
         }
     }
     if (ok && !err) {
@@ -823,8 +860,8 @@ async function fillBindingModal() {
     accVal.value = ''; tgtVal.value = ''; accBtn.textContent = 'Select account'; tgtBtn.textContent = 'Select target';
     if (accFilter) accFilter.value = ''; if (tgtFilter) tgtFilter.value = '';
     try {
-        const [accData, tgtData] = await Promise.all([apiFetch('/api/accounts'), apiFetch(API + '/targets')]);
-        accounts = Array.isArray(accData) ? accData : []; targets = Array.isArray(tgtData) ? tgtData : [];
+        const [accData, tgtData] = await Promise.all([apiFetch('/api/accounts?limit=500'), apiFetch(API + '/targets')]);
+        accounts = Array.isArray(accData) ? accData : (accData.accounts || []); targets = Array.isArray(tgtData) ? tgtData : [];
     } catch (e) { showToast('Could not load data', 'error'); return; }
     function rAcc(f) { const q = (f||'').toLowerCase(); const list = accounts.filter(a => !q || String((a.phone_number||'')+(a.username?' @'+a.username:'')).toLowerCase().includes(q)); accOpts.innerHTML = list.length ? list.map(a => { const l = esc((a.phone_number||'')+(a.username?' @'+a.username:'')||'Account #'+a.id); return `<a class="dropdown-item text-light" href="#" data-id="${a.id}" data-label="${l}">${l}</a>`; }).join('') : '<div class="dropdown-item-text text-muted">No matches</div>'; accOpts.querySelectorAll('.dropdown-item').forEach(el => el.addEventListener('click', e => { e.preventDefault(); accVal.value = el.dataset.id; accBtn.textContent = el.dataset.label; bootstrap.Dropdown.getInstance(accBtn)?.hide(); })); }
     function rTgt(f) { const q = (f||'').toLowerCase(); const list = targets.filter(t => !q || formatTargetLabel(t).toLowerCase().includes(q)); tgtOpts.innerHTML = list.length ? list.map(t => { const l = esc(formatTargetLabel(t)); return `<a class="dropdown-item text-light" href="#" data-id="${t.id}" data-label="${l}">${l}</a>`; }).join('') : '<div class="dropdown-item-text text-muted">No matches</div>'; tgtOpts.querySelectorAll('.dropdown-item').forEach(el => el.addEventListener('click', e => { e.preventDefault(); tgtVal.value = el.dataset.id; tgtBtn.textContent = el.dataset.label; bootstrap.Dropdown.getInstance(tgtBtn)?.hide(); })); }

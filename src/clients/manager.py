@@ -32,6 +32,7 @@ import structlog
 from config.settings import settings
 from src.core.models import Account, AccountStatus
 from src.core.database import get_db_context
+from src.core.session_paths import get_canonical_session_path
 from .rate_limiter import RateLimiter
 
 logger = structlog.get_logger(__name__)
@@ -49,6 +50,42 @@ def _mask_phone(phone: Optional[str], account_id: int) -> str:
     if len(digits) < 4:
         return f"#{account_id}"
     return f"+{digits[:3]}*****{digits[-3:]}" if len(digits) >= 6 else f"#{account_id}"
+
+
+
+def _existing_session_source_for_healthcheck(account) -> tuple[object | None, str | None]:
+    """
+    Prefer real on-disk sessions used by production.
+    Fallback to session_path, then Telethon StringSession when valid.
+    Returns: (session_source, source_kind)
+    """
+    account_id = getattr(account, "id", None)
+
+    try:
+        if account_id is not None:
+            canonical = get_canonical_session_path(int(account_id))
+            if canonical.is_file():
+                return str(canonical), "canonical_file"
+    except Exception:
+        pass
+
+    session_path = getattr(account, "session_path", None)
+    if isinstance(session_path, str) and session_path.strip():
+        try:
+            sp = Path(session_path).expanduser()
+            if sp.is_file():
+                return str(sp), "session_path_file"
+        except Exception:
+            pass
+
+    session_string = getattr(account, "session_string", None)
+    if isinstance(session_string, str) and session_string.strip():
+        try:
+            return StringSession(session_string.strip()), "string_session"
+        except Exception:
+            return None, None
+
+    return None, None
 
 
 class TelegramClientWrapper:
@@ -221,6 +258,79 @@ class ClientManager:
                 return None
         return wrapper
 
+    async def get_fresh_client_for_story_publish(
+        self, account_id: int
+    ) -> tuple[Optional[TelegramClientWrapper], Optional[str]]:
+        """
+        Dedicated Telethon client for story precheck/publish, not pooled in _clients.
+        Uses the same session resolution as check_accounts_health (canonical file,
+        session_path file, valid session_string).
+
+        Returns:
+            (wrapper, None) on success — wrapper._precheck_disconnect_after is True;
+            routes disconnect in finally after precheck.
+            (None, reason_code) on failure — short machine-friendly reason, no secrets.
+        """
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return None, "account_not_found"
+
+        session_source, source_kind = _existing_session_source_for_healthcheck(account)
+        if session_source is None:
+            return None, "no_usable_session"
+
+        try:
+            client = TelegramClient(
+                session_source,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+                proxy=account.proxy_config if account.proxy_config else None,
+                device_model="STORYFLEET",
+                app_version="1.0.0",
+                system_version="Linux",
+                lang_code="en",
+            )
+        except Exception as e:
+            logger.warning(
+                "story_publish_client_build_failed",
+                account_id=account_id,
+                source_kind=source_kind,
+                error=str(e),
+            )
+            return None, "client_build_failed"
+
+        wrapper = TelegramClientWrapper(account, client, self._rate_limiter)
+        wrapper._precheck_disconnect_after = True
+
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                return None, "not_authorized"
+        except Exception as e:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            logger.warning(
+                "story_publish_client_connect_failed",
+                account_id=account_id,
+                source_kind=source_kind,
+                error=str(e),
+            )
+            return None, "connect_failed"
+
+        logger.info(
+            "story_publish_client_ready",
+            account_id=account_id,
+            session_source_kind=source_kind,
+        )
+        return wrapper, None
+
     async def get_dialogs(self, account_id: int, limit: int = 200) -> List[Dict[str, Any]]:
         """Fetch groups/channels the account is in. Returns list of {id, title, username, chat_type}."""
         with get_db_context() as db:
@@ -353,11 +463,40 @@ class ClientManager:
 
         return status
 
+    def healthcheck_eligible_account_ids(
+        self,
+        account_ids_filter: Optional[List[int]] = None,
+    ) -> List[int]:
+        """
+        Account IDs that have a usable session source for general Telegram healthcheck
+        (canonical file, session_path file, or valid session_string — same as check_accounts_health).
+
+        Used by background fleet jobs to skip accounts that would only produce no_session rows.
+        Optional account_ids_filter: if provided (non-empty), restrict to these IDs; if [],
+        returns []. If None, evaluate all accounts in DB.
+        """
+        with get_db_context() as db:
+            q = db.query(Account)
+            if account_ids_filter is not None:
+                if not account_ids_filter:
+                    return []
+                q = q.filter(Account.id.in_(account_ids_filter))
+            accounts = q.order_by(Account.id).all()
+
+        eligible: List[int] = []
+        for account in accounts:
+            session_source, _ = _existing_session_source_for_healthcheck(account)
+            if session_source is not None:
+                eligible.append(account.id)
+        return eligible
+
     async def check_accounts_health(
         self,
         update_status: bool = False,
         account_ids: Optional[List[int]] = None,
         verbose: bool = False,
+        persist: bool = True,
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Check accounts: connect + multiple API calls to detect deleted/banned/auth.
@@ -371,18 +510,29 @@ class ClientManager:
           - flood_wait: FloodWaitError
           - alive: only if ALL of (get_dialogs(1), get_me(), GetFullUser, GetAccountTTL) succeed and no bad flags
         """
-        from telethon import TelegramClient
-        from telethon.sessions import StringSession
-
         results: List[Dict[str, Any]] = []
         with get_db_context() as db:
-            q = db.query(Account).filter(Account.session_string.isnot(None))
+            q = db.query(Account)
             if account_ids is not None:
                 q = q.filter(Account.id.in_(account_ids))
             accounts = q.all()
-            account_list = [(a.id, a.phone_number, a.session_string, a.status, getattr(a, "username", None)) for a in accounts]
 
-        for account_id, phone, session_string, _status, username in account_list:
+        total_accounts = len(accounts)
+        progress_callback = kwargs.get("progress_callback")
+        local_checked = 0
+
+        def _append_result(row: Dict[str, Any]) -> None:
+            nonlocal local_checked
+            results.append(row)
+            local_checked += 1
+            if callable(progress_callback):
+                progress_callback(local_checked, total_accounts, row)
+
+        for account in accounts:
+            account_id = account.id
+            phone = getattr(account, "phone_number", None)
+            username = getattr(account, "username", None)
+            _status = getattr(account, "status", None)
             masked = _mask_phone(phone, account_id)
             checked_at = datetime.now(timezone.utc).isoformat()
 
@@ -395,12 +545,14 @@ class ClientManager:
                     checked_at=checked_at,
                 )
 
-            if not session_string or not session_string.strip():
-                results.append({
+            session_source, session_source_kind = _existing_session_source_for_healthcheck(account)
+            if session_source is None:
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
+                    "username": username,
                     "status": "error",
-                    "message": "No session",
+                    "message": "No usable session",
                     "reason_code": "no_session",
                     "checked_at": checked_at,
                 })
@@ -411,8 +563,15 @@ class ClientManager:
                             acc.status = AccountStatus.AUTH_REQUIRED
                 continue
 
+            if verbose:
+                logger.info(
+                    "alive_check_session_source",
+                    account_id=account_id,
+                    source=session_source_kind,
+                )
+
             client = TelegramClient(
-                StringSession(session_string.strip()),
+                session_source,
                 settings.telegram.api_id,
                 settings.telegram.api_hash,
             )
@@ -426,7 +585,7 @@ class ClientManager:
                 if not await client.is_user_authorized():
                     if verbose:
                         logger.info("alive_check_step", account_id=account_id, step="is_user_authorized", result="not_authorized")
-                    results.append({
+                    _append_result({
                         "account_id": account_id,
                         "phone": phone or f"#{account_id}",
                         "status": "auth_required",
@@ -471,7 +630,7 @@ class ClientManager:
 
                 if getattr(me, "deleted", False):
                     await client.disconnect()
-                    results.append({
+                    _append_result({
                         "account_id": account_id,
                         "phone": phone or f"#{account_id}",
                         "status": "deleted",
@@ -488,7 +647,7 @@ class ClientManager:
                     continue
                 if getattr(me, "restricted", False):
                     await client.disconnect()
-                    results.append({
+                    _append_result({
                         "account_id": account_id,
                         "phone": phone or f"#{account_id}",
                         "status": "restricted",
@@ -522,7 +681,7 @@ class ClientManager:
                 await client.disconnect()
 
                 # Only mark ALIVE when all checks passed
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "alive",
@@ -549,7 +708,7 @@ class ClientManager:
                         message=str(e),
                         seconds=getattr(e, "seconds", None),
                     )
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "flood_wait",
@@ -566,7 +725,7 @@ class ClientManager:
                 await client.disconnect()
                 if verbose:
                     logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "banned",
@@ -583,7 +742,7 @@ class ClientManager:
                 await client.disconnect()
                 if verbose:
                     logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "deleted",
@@ -603,7 +762,7 @@ class ClientManager:
                     pass
                 if verbose:
                     logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "restricted",
@@ -623,7 +782,7 @@ class ClientManager:
                     pass
                 if verbose:
                     logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "auth_required",
@@ -653,7 +812,7 @@ class ClientManager:
                     status, message, reason_code = "error", str(e), f"RPCError_{code}"
                 if verbose:
                     logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, code=code, message=str(e))
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": status,
@@ -673,7 +832,7 @@ class ClientManager:
                     pass
                 if verbose:
                     logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
-                results.append({
+                _append_result({
                     "account_id": account_id,
                     "phone": phone or f"#{account_id}",
                     "status": "error",

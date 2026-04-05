@@ -49,28 +49,20 @@
 <!-- Filters -->
 <div class="card mb-4">
     <div class="card-body">
-        <div class="row g-2">
-            <div class="col-md-3">
-                <label class="form-label small text-muted">Mentioned</label>
+        <div class="row">
+            <div class="col-md-4">
                 <select class="form-select" id="filter-mentioned" onchange="loadUsers()">
                     <option value="">All Users</option>
                     <option value="false">Not Mentioned</option>
                     <option value="true">Already Mentioned</option>
                 </select>
             </div>
-            <div class="col-md-3">
-                <label class="form-label small text-muted">Source group</label>
-                <select class="form-select" id="filter-source" onchange="loadUsers()">
-                    <option value="">All sources</option>
-                </select>
-            </div>
             <div class="col-md-4">
-                <label class="form-label small text-muted">Search</label>
                 <input type="text" class="form-control" id="filter-search" placeholder="Search username..." onkeyup="loadUsers()">
             </div>
-            <div class="col-md-2 d-flex align-items-end">
+            <div class="col-md-4">
                 <button class="btn btn-outline-primary w-100" onclick="loadUsers()">
-                    <i class="bi bi-funnel"></i> Apply
+                    <i class="bi bi-funnel"></i> Apply Filters
                 </button>
             </div>
         </div>
@@ -90,7 +82,7 @@
                     <th>User ID</th>
                     <th>Username</th>
                     <th>Name</th>
-                    <th>Source group</th>
+                    <th>Source</th>
                     <th>Times Mentioned</th>
                     <th>Discovered</th>
                 </tr>
@@ -164,31 +156,12 @@ async function loadStats() {
         document.getElementById('stat-unmentioned').textContent = stats.unmentioned;
         document.getElementById('stat-recent').textContent = stats.discovered_this_week;
 
-        // Update chart (by group username)
+        // Update chart
         if (stats.top_sources && stats.top_sources.length > 0) {
             updateSourcesChart(stats.top_sources);
         }
     } catch (error) {
         console.error('Failed to load stats:', error);
-    }
-}
-
-async function loadSources() {
-    try {
-        const response = await fetch('/api/discovery/sources');
-        const sources = await response.json();
-        const sourceSelect = document.getElementById('filter-source');
-        const firstOption = sourceSelect.options[0];
-        sourceSelect.innerHTML = '';
-        sourceSelect.appendChild(firstOption);
-        sources.forEach(s => {
-            const opt = document.createElement('option');
-            opt.value = s.username || '';
-            opt.textContent = s.username ? `@${s.username} — ${s.count} users` : (s.title || '-');
-            sourceSelect.appendChild(opt);
-        });
-    } catch (e) {
-        console.error('Failed to load sources', e);
     }
 }
 
@@ -202,7 +175,7 @@ function updateSourcesChart(sources) {
     sourcesChart = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: sources.map(s => (s.username ? '@' + s.username : s.chat)),
+            labels: sources.map(s => s.chat),
             datasets: [{
                 label: 'Users Discovered',
                 data: sources.map(s => s.count),
@@ -225,14 +198,10 @@ function updateSourcesChart(sources) {
 async function loadUsers(page = 1) {
     currentPage = page;
     const mentioned = document.getElementById('filter-mentioned').value;
-    const sourceUsername = document.getElementById('filter-source').value;
 
     try {
         let url = `/api/discovery/users?page=${page}&per_page=50`;
         if (mentioned) url += `&mentioned=${mentioned}`;
-        if (sourceUsername) url += `&source_username=${encodeURIComponent(sourceUsername)}`;
-        const search = document.getElementById('filter-search').value.trim();
-        if (search) url += `&search=${encodeURIComponent(search)}`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -250,7 +219,7 @@ async function loadUsers(page = 1) {
                 <td>${u.user_id}</td>
                 <td>${u.username ? '@' + u.username : '-'}</td>
                 <td>${u.first_name || '-'}</td>
-                <td>${u.source_username ? '@' + u.source_username : (u.source || '-')}</td>
+                <td>${u.source || '-'}</td>
                 <td>${u.times_mentioned}</td>
                 <td>${new Date(u.discovered_at).toLocaleDateString()}</td>
             </tr>
@@ -300,13 +269,11 @@ async function startScan() {
         document.getElementById('scan-progress').style.display = 'none';
 
         if (result.success) {
-            const processed = result.groups_scanned ?? result.channels_processed ?? 0;
-            const newUsers = result.total_new_users ?? 0;
-            alert(`Scan complete!\nChannels processed: ${processed}\nNew users saved: ${newUsers}`);
+            alert(`Scan complete!\nChannels processed: ${result.channels_processed}\nNew users: ${result.total_new_users}`);
             loadStats();
             loadUsers();
         } else {
-            alert('Scan failed: ' + (result.error || result.errors?.join(', ') || 'Unknown error'));
+            alert('Scan failed: ' + (result.errors?.join(', ') || 'Unknown error'));
         }
     } catch (error) {
         document.getElementById('scan-progress').style.display = 'none';
@@ -316,7 +283,6 @@ async function startScan() {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadStats();
-    loadSources();
     loadUsers();
 });
 </script>

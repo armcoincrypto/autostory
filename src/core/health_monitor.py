@@ -11,11 +11,12 @@ from telethon import TelegramClient
 from telethon.errors import (
     AuthKeyUnregisteredError,
     UserDeactivatedBanError,
-    UserDeactivatedError,
     SessionRevokedError,
 )
 import structlog
 
+import sys
+sys.path.insert(0, '/home/user/autostory')
 from config.settings import settings
 from src.core.models import Account, AccountStatus
 from src.core.database import get_db_context
@@ -170,13 +171,6 @@ class HealthMonitor:
                 result["action"] = "Account disabled, remove from system"
                 result["level"] = AlertLevel.CRITICAL
                 await self._mark_account_status(account.id, AccountStatus.BANNED)
-                return result
-            except UserDeactivatedError:
-                result["healthy"] = False
-                result["issue"] = "Account deleted or deactivated"
-                result["action"] = "Remove from system or re-login if recovered"
-                result["level"] = AlertLevel.CRITICAL
-                await self._mark_account_status(account.id, AccountStatus.AUTH_REQUIRED)
                 return result
             except SessionRevokedError:
                 result["healthy"] = False

@@ -78,6 +78,27 @@ class TestRateLimiter:
         assert status["error_count"] == 0
         assert status["is_blocked"] == False
 
+    def test_rate_limiter_rebinds_lock_across_sequential_run_calls(self, rate_limiter):
+        """Flask run_async creates a new loop per request; shared limiter must not raise on asyncio.Lock."""
+        async def tick(aid: int):
+            await rate_limiter.wait(aid)
+
+        asyncio.run(tick(42))
+        asyncio.run(tick(42))
+        assert rate_limiter.get_status(42)["action_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_wait_for_healthcheck_skips_long_inter_action_delay(self, rate_limiter):
+        """Health path should not add multi-second story-style delays between connect/auth/get_me steps."""
+        import time
+
+        t0 = time.monotonic()
+        await rate_limiter.wait(77, for_healthcheck=True)
+        await rate_limiter.wait(77, for_healthcheck=True)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0
+        assert rate_limiter.get_status(77)["action_count"] == 2
+
 
 class TestAntiDetection:
     """Tests for AntiDetection class"""

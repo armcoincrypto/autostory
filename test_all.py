@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
 STORYFLEET Test Suite
-Run this BEFORE deploying to VPS to verify everything works
+Run this BEFORE deploying to VPS to verify everything works.
+Can be run as: python test_all.py  OR  pytest test_all.py -v
 """
 import asyncio
 import sys
 import os
 
+import pytest
+
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.abspath(__file__))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from datetime import datetime
 
@@ -37,6 +42,7 @@ def info(msg):
     print(f"{Colors.BLUE}ℹ️  {msg}{Colors.RESET}")
 
 
+@pytest.mark.asyncio
 async def test_database():
     """Test database connection and tables"""
     print("\n📊 Testing Database...")
@@ -75,6 +81,7 @@ async def test_database():
         return False
 
 
+@pytest.mark.asyncio
 async def test_redis():
     """Test Redis connection"""
     print("\n🔴 Testing Redis...")
@@ -104,6 +111,8 @@ async def test_redis():
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_telegram_config():
     """Test Telegram configuration"""
     print("\n📱 Testing Telegram Config...")
@@ -141,6 +150,8 @@ async def test_telegram_config():
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_session_manager():
     """Test session manager"""
     print("\n🔐 Testing Session Manager...")
@@ -166,6 +177,8 @@ async def test_session_manager():
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_scanner():
     """Test group scanner module"""
     print("\n🔍 Testing Scanner...")
@@ -191,6 +204,8 @@ async def test_scanner():
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_story_publisher():
     """Test story publisher module"""
     print("\n📤 Testing Story Publisher...")
@@ -222,6 +237,8 @@ async def test_story_publisher():
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_bot_handlers():
     """Test bot can be imported"""
     print("\n🤖 Testing Bot...")
@@ -242,6 +259,8 @@ async def test_bot_handlers():
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_health_monitor():
     """Test health monitor"""
     print("\n💓 Testing Health Monitor...")

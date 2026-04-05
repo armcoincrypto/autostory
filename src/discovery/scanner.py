@@ -29,10 +29,7 @@ from telethon.errors import (
 import structlog
 
 import sys
-from pathlib import Path
-_project_root = Path(__file__).resolve().parents[2]
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
+sys.path.insert(0, '/home/user/autostory')
 from config.settings import settings
 from src.core.models import DiscoveredUser, Account, AccountStatus
 from src.core.database import get_db_context
@@ -243,7 +240,6 @@ class GroupMessageScanner:
                     continue
 
                 # Create discovered user record
-                source_username = (group_username or "").strip().lstrip("@").split("/")[-1].split("?")[0] or None
                 discovered = DiscoveredUser(
                     user_id=user.id,
                     username=user.username,
@@ -251,7 +247,6 @@ class GroupMessageScanner:
                     last_name=user.last_name,
                     source_chat_id=group_id,
                     source_chat_title=group_title,
-                    source_chat_username=source_username,
                     discovered_at=datetime.utcnow(),
                 )
                 new_users.append(discovered)
@@ -428,20 +423,14 @@ class UserDiscovery:
                 DiscoveredUser.discovered_at >= week_ago
             ).count()
 
-            # Top sources (by group username for filtering, with title for display)
+            # Top sources
             from sqlalchemy import func
             sources = db.query(
-                DiscoveredUser.source_chat_username,
                 DiscoveredUser.source_chat_title,
                 func.count(DiscoveredUser.id)
-            ).filter(
-                DiscoveredUser.source_chat_username.isnot(None)
-            ).group_by(
-                DiscoveredUser.source_chat_username,
-                DiscoveredUser.source_chat_title
-            ).order_by(
+            ).group_by(DiscoveredUser.source_chat_title).order_by(
                 func.count(DiscoveredUser.id).desc()
-            ).limit(20).all()
+            ).limit(10).all()
 
         return {
             "total_discovered": total,
@@ -449,10 +438,7 @@ class UserDiscovery:
             "mentioned": mentioned,
             "unmentioned": unmentioned,
             "discovered_this_week": recent,
-            "top_sources": [
-                {"username": s[0], "chat": s[1] or s[0], "count": s[2]}
-                for s in sources
-            ]
+            "top_sources": [{"chat": s[0], "count": s[1]} for s in sources]
         }
 
     async def get_users_for_mention(

@@ -26,19 +26,6 @@ sudo journalctl -u storyfleet-bot -f -n 100
 tail -f /var/log/storyfleet/bot-error.log
 ```
 
-## Scheduler (storyfleet-scheduler service)
-
-```bash
-# Live logs
-tail -f /var/log/storyfleet/scheduler.log
-
-# Errors
-tail -f /var/log/storyfleet/scheduler-error.log
-
-# If using systemd/journalctl:
-sudo journalctl -u storyfleet-scheduler -f -n 100
-```
-
 ## Gunicorn config
 
 The dashboard uses `deploy/gunicorn.conf.py` when run via:
