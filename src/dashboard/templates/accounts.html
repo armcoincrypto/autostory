@@ -25,6 +25,7 @@
                     <th>Phone</th>
                     <th>Username</th>
                     <th>Status</th>
+                    <th>Health</th>
                     <th>Purpose <small class="text-muted" title="Messaging = use in Scheduler only">(Scheduler / Stories)</small></th>
                     <th>Stories Today</th>
                     <th>Last Active</th>
@@ -32,7 +33,7 @@
                 </tr>
             </thead>
             <tbody id="accounts-table">
-                <tr><td colspan="8" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="9" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -202,6 +203,23 @@ async function loadAccounts() {
                 ? new Date(a.last_active).toLocaleString()
                 : 'Never';
 
+            // Health column
+            const healthLabel  = a.general_health_label || 'Unknown';
+            const healthReason = a.general_health_reason || 'No health check yet.';
+            const healthStale  = !!a.health_check_stale;
+            const HEALTH_COLORS = {
+                'Alive':                   '#22c55e',
+                'Banned':                  '#ef4444',
+                'Flood Wait':              '#f59e0b',
+                'Frozen':                  '#f59e0b',
+                'Inactive / auth required':'#8b5cf6',
+                'Unknown':                 '#6b7280',
+            };
+            const healthColor = HEALTH_COLORS[healthLabel] || '#6b7280';
+            const staleIcon = healthStale
+                ? `<i class="bi bi-clock-history text-warning ms-1" title="Health check is stale (>24h old)"></i>`
+                : '';
+
             return `
             <tr>
                 <td>${a.id}</td>
@@ -212,6 +230,14 @@ async function loadAccounts() {
                           title="${tooltip}"
                           style="color:#fff; padding:4px 8px; border-radius:4px; cursor:default;">
                         ${label}
+                    </span>
+                </td>
+                <td>
+                    <span style="display:inline-flex;align-items:center;gap:4px;">
+                        <span style="background:${healthColor};color:#fff;padding:3px 8px;border-radius:4px;font-size:0.82em;cursor:default;"
+                              title="${healthReason.replace(/"/g,'&quot;')}">
+                            ${healthLabel}
+                        </span>${staleIcon}
                     </span>
                 </td>
                 <td>
@@ -249,7 +275,7 @@ async function loadAccounts() {
 
     } catch (error) {
         console.error('Failed to load accounts:', error);
-        if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
     }
 }
 
