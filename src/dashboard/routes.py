@@ -204,8 +204,18 @@ def get_account(account_id):
 
 @api.route('/accounts/<int:account_id>/status', methods=['PUT'])
 def update_account_status(account_id):
-    """Update account status"""
-    data = request.get_json()
+    """Update account status.
+
+    Allowed transitions:
+      active     -> inactive   (operator disable)
+      inactive   -> active     (operator re-enable)
+      any status -> inactive   (parking is always safe)
+
+    Blocked:
+      banned        -> active  (Telegram-side ban; re-login required)
+      auth_required -> active  (session expired; re-login required)
+    """
+    data = request.get_json() or {}
     new_status = data.get('status')
 
     if new_status not in [s.value for s in AccountStatus]:
@@ -216,7 +226,20 @@ def update_account_status(account_id):
         if not account:
             return jsonify({"error": "Account not found"}), 404
 
+        current = account.status.value
+        # Block promoting a broken account to active without fixing the underlying problem
+        PROTECTED = {"banned", "auth_required"}
+        if new_status == "active" and current in PROTECTED:
+            return jsonify({
+                "error": (
+                    f"Cannot set status to active: account is currently '{current}'. "
+                    "Re-login or fix the session first."
+                ),
+                "current_status": current,
+            }), 409
+
         account.status = AccountStatus(new_status)
+        account.updated_at = datetime.utcnow()
         return jsonify({"success": True, "status": account.status.value})
 
 
