@@ -8,7 +8,7 @@ import sys
 import urllib.error
 import urllib.request
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request, render_template, send_from_directory
 from flask_login import login_required, current_user
@@ -23,6 +23,105 @@ from src.core.models import Account, Story, DiscoveredUser, Campaign, Task, Acco
 from src.core.database import get_db_context
 
 logger = structlog.get_logger(__name__)
+
+
+# ============================================
+# Health check helpers
+# ============================================
+
+def _is_health_stale(health_checked_at, max_hours: int = 24) -> bool:
+    """Return True if the last health check is older than max_hours or was never run."""
+    if health_checked_at is None:
+        return True
+    if isinstance(health_checked_at, str):
+        try:
+            health_checked_at = datetime.fromisoformat(health_checked_at.replace("Z", "+00:00"))
+        except Exception:
+            return True
+    try:
+        return (datetime.utcnow() - health_checked_at.replace(tzinfo=None)) > timedelta(hours=max_hours)
+    except Exception:
+        return True
+
+
+def _general_health_fields_for_api(account) -> dict:
+    """
+    Derive general_health_label and general_health_reason from DB status + Telegram health_status.
+
+    Priority:
+      1. DB status drives label for banned/flood_wait/auth_required/inactive — those are
+         operator-visible facts regardless of what Telegram last reported.
+      2. For active accounts, Telegram health_status drives the label.
+      3. Fallback to Unknown when no health check has run yet.
+    """
+    st = getattr(account, "status", None)
+    st = st.value if hasattr(st, "value") else (st or "")
+    hs_raw = getattr(account, "health_status", None) or ""
+    hs = hs_raw.strip().lower() if hs_raw else ""
+    reason_s = (getattr(account, "health_reason", None) or "").strip()
+
+    # --- DB status takes priority for broken/disabled accounts ---
+    if st == "banned":
+        return {
+            "general_health_label": "Banned",
+            "general_health_reason": "Account is permanently banned by Telegram.",
+        }
+    if st == "flood_wait":
+        return {
+            "general_health_label": "Flood Wait",
+            "general_health_reason": "Account is rate-limited by Telegram. Wait for cooldown.",
+        }
+    if st == "auth_required":
+        return {
+            "general_health_label": "Inactive / auth required",
+            "general_health_reason": "Session expired or revoked — re-login required (status=auth_required).",
+        }
+    if st == "inactive":
+        return {
+            "general_health_label": "Inactive / auth required",
+            "general_health_reason": "Account is disabled in Autostory (status=inactive). Enable it or re-login to activate.",
+        }
+
+    # --- Account is active — use Telegram health_status ---
+    if hs == "auth_required":
+        return {
+            "general_health_label": "Inactive / auth required",
+            "general_health_reason": "Session expired or revoked — re-login required (Telegram auth_required).",
+        }
+    if hs in ("deleted", "banned"):
+        return {
+            "general_health_label": "Banned",
+            "general_health_reason": f"Telegram health check reports account is {hs}.",
+        }
+    if hs == "frozen":
+        return {
+            "general_health_label": "Frozen",
+            "general_health_reason": reason_s or "General healthcheck: limited or frozen at Telegram.",
+        }
+    if hs == "restricted":
+        return {
+            "general_health_label": "Frozen",
+            "general_health_reason": reason_s or "General healthcheck: restricted.",
+        }
+    if hs == "alive":
+        return {
+            "general_health_label": "Alive",
+            "general_health_reason": reason_s or "Last general healthcheck: alive.",
+        }
+    if hs == "flood_wait":
+        return {
+            "general_health_label": "Flood Wait",
+            "general_health_reason": reason_s or "General healthcheck: flood wait (session may still work).",
+        }
+    if not hs:
+        return {
+            "general_health_label": "Unknown",
+            "general_health_reason": "No general healthcheck yet; run sync or fleet check.",
+        }
+    return {
+        "general_health_label": "Unknown",
+        "general_health_reason": f"General health status: {hs_raw}.",
+    }
 
 
 def _proxy_api_to_server():
@@ -164,7 +263,7 @@ def list_accounts():
                 continue
             if purpose_filter == "autostory" and p == "messaging":
                 continue
-            result.append({
+            entry = {
                 "id": a.id,
                 "phone_number": a.phone_number,
                 "username": a.username,
@@ -173,7 +272,15 @@ def list_accounts():
                 "purpose": p,
                 "last_active": a.last_active.isoformat() if a.last_active else None,
                 "stories_today": a.stories_today,
-            })
+                "health_status": getattr(a, "health_status", None),
+                "health_checked_at": (
+                    getattr(a, "health_checked_at", None).isoformat()
+                    if getattr(a, "health_checked_at", None) else None
+                ),
+                "health_check_stale": _is_health_stale(getattr(a, "health_checked_at", None)),
+                **_general_health_fields_for_api(a),
+            }
+            result.append(entry)
         return jsonify(result)
 
 
@@ -185,6 +292,7 @@ def get_account(account_id):
         if not account:
             return jsonify({"error": "Account not found"}), 404
 
+        health_checked_at = getattr(account, "health_checked_at", None)
         return jsonify({
             "id": account.id,
             "phone_number": account.phone_number,
@@ -199,6 +307,12 @@ def get_account(account_id):
             "stories_today": account.stories_today,
             "actions_today": account.actions_today,
             "created_at": account.created_at.isoformat(),
+            # Health fields
+            "health_status": getattr(account, "health_status", None),
+            "health_reason": getattr(account, "health_reason", None),
+            "health_checked_at": health_checked_at.isoformat() if health_checked_at else None,
+            "health_check_stale": _is_health_stale(health_checked_at),
+            **_general_health_fields_for_api(account),
         })
 
 
