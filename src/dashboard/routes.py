@@ -238,19 +238,38 @@ def list_accounts():
         except Exception as e:
             logger.warning("Accounts query failed (missing purpose column?), falling back", error=str(e))
             from sqlalchemy import text
-            rows = db.execute(text("SELECT id, phone_number, username, first_name, status, last_active, stories_today FROM accounts")).fetchall()
+            rows = db.execute(text(
+                "SELECT id, phone_number, username, first_name, status, last_active, stories_today,"
+                " health_status, health_reason, health_checked_at, purpose FROM accounts"
+            )).fetchall()
             result = []
             for r in rows:
-                result.append({
+                st = getattr(r, "status", None)
+                st = getattr(st, "value", st) if st is not None else "inactive"
+                entry = {
                     "id": r.id,
                     "phone_number": r.phone_number,
                     "username": r.username,
                     "first_name": r.first_name,
-                    "status": getattr(r.status, "value", r.status) if r.status is not None else "inactive",
-                    "purpose": "both",
-                    "last_active": r.last_active.isoformat() if r.last_active else None,
-                    "stories_today": r.stories_today or 0,
-                })
+                    "status": st,
+                    "purpose": getattr(r, "purpose", None) or "both",
+                    "last_active": r.last_active.isoformat() if getattr(r, "last_active", None) else None,
+                    "stories_today": getattr(r, "stories_today", None) or 0,
+                    "health_status": getattr(r, "health_status", None),
+                    "health_checked_at": (
+                        r.health_checked_at.isoformat() if getattr(r, "health_checked_at", None) else None
+                    ),
+                    "health_check_stale": _is_health_stale(getattr(r, "health_checked_at", None)),
+                }
+                # Derive health label/reason using a minimal object shim
+                class _Shim:
+                    pass
+                shim = _Shim()
+                shim.status = type("S", (), {"value": st})()
+                shim.health_status = getattr(r, "health_status", None)
+                shim.health_reason = getattr(r, "health_reason", None)
+                entry.update(_general_health_fields_for_api(shim))
+                result.append(entry)
             return jsonify(result)
         purpose_filter = request.args.get("purpose")  # autostory, messaging
         result = []
