@@ -202,7 +202,7 @@ const TOGGLEABLE_STATUSES = new Set(['active', 'inactive']);
 async function loadAccounts() {
     const tbody = document.getElementById('accounts-table');
     try {
-        const response = await fetch('/api/accounts');
+        const response = await fetch('/api/accounts?limit=500');
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const accounts = await response.json();
 
