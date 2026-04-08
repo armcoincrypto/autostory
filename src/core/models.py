@@ -59,6 +59,14 @@ class Account(Base):
     last_error = Column(Text, nullable=True)
     flood_wait_until = Column(DateTime, nullable=True)
 
+    # Telegram health check results (written by fleet health check jobs)
+    health_status = Column(String(50), nullable=True)       # alive / banned / frozen / restricted / auth_required / flood_wait / deleted
+    health_reason = Column(Text, nullable=True)             # human-readable summary from last health check
+    health_checked_at = Column(DateTime, nullable=True)     # UTC timestamp of last health check
+
+    # Account purpose — controls which subsystems use this account
+    purpose = Column(String(20), nullable=True, default="both")  # autostory / messaging / both
+
     # Rate limiting counters
     stories_today = Column(Integer, default=0)
     actions_today = Column(Integer, default=0)
