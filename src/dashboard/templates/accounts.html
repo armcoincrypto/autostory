@@ -9,12 +9,16 @@
         <button class="btn btn-outline-secondary" id="btn-fleet-health" onclick="runFleetHealthCheck()">
             <i class="bi bi-heart-pulse"></i> Run Health Check
         </button>
+        <button class="btn btn-outline-info" id="btn-story-precheck" onclick="runStoryPrecheck()">
+            <i class="bi bi-camera-video"></i> Story Precheck
+        </button>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
             <i class="bi bi-plus-circle"></i> Add Account
         </button>
     </div>
 </div>
 <div id="health-check-status" class="alert d-none mb-3"></div>
+<div id="precheck-status" class="alert d-none mb-3"></div>
 
 <div class="alert alert-info mb-4">
     <strong><i class="bi bi-chat-dots"></i> Use an account for Scheduler (send messages to groups):</strong>
@@ -32,6 +36,7 @@
                     <th>Username</th>
                     <th>Status</th>
                     <th>Health</th>
+                    <th>Story Ready</th>
                     <th>Purpose <small class="text-muted" title="Messaging = use in Scheduler only">(Scheduler / Stories)</small></th>
                     <th>Stories Today</th>
                     <th>Last Active</th>
@@ -39,7 +44,7 @@
                 </tr>
             </thead>
             <tbody id="accounts-table">
-                <tr><td colspan="9" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="10" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -207,7 +212,7 @@ async function loadAccounts() {
         const accounts = await response.json();
 
         if (!Array.isArray(accounts) || accounts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No accounts added yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No accounts added yet</td></tr>';
             return;
         }
 
@@ -241,6 +246,16 @@ async function loadAccounts() {
                 ? `<i class="bi bi-clock-history text-warning ms-1" title="Health check is stale (>24h old)"></i>`
                 : '';
 
+            // Story Ready column
+            const storyReady  = (a.publish_story_status === 'yes');
+            const storyReason = a.publish_story_reason || (storyReady ? 'Ready to publish stories.' : 'Not ready.');
+            const storyPrecheckStale = !!a.story_precheck_stale;
+            const storyBadgeColor = storyReady ? '#22c55e' : '#6b7280';
+            const storyBadgeText  = storyReady ? 'Ready' : 'No';
+            const storyStaleIcon  = (!storyReady && storyPrecheckStale && a.story_precheck_checked_at)
+                ? `<i class="bi bi-clock-history text-warning ms-1" title="Precheck expired — run Story Precheck"></i>`
+                : '';
+
             return `
             <tr>
                 <td>${a.id}</td>
@@ -259,6 +274,14 @@ async function loadAccounts() {
                               title="${healthReason.replace(/"/g,'&quot;')}">
                             ${healthLabel}
                         </span>${staleIcon}
+                    </span>
+                </td>
+                <td>
+                    <span style="display:inline-flex;align-items:center;gap:4px;">
+                        <span style="background:${storyBadgeColor};color:#fff;padding:3px 8px;border-radius:4px;font-size:0.82em;cursor:default;"
+                              title="${storyReason.replace(/"/g,'&quot;')}">
+                            ${storyBadgeText}
+                        </span>${storyStaleIcon}
                     </span>
                 </td>
                 <td>
@@ -296,7 +319,7 @@ async function loadAccounts() {
 
     } catch (error) {
         console.error('Failed to load accounts:', error);
-        if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
     }
 }
 
@@ -631,6 +654,66 @@ async function fetchLoginCode() {
     }
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-download"></i> Fetch Code';
+}
+
+async function runStoryPrecheck() {
+    const btn = document.getElementById('btn-story-precheck');
+    const statusEl = document.getElementById('precheck-status');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking…';
+    statusEl.className = 'alert alert-info mb-3';
+    statusEl.textContent = 'Fetching precheck candidates…';
+    statusEl.classList.remove('d-none');
+
+    try {
+        // Get candidates
+        const cr = await fetch('/api/accounts/story-precheck-candidates');
+        const cd = await cr.json();
+        if (!cr.ok) {
+            statusEl.className = 'alert alert-danger mb-3';
+            statusEl.textContent = 'Failed to fetch candidates: ' + (cd.error || cr.statusText);
+            return;
+        }
+        const candidates = cd.candidates || [];
+        const remaining  = cd.remaining_capacity ?? 20;
+        if (candidates.length === 0) {
+            statusEl.className = 'alert alert-success mb-3';
+            statusEl.textContent = 'All accounts have a fresh story precheck. No work needed.';
+            loadAccounts();
+            return;
+        }
+
+        // Submit up to remaining_capacity accounts
+        const batch = candidates.slice(0, Math.min(candidates.length, remaining));
+        statusEl.textContent = `Running story precheck for ${batch.length} account(s) (${remaining} capacity remaining)…`;
+
+        const ids = batch.map(a => a.id);
+        const pr = await fetch('/api/accounts/story-precheck', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ account_ids: ids, canary_batch_ok: true }),
+        });
+        const pd = await pr.json();
+        if (!pr.ok) {
+            statusEl.className = 'alert alert-warning mb-3';
+            statusEl.textContent = 'Precheck error: ' + (pd.error || pr.statusText);
+            return;
+        }
+        const allowed = pd.allowed ?? 0;
+        const total   = pd.processed ?? batch.length;
+        const leftOver = candidates.length - batch.length;
+        let msg = `Story precheck done — ${allowed}/${total} accounts story-ready.`;
+        if (leftOver > 0) msg += ` ${leftOver} more candidate(s) will be checked next hour (rate limit).`;
+        statusEl.className = 'alert alert-success mb-3';
+        statusEl.textContent = msg;
+        setTimeout(() => { loadAccounts(); statusEl.classList.add('d-none'); }, 3000);
+    } catch (e) {
+        statusEl.className = 'alert alert-danger mb-3';
+        statusEl.textContent = 'Error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-camera-video"></i> Story Precheck';
+    }
 }
 
 async function runFleetHealthCheck() {

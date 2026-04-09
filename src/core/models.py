@@ -64,6 +64,10 @@ class Account(Base):
     health_reason = Column(Text, nullable=True)             # human-readable summary from last health check
     health_checked_at = Column(DateTime, nullable=True)     # UTC timestamp of last health check
 
+    # Story precheck results (written by /api/accounts/story-precheck)
+    story_precheck_status = Column(String(50), nullable=True)   # allowed / frozen / not_authorized
+    story_precheck_checked_at = Column(DateTime, nullable=True) # UTC timestamp of last story precheck
+
     # Account purpose — controls which subsystems use this account
     purpose = Column(String(20), nullable=True, default="both")  # autostory / messaging / both
 

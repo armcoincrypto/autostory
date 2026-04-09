@@ -104,6 +104,20 @@ class StorageSettings(BaseSettings):
         env_prefix = "STORAGE_"
 
 
+class WarmupSettings(BaseSettings):
+    """Story warmup / precheck configuration"""
+    # How long (minutes) a story-precheck result stays valid after being written.
+    # Default 1440 = 24 h so operators can run precheck once per day.
+    precheck_ttl_post_minutes: int = Field(default=1440, ge=1, description="Story precheck result TTL after writing (minutes)")
+    # General precheck TTL used elsewhere (kept for back-compat with older code)
+    precheck_ttl_minutes: int = Field(default=1440, ge=1, description="Story precheck result TTL (minutes)")
+    max_prechecks_per_hour: int = Field(default=20, ge=1, description="Max story prechecks per hour across all accounts")
+    canary_batch_ok_required: bool = Field(default=True, description="Require canary_batch_ok=true flag for batch precheck")
+
+    class Config:
+        env_prefix = "WARMUP_"
+
+
 class Settings(BaseSettings):
     """Main application settings"""
     app_name: str = Field(default="STORYFLEET", description="Application name")
@@ -117,6 +131,7 @@ class Settings(BaseSettings):
     dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
     bot: BotSettings = Field(default_factory=BotSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    warmup: WarmupSettings = Field(default_factory=WarmupSettings)
 
     class Config:
         env_file = ".env"

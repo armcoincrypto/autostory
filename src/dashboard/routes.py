@@ -124,6 +124,87 @@ def _general_health_fields_for_api(account) -> dict:
     }
 
 
+def _is_precheck_stale(story_precheck_checked_at, ttl_minutes: int = None) -> bool:
+    """Return True if the story precheck result has expired or was never run."""
+    if story_precheck_checked_at is None:
+        return True
+    if isinstance(story_precheck_checked_at, str):
+        try:
+            story_precheck_checked_at = datetime.fromisoformat(
+                story_precheck_checked_at.replace("Z", "+00:00")
+            )
+        except Exception:
+            return True
+    if ttl_minutes is None:
+        try:
+            ttl_minutes = settings.warmup.precheck_ttl_post_minutes
+        except Exception:
+            ttl_minutes = 1440
+    try:
+        return (datetime.utcnow() - story_precheck_checked_at.replace(tzinfo=None)) > timedelta(minutes=ttl_minutes)
+    except Exception:
+        return True
+
+
+def _derive_publish_story_fields(account) -> dict:
+    """
+    Compute publish_story_status, publish_story_reason, and story_precheck_stale
+    from account fields.  Returns a dict ready to merge into an API response.
+    """
+    try:
+        ttl_minutes = settings.warmup.precheck_ttl_post_minutes
+    except Exception:
+        ttl_minutes = 1440
+
+    hs = (getattr(account, "health_status", None) or "").strip().lower()
+    ps = (getattr(account, "story_precheck_status", None) or "").strip().lower()
+    hc_at = getattr(account, "health_checked_at", None)
+    pc_at = getattr(account, "story_precheck_checked_at", None)
+
+    health_stale = _is_health_stale(hc_at)
+    precheck_stale = _is_precheck_stale(pc_at, ttl_minutes)
+
+    if health_stale:
+        return {
+            "story_precheck_status": ps or None,
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": precheck_stale,
+            "publish_story_status": "no",
+            "publish_story_reason": "Health check not run yet. Run fleet health check first.",
+        }
+    if hs != "alive":
+        return {
+            "story_precheck_status": ps or None,
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": precheck_stale,
+            "publish_story_status": "no",
+            "publish_story_reason": f"Account health is '{hs}', not alive.",
+        }
+    if precheck_stale:
+        return {
+            "story_precheck_status": ps or None,
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": True,
+            "publish_story_status": "no",
+            "publish_story_reason": "Precheck expired. Run story precheck first.",
+        }
+    if ps == "allowed":
+        return {
+            "story_precheck_status": "allowed",
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": False,
+            "publish_story_status": "yes",
+            "publish_story_reason": "Account is healthy and story-enabled.",
+        }
+    return {
+        "story_precheck_status": ps or None,
+        "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+        "story_precheck_stale": precheck_stale,
+        "publish_story_status": "no",
+        "publish_story_reason": f"Story precheck result: {ps or 'not run'}.",
+    }
+
+
 def _proxy_api_to_server():
     """When proxy URL is set, forward all /api/* requests to the server (Dashboard, Accounts, Stories, etc.)."""
     proxy_url = getattr(settings.dashboard, "run_now_proxy_url", None) or os.environ.get("DASHBOARD_RUN_NOW_PROXY_URL")
@@ -268,7 +349,10 @@ def list_accounts():
                 shim.status = type("S", (), {"value": st})()
                 shim.health_status = getattr(r, "health_status", None)
                 shim.health_reason = getattr(r, "health_reason", None)
+                shim.story_precheck_status = getattr(r, "story_precheck_status", None)
+                shim.story_precheck_checked_at = getattr(r, "story_precheck_checked_at", None)
                 entry.update(_general_health_fields_for_api(shim))
+                entry.update(_derive_publish_story_fields(shim))
                 result.append(entry)
             return jsonify(result)
         purpose_filter = request.args.get("purpose")  # autostory, messaging
@@ -298,6 +382,7 @@ def list_accounts():
                 ),
                 "health_check_stale": _is_health_stale(getattr(a, "health_checked_at", None)),
                 **_general_health_fields_for_api(a),
+                **_derive_publish_story_fields(a),
             }
             result.append(entry)
         return jsonify(result)
@@ -332,6 +417,7 @@ def get_account(account_id):
             "health_checked_at": health_checked_at.isoformat() if health_checked_at else None,
             "health_check_stale": _is_health_stale(health_checked_at),
             **_general_health_fields_for_api(account),
+            **_derive_publish_story_fields(account),
         })
 
 
@@ -400,6 +486,422 @@ def update_account(account_id):
         if "purpose" in data and data["purpose"] in ("autostory", "messaging", "both"):
             account.purpose = data["purpose"]
         return jsonify({"success": True})
+
+
+# ============================================
+# Fleet health check
+# ============================================
+import threading as _threading
+import uuid as _uuid
+
+_healthcheck_jobs: dict = {}  # job_id -> {"status": "running"|"done", "total": int, "checked": int, "results": list}
+_healthcheck_lock = _threading.Lock()
+
+
+def _admin_token_required():
+    """Return error response if admin token is missing/wrong, else None."""
+    token = os.environ.get("DASHBOARD_ADMIN_TOKEN", "")
+    if token:
+        provided = request.headers.get("X-Admin-Token") or request.args.get("admin_token", "")
+        if provided != token:
+            return jsonify({"error": "Unauthorized"}), 403
+    return None
+
+
+def _run_fleet_health_check_bg(job_id: str, account_ids: list) -> None:
+    """Background thread: check each account's Telegram health and write to DB."""
+    import asyncio as _asyncio
+
+    async def _check_one(account_id: int) -> dict:
+        """Connect account briefly and determine health status."""
+        from src.clients.manager import TelegramClient, StringSession
+        try:
+            from telethon.errors import (
+                AuthKeyUnregisteredError, UserDeactivatedBanError,
+                UserDeactivatedError, FloodWaitError, PhoneNumberBannedError,
+            )
+        except ImportError:
+            AuthKeyUnregisteredError = Exception
+            UserDeactivatedBanError = Exception
+            UserDeactivatedError = Exception
+            FloodWaitError = Exception
+            PhoneNumberBannedError = Exception
+
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return {"account_id": account_id, "status": "error", "reason": "not found"}
+            session_val = account.session_string or ""
+            phone = account.phone_number
+            proxy = account.proxy_config if account.proxy_config else None
+
+        # Determine session — could be a Telethon string or a file path
+        import re as _re
+        if session_val and len(session_val) >= 90 and _re.match(r"^1[A-Za-z0-9+/=_-]+$", session_val.strip()):
+            session = StringSession(session_val.strip())
+        elif session_val and (session_val.startswith("/") or session_val.startswith(".")):
+            # File path — use SQLite session file
+            session = session_val.rstrip(".session") if session_val.endswith(".session") else session_val
+        else:
+            # No usable session
+            _save_health_result(account_id, "auth_required", "No session data — re-login required.")
+            return {"account_id": account_id, "status": "auth_required", "reason": "No session"}
+
+        try:
+            client = TelegramClient(
+                session,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+                proxy=proxy,
+                connection_retries=1,
+                timeout=15,
+            )
+            await client.connect()
+            authorized = await client.is_user_authorized()
+            if not authorized:
+                await client.disconnect()
+                _save_health_result(account_id, "auth_required", "Session not authorized — re-login required.")
+                return {"account_id": account_id, "status": "auth_required"}
+            me = await client.get_me()
+            await client.disconnect()
+            if me is None:
+                _save_health_result(account_id, "auth_required", "Could not get account info.")
+                return {"account_id": account_id, "status": "auth_required"}
+            reason = f"Alive: {me.first_name or ''} (@{me.username or phone})"
+            _save_health_result(account_id, "alive", reason)
+            return {"account_id": account_id, "status": "alive", "reason": reason}
+        except AuthKeyUnregisteredError:
+            _save_health_result(account_id, "auth_required", "Auth key unregistered — session revoked.")
+            return {"account_id": account_id, "status": "auth_required"}
+        except (UserDeactivatedBanError, UserDeactivatedError, PhoneNumberBannedError):
+            _save_health_result(account_id, "banned", "Account deactivated or banned by Telegram.")
+            return {"account_id": account_id, "status": "banned"}
+        except FloodWaitError as e:
+            _save_health_result(account_id, "flood_wait", f"Flood wait: {e.seconds}s")
+            return {"account_id": account_id, "status": "flood_wait"}
+        except Exception as exc:
+            err = str(exc)
+            status = "frozen"
+            if "frozen" in err.lower():
+                status = "frozen"
+            elif "restricted" in err.lower():
+                status = "restricted"
+            elif "deactivat" in err.lower() or "banned" in err.lower():
+                status = "banned"
+            elif "auth" in err.lower() or "session" in err.lower():
+                status = "auth_required"
+            _save_health_result(account_id, status, err[:200])
+            return {"account_id": account_id, "status": status, "error": err[:200]}
+
+    def _save_health_result(account_id: int, status: str, reason: str) -> None:
+        try:
+            with get_db_context() as db:
+                account = db.query(Account).filter(Account.id == account_id).first()
+                if account:
+                    account.health_status = status
+                    account.health_reason = reason
+                    account.health_checked_at = datetime.utcnow()
+        except Exception as e:
+            logger.warning("Failed to save health result", account_id=account_id, error=str(e))
+
+    async def _run_all():
+        results = []
+        for i, aid in enumerate(account_ids):
+            result = await _check_one(aid)
+            results.append(result)
+            with _healthcheck_lock:
+                if job_id in _healthcheck_jobs:
+                    _healthcheck_jobs[job_id]["checked"] = i + 1
+                    _healthcheck_jobs[job_id]["results"] = results
+            await _asyncio.sleep(0.5)  # small delay between checks
+        with _healthcheck_lock:
+            if job_id in _healthcheck_jobs:
+                _healthcheck_jobs[job_id]["status"] = "done"
+                _healthcheck_jobs[job_id]["results"] = results
+
+    loop = _asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run_all())
+    except Exception as e:
+        logger.error("Fleet health check background job failed", job_id=job_id, error=str(e))
+        with _healthcheck_lock:
+            if job_id in _healthcheck_jobs:
+                _healthcheck_jobs[job_id]["status"] = "done"
+                _healthcheck_jobs[job_id]["error"] = str(e)
+    finally:
+        loop.close()
+
+
+@api.route('/accounts/healthcheck/start', methods=['POST'])
+def start_fleet_healthcheck():
+    """Start a fleet health check for all active accounts."""
+    err = _admin_token_required()
+    if err:
+        return err
+
+    with get_db_context() as db:
+        accounts = db.query(Account).filter(
+            Account.status.in_([AccountStatus.ACTIVE])
+        ).all()
+        account_ids = [a.id for a in accounts]
+
+    if not account_ids:
+        return jsonify({"error": "No active accounts to check"}), 400
+
+    job_id = str(_uuid.uuid4())
+    with _healthcheck_lock:
+        _healthcheck_jobs[job_id] = {
+            "status": "running",
+            "total": len(account_ids),
+            "checked": 0,
+            "results": [],
+        }
+
+    t = _threading.Thread(
+        target=_run_fleet_health_check_bg,
+        args=(job_id, account_ids),
+        daemon=True,
+    )
+    t.start()
+    logger.info("Fleet health check started", job_id=job_id, total=len(account_ids))
+    return jsonify({"job_id": job_id, "total": len(account_ids), "status": "running"})
+
+
+@api.route('/accounts/healthcheck/<job_id>', methods=['GET'])
+def poll_fleet_healthcheck(job_id):
+    """Poll fleet health check job status."""
+    with _healthcheck_lock:
+        job = _healthcheck_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "job_id": job_id,
+        "status": job["status"],
+        "total": job["total"],
+        "checked": job["checked"],
+        "results": job.get("results", []),
+        "error": job.get("error"),
+    })
+
+
+# ============================================
+# Story precheck
+# ============================================
+_precheck_hour_counts: dict = {}  # hour_key -> int
+_precheck_lock = _threading.Lock()
+
+
+def _precheck_rate_ok(n: int = 1) -> bool:
+    """Return True if we have capacity to run n more prechecks this hour."""
+    try:
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+    except Exception:
+        max_per_hour = 20
+    hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+    with _precheck_lock:
+        current = _precheck_hour_counts.get(hour_key, 0)
+        return (current + n) <= max_per_hour
+
+
+def _precheck_consume(n: int = 1) -> int:
+    """Consume n precheck slots this hour; return remaining capacity."""
+    try:
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+    except Exception:
+        max_per_hour = 20
+    hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+    with _precheck_lock:
+        current = _precheck_hour_counts.get(hour_key, 0)
+        _precheck_hour_counts[hour_key] = current + n
+        return max(0, max_per_hour - (current + n))
+
+
+@api.route('/accounts/story-precheck-candidates', methods=['GET'])
+def story_precheck_candidates():
+    """Return accounts that need a story precheck (no precheck yet or precheck expired)."""
+    try:
+        ttl = settings.warmup.precheck_ttl_post_minutes
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+    except Exception:
+        ttl = 1440
+        max_per_hour = 20
+
+    cutoff = datetime.utcnow() - timedelta(minutes=ttl)
+    with get_db_context() as db:
+        accounts = db.query(Account).filter(
+            Account.status == AccountStatus.ACTIVE
+        ).all()
+        candidates = [
+            a for a in accounts
+            if (
+                getattr(a, "story_precheck_checked_at", None) is None
+                or getattr(a, "story_precheck_checked_at") < cutoff
+            )
+        ]
+
+    hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+    with _precheck_lock:
+        used = _precheck_hour_counts.get(hour_key, 0)
+    remaining = max(0, max_per_hour - used)
+
+    return jsonify({
+        "candidates": [{"id": a.id, "phone_number": a.phone_number} for a in candidates],
+        "total": len(candidates),
+        "remaining_capacity": remaining,
+    })
+
+
+@api.route('/accounts/story-precheck', methods=['POST'])
+def run_story_precheck():
+    """
+    Run CanSendStoryRequest for each requested account and persist the result.
+
+    Body: { "account_ids": [1, 2, ...], "canary_batch_ok": true }
+    """
+    data = request.get_json() or {}
+    canary_ok = data.get("canary_batch_ok", False)
+    try:
+        canary_required = settings.warmup.canary_batch_ok_required
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+        ttl = settings.warmup.precheck_ttl_post_minutes
+    except Exception:
+        canary_required = True
+        max_per_hour = 20
+        ttl = 1440
+
+    if canary_required and not canary_ok:
+        return jsonify({"error": "canary_batch_ok=true required"}), 400
+
+    account_ids = data.get("account_ids") or []
+    if not account_ids:
+        return jsonify({"error": "account_ids required"}), 400
+
+    if not _precheck_rate_ok(len(account_ids)):
+        hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+        with _precheck_lock:
+            used = _precheck_hour_counts.get(hour_key, 0)
+        remaining = max(0, max_per_hour - used)
+        return jsonify({
+            "error": f"Rate limit: only {remaining} precheck(s) remaining this hour",
+            "remaining_capacity": remaining,
+            "processed": 0,
+        }), 429
+
+    async def _check_precheck(account_id: int) -> dict:
+        """Run CanSendStoryRequest for one account."""
+        from src.clients.manager import TelegramClient, StringSession
+        try:
+            from telethon.tl.functions.stories import CanSendStoryRequest
+        except ImportError:
+            CanSendStoryRequest = None
+        try:
+            from telethon.errors import (
+                AuthKeyUnregisteredError, UserDeactivatedBanError,
+                UserDeactivatedError, FloodWaitError,
+            )
+        except ImportError:
+            AuthKeyUnregisteredError = Exception
+            UserDeactivatedBanError = Exception
+            UserDeactivatedError = Exception
+            FloodWaitError = Exception
+
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return {"account_id": account_id, "status": "error", "reason": "not found"}
+            session_val = account.session_string or ""
+            proxy = account.proxy_config if account.proxy_config else None
+
+        import re as _re
+        if session_val and len(session_val) >= 90 and _re.match(r"^1[A-Za-z0-9+/=_-]+$", session_val.strip()):
+            session = StringSession(session_val.strip())
+        elif session_val and (session_val.startswith("/") or session_val.startswith(".")):
+            session = session_val.rstrip(".session") if session_val.endswith(".session") else session_val
+        else:
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": "no session"}
+
+        try:
+            client = TelegramClient(
+                session,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+                proxy=proxy,
+                connection_retries=1,
+                timeout=15,
+            )
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                _save_precheck_result(account_id, "not_authorized", ttl)
+                return {"account_id": account_id, "status": "not_authorized"}
+
+            if CanSendStoryRequest is not None:
+                try:
+                    result = await client(CanSendStoryRequest(peer="me"))
+                    # result is True or raises an error
+                    status = "allowed"
+                    reason = "CanSendStory: allowed"
+                except Exception as e:
+                    err = str(e).lower()
+                    if "flood" in err:
+                        status = "frozen"
+                        reason = str(e)
+                    elif "frozen" in err or "restricted" in err:
+                        status = "frozen"
+                        reason = str(e)
+                    else:
+                        status = "not_authorized"
+                        reason = str(e)
+            else:
+                # Fallback: if we can GetMe, treat as allowed
+                me = await client.get_me()
+                status = "allowed" if me else "not_authorized"
+                reason = "CanSendStoryRequest not available; assumed allowed" if me else "No account info"
+
+            await client.disconnect()
+            _save_precheck_result(account_id, status, ttl)
+            return {"account_id": account_id, "status": status, "reason": reason}
+        except AuthKeyUnregisteredError:
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": "auth key unregistered"}
+        except (UserDeactivatedBanError, UserDeactivatedError):
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": "account banned/deactivated"}
+        except FloodWaitError as e:
+            _save_precheck_result(account_id, "frozen", ttl)
+            return {"account_id": account_id, "status": "frozen", "reason": f"flood wait {e.seconds}s"}
+        except Exception as exc:
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": str(exc)[:200]}
+
+    def _save_precheck_result(account_id: int, status: str, ttl_ignored: int) -> None:
+        try:
+            with get_db_context() as db:
+                account = db.query(Account).filter(Account.id == account_id).first()
+                if account:
+                    account.story_precheck_status = status
+                    account.story_precheck_checked_at = datetime.utcnow()
+        except Exception as e:
+            logger.warning("Failed to save precheck result", account_id=account_id, error=str(e))
+
+    remaining = _precheck_consume(len(account_ids))
+    results = []
+    loop = asyncio.new_event_loop()
+    try:
+        for aid in account_ids:
+            result = loop.run_until_complete(_check_precheck(aid))
+            results.append(result)
+    finally:
+        loop.close()
+
+    allowed = [r for r in results if r.get("status") == "allowed"]
+    return jsonify({
+        "processed": len(results),
+        "allowed": len(allowed),
+        "results": results,
+        "remaining_capacity": remaining,
+    })
 
 
 @api.route('/accounts/auth/start', methods=['POST'])
