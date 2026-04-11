@@ -65,7 +65,12 @@ def _trigger_fleet_health_check() -> None:
         _last_health_check_trigger = datetime.utcnow()
         logger.info("Fleet health check triggered by scheduler", total=data.get("total"))
     except Exception as e:
-        logger.warning("Could not trigger fleet health check", error=str(e))
+        err = str(e)
+        if "429" in err:
+            _last_health_check_trigger = datetime.utcnow()
+            logger.info("Fleet health check rate limited, backing off", hours=HEALTH_CHECK_INTERVAL_HOURS)
+        else:
+            logger.warning("Could not trigger fleet health check", error=err)
 
 
 def _trigger_story_precheck() -> None:
@@ -101,10 +106,14 @@ def _trigger_story_precheck() -> None:
             processed=result.get("processed", 0),
             allowed=result.get("allowed", 0),
             remaining_candidates=len(candidates) - len(batch),
-            remaining_capacity=result.get("remaining_capacity", 0),
         )
     except Exception as e:
-        logger.warning("Could not trigger story precheck", error=str(e))
+        err = str(e)
+        if "429" in err:
+            _last_story_precheck_trigger = datetime.utcnow()
+            logger.info("Story precheck rate limited, backing off", hours=STORY_PRECHECK_INTERVAL_HOURS)
+        else:
+            logger.warning("Could not trigger story precheck", error=err)
 
 
 async def run_scheduler_loop():
