@@ -61,7 +61,7 @@ def _trigger_fleet_health_check() -> None:
     """
     global _last_health_check_trigger
     try:
-        data = _api_post("/api/accounts/healthcheck/start")
+        data = _api_post("/api/accounts/healthcheck/start", body=b"{}")
         _last_health_check_trigger = datetime.utcnow()
         logger.info("Fleet health check triggered by scheduler", total=data.get("total"))
     except Exception as e:
@@ -76,21 +76,22 @@ def _trigger_story_precheck() -> None:
     global _last_story_precheck_trigger
     try:
         candidates_data = _api_get("/api/accounts/story-precheck-candidates")
-        candidates = candidates_data.get("candidates", [])
-        remaining = candidates_data.get("remaining_capacity", 0)
+        # live server returns account_ids (list of ints) + count
+        candidates = (candidates_data.get("account_ids")
+                      or candidates_data.get("candidates")
+                      or [])
+        count = candidates_data.get("count") or candidates_data.get("total") or len(candidates)
 
-        if not candidates:
-            logger.info("Story precheck: no candidates, all accounts are fresh")
+        if not candidates or candidates_data.get("nothing_to_run"):
+            logger.info("Story precheck: no candidates, all accounts are fresh", total=count)
             _last_story_precheck_trigger = datetime.utcnow()
             return
 
-        if remaining <= 0:
-            logger.info("Story precheck: hourly rate limit reached, will retry next hour")
-            # Don't update trigger time so we retry sooner when capacity resets
-            return
-
-        batch = candidates[:remaining]
-        ids = [a["id"] for a in batch]
+        # Use at most 20 per batch (server-side hourly cap)
+        batch_size = 20
+        batch = candidates[:batch_size]
+        # candidates may be ints (account IDs) or dicts with "id"
+        ids = [a["id"] if isinstance(a, dict) else a for a in batch]
         body = json.dumps({"account_ids": ids, "canary_batch_ok": True}).encode()
         result = _api_post("/api/accounts/story-precheck", body=body)
 
