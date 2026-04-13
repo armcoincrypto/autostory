@@ -404,6 +404,20 @@ class UserDiscovery:
             progress_callback=progress_callback,
         )
 
+    async def discover_from_channels(
+        self,
+        channel_usernames: List[str],
+        limit_per_channel: int = 500,
+        days_back: int = 365,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        """Alias for discover_from_groups — supports channel and group usernames."""
+        return await self.discover_from_groups(
+            group_usernames=channel_usernames,
+            days_back=days_back,
+            progress_callback=progress_callback,
+        )
+
     async def get_discovery_stats(self) -> Dict[str, Any]:
         """Get discovery statistics"""
         with get_db_context() as db:

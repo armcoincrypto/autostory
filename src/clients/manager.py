@@ -3,6 +3,9 @@ Telegram Client Manager - Multi-Account Orchestration
 Handles concurrent user sessions using Telethon
 """
 import asyncio
+import secrets
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, List, Callable, Any
@@ -328,6 +331,241 @@ class ClientManager:
             return {"success": False, "error": str(e)}
         finally:
             await client.disconnect()
+
+    async def import_session_string(self, session_string: str) -> Dict[str, Any]:
+        """Import an account from a Telethon StringSession string."""
+        session = StringSession(session_string)
+        client = TelegramClient(
+            session,
+            settings.telegram.api_id,
+            settings.telegram.api_hash,
+        )
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                return {"success": False, "error": "Session is not authorized"}
+
+            me = await client.get_me()
+            phone = me.phone or str(me.id)
+
+            with get_db_context() as db:
+                existing = db.query(Account).filter(
+                    Account.phone_number == phone
+                ).first()
+                if not existing and me.id:
+                    existing = db.query(Account).filter(
+                        Account.user_id == me.id
+                    ).first()
+
+                if existing:
+                    existing.session_string = session_string
+                    existing.status = AccountStatus.ACTIVE
+                    existing.user_id = me.id
+                    existing.username = me.username
+                    existing.first_name = me.first_name
+                    existing.last_name = me.last_name
+                    existing.last_active = datetime.utcnow()
+                    db.commit()
+                    db.refresh(existing)
+                    await self.add_account(existing)
+                    return {
+                        "success": True,
+                        "account_id": existing.id,
+                        "user_id": me.id,
+                        "username": me.username,
+                        "phone_number": phone,
+                        "message": f"Updated existing account {me.first_name}",
+                    }
+                else:
+                    account = Account(
+                        phone_number=phone,
+                        session_string=session_string,
+                        user_id=me.id,
+                        username=me.username,
+                        first_name=me.first_name,
+                        last_name=me.last_name,
+                        status=AccountStatus.ACTIVE,
+                        last_active=datetime.utcnow(),
+                    )
+                    db.add(account)
+                    db.commit()
+                    db.refresh(account)
+                    await self.add_account(account)
+                    return {
+                        "success": True,
+                        "account_id": account.id,
+                        "user_id": me.id,
+                        "username": me.username,
+                        "phone_number": phone,
+                        "message": f"Imported account {me.first_name}",
+                    }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        finally:
+            await client.disconnect()
+
+    async def get_dialogs(self, account_id: int, limit: int = 200) -> Dict[str, Any]:
+        """Get dialogs (chats/channels) for an account."""
+        wrapper = self._clients.get(account_id)
+        if not wrapper:
+            return {"error": "Account not in manager", "dialogs": []}
+        if not wrapper.is_connected:
+            connected = await wrapper.connect()
+            if not connected:
+                return {"error": "Could not connect account", "dialogs": []}
+        try:
+            dialogs = []
+            async for dialog in wrapper.client.iter_dialogs(limit=limit):
+                entity = dialog.entity
+                d_type = "private"
+                if hasattr(entity, "broadcast") and entity.broadcast:
+                    d_type = "channel"
+                elif hasattr(entity, "megagroup") and entity.megagroup:
+                    d_type = "supergroup"
+                elif dialog.is_group:
+                    d_type = "group"
+                dialogs.append({
+                    "id": dialog.id,
+                    "name": dialog.name,
+                    "type": d_type,
+                    "unread": dialog.unread_count,
+                    "username": getattr(entity, "username", None),
+                })
+            return {"dialogs": dialogs, "total": len(dialogs)}
+        except Exception as e:
+            logger.error("get_dialogs failed", account_id=account_id, error=str(e))
+            return {"error": str(e), "dialogs": []}
+
+
+# ---------------------------------------------------------------------------
+# QR Login — module-level helpers (sync wrappers around async Telethon flow)
+# ---------------------------------------------------------------------------
+
+_qr_sessions: Dict[str, Dict] = {}
+_qr_lock = threading.Lock()
+
+
+def _qr_login_thread(token: str) -> None:
+    """Background thread: runs the full QR login coroutine and updates state."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def _run() -> None:
+        with _qr_lock:
+            state = _qr_sessions.get(token)
+        if not state:
+            return
+
+        client = TelegramClient(
+            StringSession(),
+            settings.telegram.api_id,
+            settings.telegram.api_hash,
+        )
+        state["client"] = client
+        try:
+            await client.connect()
+            qr = await client.qr_login()
+            state["url"] = qr.url
+            state["status"] = "waiting"
+
+            me = await qr.wait(60 * 5)  # wait up to 5 minutes
+            session_str = client.session.save()
+
+            with get_db_context() as db:
+                existing = db.query(Account).filter(
+                    Account.user_id == me.id
+                ).first()
+                if existing:
+                    existing.session_string = session_str
+                    existing.status = AccountStatus.ACTIVE
+                    db.commit()
+                    account_id = existing.id
+                else:
+                    account = Account(
+                        phone_number=me.phone or str(me.id),
+                        session_string=session_str,
+                        user_id=me.id,
+                        username=me.username,
+                        first_name=me.first_name,
+                        last_name=me.last_name,
+                        status=AccountStatus.ACTIVE,
+                        last_active=datetime.utcnow(),
+                    )
+                    db.add(account)
+                    db.commit()
+                    db.refresh(account)
+                    account_id = account.id
+
+            state["account_id"] = account_id
+            state["status"] = "completed"
+        except asyncio.TimeoutError:
+            state["status"] = "expired"
+            state["error"] = "QR code expired — not scanned within 5 minutes"
+        except Exception as e:
+            state["status"] = "error"
+            state["error"] = str(e)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def start_qr_login() -> Dict[str, Any]:
+    """Start a QR code login session. Returns URL + polling token."""
+    token = secrets.token_urlsafe(16)
+    state: Dict[str, Any] = {
+        "status": "starting",
+        "url": None,
+        "account_id": None,
+        "error": None,
+        "created_at": datetime.utcnow(),
+    }
+    with _qr_lock:
+        _qr_sessions[token] = state
+
+    t = threading.Thread(target=_qr_login_thread, args=(token,), daemon=True)
+    t.start()
+
+    # Wait up to 3 seconds for the URL to appear
+    for _ in range(30):
+        time.sleep(0.1)
+        if state.get("url") or state["status"] in ("error", "expired"):
+            break
+
+    if not state.get("url"):
+        with _qr_lock:
+            _qr_sessions.pop(token, None)
+        return {"success": False, "error": state.get("error", "Failed to generate QR code")}
+
+    return {"success": True, "token": token, "url": state["url"]}
+
+
+def check_qr_login(token: str) -> Dict[str, Any]:
+    """Poll QR login status by token."""
+    with _qr_lock:
+        state = _qr_sessions.get(token)
+
+    if not state:
+        return {"success": False, "error": "QR session not found or expired"}
+
+    status = state["status"]
+
+    if status == "completed":
+        with _qr_lock:
+            _qr_sessions.pop(token, None)
+        return {"success": True, "completed": True, "account_id": state.get("account_id")}
+
+    if status in ("error", "expired"):
+        with _qr_lock:
+            _qr_sessions.pop(token, None)
+        return {"success": False, "completed": False, "error": state.get("error")}
+
+    # still waiting
+    return {"success": True, "completed": False, "url": state.get("url"), "status": status}
 
 
 # Global client manager instance
