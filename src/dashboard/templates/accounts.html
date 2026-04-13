@@ -20,11 +20,6 @@
 <div id="health-check-status" class="alert d-none mb-3"></div>
 <div id="precheck-status" class="alert d-none mb-3"></div>
 
-<div class="alert alert-info mb-4">
-    <strong><i class="bi bi-chat-dots"></i> Use an account for Scheduler (send messages to groups):</strong>
-    In the <strong>Purpose</strong> column below, set the account to <strong>Messaging</strong> or <strong>Both</strong>.
-    Then it will appear in <a href="/scheduler" class="alert-link">Scheduler</a> when you choose "Select user".
-</div>
 
 <div class="card">
     <div class="card-body">
@@ -32,19 +27,16 @@
             <thead>
                 <tr>
                     <th>ID</th>
-                    <th>Phone</th>
-                    <th>Username</th>
-                    <th>Status</th>
+                    <th>Phone / Username</th>
                     <th>Health</th>
                     <th>Story Ready</th>
-                    <th>Purpose <small class="text-muted" title="Messaging = use in Scheduler only">(Scheduler / Stories)</small></th>
-                    <th>Stories Today</th>
-                    <th>Last Active</th>
+                    <th>Publish</th>
+                    <th>Purpose <small class="text-muted" title="Messaging = Scheduler only, Both = stories + scheduler">▾</small></th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="accounts-table">
-                <tr><td colspan="10" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -225,9 +217,6 @@ async function loadAccounts() {
             const toggleTip  = canToggle
                 ? (statusKey === 'active' ? 'Disable account' : 'Enable account')
                 : `Cannot toggle — account is "${label}". Fix the underlying issue first.`;
-            const lastActive = a.last_active
-                ? new Date(a.last_active).toLocaleString()
-                : 'Never';
 
             // Health column
             const healthLabel  = a.general_health_label || 'Unknown';
@@ -256,18 +245,19 @@ async function loadAccounts() {
                 ? `<i class="bi bi-clock-history text-warning ms-1" title="Precheck expired — run Story Precheck"></i>`
                 : '';
 
+            // Publish column — can this account post a story right now?
+            const canPublish = statusKey === 'active' && healthLabel === 'Alive' && storyReady;
+            const publishBadge = canPublish
+                ? `<span style="background:#22c55e;color:#fff;padding:3px 10px;border-radius:4px;font-size:0.82em;font-weight:600;">YES</span>`
+                : `<span style="background:#ef4444;color:#fff;padding:3px 10px;border-radius:4px;font-size:0.82em;"
+                         title="${tooltip}">NO</span>`;
+
+            const userSub = a.username ? `<br><small class="text-muted">@${a.username}</small>` : '';
+
             return `
             <tr>
                 <td>${a.id}</td>
-                <td>${a.phone_number || ''}</td>
-                <td>${a.username ? '@' + a.username : '-'}</td>
-                <td>
-                    <span class="badge badge-${statusKey}"
-                          title="${tooltip}"
-                          style="color:#fff; padding:4px 8px; border-radius:4px; cursor:default;">
-                        ${label}
-                    </span>
-                </td>
+                <td>${a.phone_number || ''}${userSub}</td>
                 <td>
                     <span style="display:inline-flex;align-items:center;gap:4px;">
                         <span style="background:${healthColor};color:#fff;padding:3px 8px;border-radius:4px;font-size:0.82em;cursor:default;"
@@ -284,27 +274,21 @@ async function loadAccounts() {
                         </span>${storyStaleIcon}
                     </span>
                 </td>
+                <td>${publishBadge}</td>
                 <td>
                     <select class="form-select form-select-sm purpose-select" style="width:auto;"
                             data-account-id="${a.id}"
-                            title="Messaging = Scheduler only, Autostory = Stories only, Both = both">
+                            title="Messaging = Scheduler only, Stories only = Autostory, Both = both">
                         <option value="both"      ${purpose === 'both'      ? 'selected' : ''}>Both</option>
                         <option value="autostory" ${purpose === 'autostory' ? 'selected' : ''}>Stories only</option>
-                        <option value="messaging" ${purpose === 'messaging' ? 'selected' : ''}>Messaging (Scheduler)</option>
+                        <option value="messaging" ${purpose === 'messaging' ? 'selected' : ''}>Messaging</option>
                     </select>
                 </td>
-                <td>${a.stories_today ?? 0}</td>
-                <td>${lastActive}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-secondary"
                             onclick="viewAccount(${a.id})"
-                            title="View account details">
+                            title="${tooltip} — click for details">
                         <i class="bi bi-eye"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-info"
-                            onclick="openLoginCodeModal(${a.id})"
-                            title="Get login code for phone">
-                        <i class="bi bi-phone"></i>
                     </button>
                     <button class="btn btn-sm btn-outline-danger"
                             onclick="${canToggle ? `toggleAccount(${a.id}, '${statusKey}')` : ''}"
@@ -319,7 +303,7 @@ async function loadAccounts() {
 
     } catch (error) {
         console.error('Failed to load accounts:', error);
-        if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
     }
 }
 
@@ -616,7 +600,13 @@ async function viewAccount(id) {
             <tr><th>Last Active</th><td>${a.last_active ? new Date(a.last_active).toLocaleString() : 'Never'}</td></tr>
             <tr><th>Last Error</th><td class="text-danger small">${a.last_error || '-'}</td></tr>
             <tr><th>Created</th><td>${a.created_at ? new Date(a.created_at).toLocaleString() : '-'}</td></tr>
-        </table>`;
+        </table>
+        <div class="mt-3 pt-2 border-top border-secondary">
+            <button class="btn btn-sm btn-outline-secondary" onclick="openLoginCodeModal(${id})">
+                <i class="bi bi-phone"></i> Get Login Code
+            </button>
+            <small class="text-muted ms-2">Use when you can't receive SMS</small>
+        </div>`;
     } catch (e) {
         body.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
     }
