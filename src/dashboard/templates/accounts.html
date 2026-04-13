@@ -20,6 +20,79 @@
 <div id="health-check-status" class="alert d-none mb-3"></div>
 <div id="precheck-status" class="alert d-none mb-3"></div>
 
+<!-- ── Story operations overview ───────────────────────────────────────── -->
+<div class="row g-3 mb-3" id="story-summary-cards">
+
+    <!-- Ready to publish -->
+    <div class="col-6 col-xl-3">
+        <div class="card h-100" style="border-left:4px solid #22c55e;">
+            <div class="card-body p-3">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Ready to publish</span>
+                    <i class="bi bi-check-circle-fill" style="color:#22c55e;font-size:1.1em;"></i>
+                </div>
+                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-ready" style="color:#22c55e;">—</div>
+                <a href="/scheduler" class="btn btn-success btn-sm w-100">
+                    <i class="bi bi-calendar2-check"></i> Open Scheduler
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Needs precheck -->
+    <div class="col-6 col-xl-3">
+        <div class="card h-100" style="border-left:4px solid #f59e0b;">
+            <div class="card-body p-3">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Needs precheck</span>
+                    <i class="bi bi-hourglass-split" style="color:#f59e0b;font-size:1.1em;"></i>
+                </div>
+                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-precheck" style="color:#f59e0b;">—</div>
+                <button class="btn btn-warning btn-sm w-100" id="card-precheck-btn" onclick="runStoryPrecheck()">
+                    <i class="bi bi-camera-video"></i> Run Precheck
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocked / banned -->
+    <div class="col-6 col-xl-3">
+        <div class="card h-100" style="border-left:4px solid #ef4444;">
+            <div class="card-body p-3">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Blocked / banned</span>
+                    <i class="bi bi-slash-circle-fill" style="color:#ef4444;font-size:1.1em;"></i>
+                </div>
+                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-blocked" style="color:#ef4444;">—</div>
+                <button class="btn btn-outline-danger btn-sm w-100" data-filter-btn="blocked" onclick="filterTable('blocked')">
+                    <i class="bi bi-funnel"></i> View accounts
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auth / inactive -->
+    <div class="col-6 col-xl-3">
+        <div class="card h-100" style="border-left:4px solid #8b5cf6;">
+            <div class="card-body p-3">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Auth / inactive</span>
+                    <i class="bi bi-person-x-fill" style="color:#8b5cf6;font-size:1.1em;"></i>
+                </div>
+                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-attention" style="color:#8b5cf6;">—</div>
+                <button class="btn btn-outline-secondary btn-sm w-100" data-filter-btn="attention" onclick="filterTable('attention')">
+                    <i class="bi bi-funnel"></i> View accounts
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filter active indicator -->
+<div id="filter-active-banner" class="d-none mb-2 d-flex align-items-center gap-2">
+    <span class="badge bg-secondary"><i class="bi bi-funnel-fill"></i> Filter active</span>
+    <button class="btn btn-sm btn-link text-muted p-0 text-decoration-none" onclick="clearFilter()">Clear ×</button>
+</div>
 
 <div class="card">
     <div class="card-body">
@@ -177,6 +250,8 @@
 {% block extra_js %}
 <script>
 let authData = {};
+let _allAccounts = [];
+let _activeFilter = null;
 
 // Human-readable labels and tooltips for each account status
 const STATUS_LABEL = {
@@ -204,9 +279,12 @@ async function loadAccounts() {
         const accounts = await response.json();
 
         if (!Array.isArray(accounts) || accounts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No accounts added yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No accounts added yet</td></tr>';
+            updateSummaryCards([]);
             return;
         }
+
+        _allAccounts = accounts;
 
         tbody.innerHTML = accounts.map(a => {
             const purpose    = a.purpose || 'both';
@@ -255,7 +333,7 @@ async function loadAccounts() {
             const userSub = a.username ? `<br><small class="text-muted">@${a.username}</small>` : '';
 
             return `
-            <tr>
+            <tr data-category="${getAccountCategory(a)}">
                 <td>${a.id}</td>
                 <td>${a.phone_number || ''}${userSub}</td>
                 <td>
@@ -301,6 +379,9 @@ async function loadAccounts() {
         `;
         }).join('');
 
+        updateSummaryCards(accounts);
+        applyFilter();
+
     } catch (error) {
         console.error('Failed to load accounts:', error);
         if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
@@ -321,6 +402,64 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+// ── Summary cards & filter ────────────────────────────────────────────────
+
+function getAccountCategory(a) {
+    const statusKey   = (a.status || 'inactive').toLowerCase();
+    const healthLabel = a.general_health_label || 'Unknown';
+    const storyReady  = a.publish_story_status === 'yes';
+    const storyChecked = !!a.story_precheck_checked_at;
+    const isAlive     = statusKey === 'active' && healthLabel === 'Alive';
+
+    if (isAlive && storyReady)   return 'ready';
+    if (isAlive && !storyChecked) return 'needs_precheck';  // alive but never checked
+    if (isAlive && !storyReady)   return 'blocked';         // alive, checked, rejected
+    if (['banned', 'flood_wait'].includes(statusKey) ||
+        ['Banned', 'Flood Wait', 'Frozen'].includes(healthLabel)) return 'blocked';
+    return 'attention'; // inactive, auth_required, unknown
+}
+
+function updateSummaryCards(accounts) {
+    const counts = { ready: 0, needs_precheck: 0, blocked: 0, attention: 0 };
+    accounts.forEach(a => {
+        const cat = getAccountCategory(a);
+        counts[cat] = (counts[cat] || 0) + 1;
+    });
+
+    document.getElementById('card-count-ready').textContent     = counts.ready;
+    document.getElementById('card-count-precheck').textContent  = counts.needs_precheck;
+    document.getElementById('card-count-blocked').textContent   = counts.blocked;
+    document.getElementById('card-count-attention').textContent = counts.attention;
+
+    const precheckBtn = document.getElementById('card-precheck-btn');
+    if (precheckBtn) precheckBtn.disabled = counts.needs_precheck === 0;
+}
+
+function filterTable(category) {
+    _activeFilter = (_activeFilter === category) ? null : category; // toggle off if same
+    applyFilter();
+}
+
+function clearFilter() {
+    _activeFilter = null;
+    applyFilter();
+}
+
+function applyFilter() {
+    document.querySelectorAll('#accounts-table tr[data-category]').forEach(row => {
+        row.style.display = (!_activeFilter || row.dataset.category === _activeFilter) ? '' : 'none';
+    });
+    // Update filter button active state
+    document.querySelectorAll('[data-filter-btn]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filterBtn === _activeFilter);
+    });
+    // Show/hide filter banner
+    const banner = document.getElementById('filter-active-banner');
+    if (banner) banner.classList.toggle('d-none', !_activeFilter);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function startAuth() {
     const phone = document.getElementById('phone-number').value;
