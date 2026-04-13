@@ -6,199 +6,226 @@
 
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h2><i class="bi bi-collection-play"></i> Stories</h2>
+    <h2 class="mb-0"><i class="bi bi-collection-play"></i> Stories</h2>
     <div class="d-flex gap-2">
-        <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#batchPublishModal">
-            <i class="bi bi-layers"></i> Batch Publish
+        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#batchPublishModal">
+            <i class="bi bi-layers"></i> Quick Batch
         </button>
-        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#publishStoryModal">
-            <i class="bi bi-plus-circle"></i> Publish Story
+        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#publishStoryModal">
+            <i class="bi bi-plus-circle"></i> Single Story
         </button>
     </div>
 </div>
 
-<!-- ── Fleet health pills (computed from accounts) ────────────────────────── -->
-<div class="mb-3 d-flex gap-2 flex-wrap align-items-center">
-    <small class="text-muted me-1">Fleet:</small>
-    <span class="badge rounded-pill" id="fleet-healthy"      style="background:#6b7280;">— Healthy</span>
-    <span class="badge rounded-pill" id="fleet-story-ready"  style="background:#6b7280;">— Story Ready</span>
-    <span class="badge rounded-pill" id="fleet-rate-limited" style="background:#6b7280;">— Rate Limited</span>
-    <span class="badge rounded-pill" id="fleet-frozen"       style="background:#6b7280;">— Frozen</span>
-    <a href="/accounts" class="btn btn-sm btn-link text-muted p-0 ms-1" style="font-size:0.8em;">
-        <i class="bi bi-arrow-right-circle"></i> Accounts
-    </a>
-</div>
-
-<!-- ── Stats cards ─────────────────────────────────────────────────────────── -->
-<div class="row g-3 mb-4">
+<!-- ── STEP 1: Fleet readiness ─────────────────────────────────────────────── -->
+<div class="row g-2 mb-4">
     <div class="col-6 col-md-3">
-        <div class="card h-100 text-center">
-            <div class="card-body py-3">
-                <div class="fs-2 fw-bold" id="total-stories">—</div>
-                <small class="text-muted">Total Stories</small>
+        <div class="card h-100" style="border-left:4px solid #22c55e;">
+            <div class="card-body py-2 px-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fs-3 fw-bold lh-1 mb-1" id="fleet-story-ready-count" style="color:#22c55e;">—</div>
+                        <small class="text-muted">Story Ready</small>
+                    </div>
+                    <i class="bi bi-check-circle-fill fs-3" style="color:#22c55e;opacity:.2;"></i>
+                </div>
             </div>
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card h-100 text-center" style="border-left:3px solid #22c55e;">
-            <div class="card-body py-3">
-                <div class="fs-2 fw-bold" style="color:#22c55e;" id="today-stories">—</div>
-                <small class="text-muted">Published Today</small>
+        <div class="card h-100" style="border-left:4px solid #475569;">
+            <div class="card-body py-2 px-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fs-3 fw-bold lh-1 mb-1" id="fleet-healthy-count" style="color:#94a3b8;">—</div>
+                        <small class="text-muted">Healthy</small>
+                    </div>
+                    <i class="bi bi-heart-pulse fs-3" style="color:#94a3b8;opacity:.2;"></i>
+                </div>
             </div>
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card h-100 text-center">
-            <div class="card-body py-3">
-                <div class="fs-2 fw-bold" id="total-mentions">—</div>
-                <small class="text-muted">Total Mentions</small>
+        <div class="card h-100" style="border-left:4px solid #f59e0b;">
+            <div class="card-body py-2 px-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fs-3 fw-bold lh-1 mb-1" id="fleet-limited-count" style="color:#94a3b8;">—</div>
+                        <small class="text-muted">Rate Limited</small>
+                    </div>
+                    <i class="bi bi-hourglass-split fs-3" style="color:#f59e0b;opacity:.2;"></i>
+                </div>
             </div>
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card h-100 text-center" style="border-left:3px solid #6366f1;">
-            <div class="card-body py-3">
-                <div class="fs-2 fw-bold" style="color:#6366f1;" id="accounts-ready">—</div>
-                <small class="text-muted">Accounts Ready</small>
+        <div class="card h-100" style="border-left:4px solid #ef4444;">
+            <div class="card-body py-2 px-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fs-3 fw-bold lh-1 mb-1" id="fleet-blocked-count" style="color:#94a3b8;">—</div>
+                        <small class="text-muted">Frozen / Blocked</small>
+                    </div>
+                    <i class="bi bi-slash-circle-fill fs-3" style="color:#ef4444;opacity:.2;"></i>
+                </div>
             </div>
         </div>
-    </div>
-</div>
-
-<!-- ── Stories table ───────────────────────────────────────────────────────── -->
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center py-2">
-        <span class="fw-semibold"><i class="bi bi-list-ul"></i> Recent Stories</span>
-        <button class="btn btn-sm btn-outline-secondary" onclick="loadStories(currentPage)">
-            <i class="bi bi-arrow-clockwise"></i>
-        </button>
-    </div>
-    <div class="card-body p-0">
-        <table class="table table-hover mb-0">
-            <thead>
-                <tr>
-                    <th class="ps-3">ID</th>
-                    <th>Account</th>
-                    <th>Type</th>
-                    <th>Caption</th>
-                    <th>Mentions</th>
-                    <th>Views</th>
-                    <th>Published</th>
-                </tr>
-            </thead>
-            <tbody id="stories-table">
-                <tr><td colspan="7" class="text-center text-muted py-3">Loading...</td></tr>
-            </tbody>
-        </table>
-    </div>
-    <div class="card-footer py-2">
-        <nav><ul class="pagination justify-content-center mb-0" id="pagination"></ul></nav>
     </div>
 </div>
 
-<!-- ── Mention blacklist ───────────────────────────────────────────────────── -->
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center py-2">
-        <span class="fw-semibold"><i class="bi bi-person-slash"></i> Mention Blacklist</span>
-        <button class="btn btn-sm btn-outline-primary" onclick="toggleBlacklistForm()">
-            <i class="bi bi-plus"></i> Add
-        </button>
+<!-- ── STEP 2: Schedule a Batch — HERO ─────────────────────────────────────── -->
+<div class="card mb-4" style="border:1px solid rgba(99,102,241,.4);">
+    <div class="card-header d-flex justify-content-between align-items-center"
+         style="background:rgba(99,102,241,.07);border-bottom:1px solid rgba(99,102,241,.2);">
+        <span class="fw-bold">
+            <i class="bi bi-calendar2-check text-primary me-2"></i>Schedule a Batch
+        </span>
+        <span class="text-muted small" id="sched-ready-label">loading fleet…</span>
     </div>
-    <div id="blacklist-form-area" style="display:none;" class="card-body border-bottom">
-        <div class="row g-2">
-            <div class="col-md-3">
-                <input type="text" class="form-control form-control-sm" id="bl-username" placeholder="@username">
-            </div>
-            <div class="col-md-3">
-                <input type="text" class="form-control form-control-sm" id="bl-userid" placeholder="User ID">
-            </div>
+    <div class="card-body p-4">
+        <div class="row g-3">
             <div class="col-md-4">
-                <input type="text" class="form-control form-control-sm" id="bl-reason" placeholder="Reason (optional)">
-            </div>
-            <div class="col-md-2">
-                <button class="btn btn-sm btn-primary w-100" onclick="addBlacklist()">Add</button>
-            </div>
-        </div>
-    </div>
-    <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-            <thead>
-                <tr>
-                    <th class="ps-3">Username</th>
-                    <th>User ID</th>
-                    <th>Reason</th>
-                    <th style="width:40px;"></th>
-                </tr>
-            </thead>
-            <tbody id="blacklist-table">
-                <tr><td colspan="4" class="text-center text-muted py-2 ps-3">No entries</td></tr>
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<!-- ── Schedule a batch ────────────────────────────────────────────────────── -->
-<div class="card mb-4">
-    <div class="card-header py-2">
-        <span class="fw-semibold"><i class="bi bi-clock"></i> Schedule a Batch</span>
-    </div>
-    <div class="card-body">
-        <div class="row g-3 align-items-end">
-            <div class="col-md-3">
-                <label class="form-label small text-muted mb-1">Template</label>
-                <select class="form-select form-select-sm" id="sched-template">
+                <label class="form-label fw-semibold mb-1">Template</label>
+                <select class="form-select" id="sched-template">
                     <option value="">— Select template —</option>
                 </select>
             </div>
-            <div class="col-md-3">
-                <label class="form-label small text-muted mb-1">Run at</label>
-                <input type="datetime-local" class="form-control form-control-sm" id="sched-run-at">
+            <div class="col-md-4">
+                <label class="form-label fw-semibold mb-1">Media <span class="text-muted fw-normal small">(photo / video)</span></label>
+                <input type="file" class="form-control" id="sched-media" accept="image/*,video/*">
             </div>
-            <div class="col-md-2">
-                <label class="form-label small text-muted mb-1">Repeat</label>
-                <select class="form-select form-select-sm" id="sched-repeat">
+            <div class="col-md-4">
+                <label class="form-label fw-semibold mb-1">Run at</label>
+                <input type="datetime-local" class="form-control" id="sched-run-at">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label fw-semibold mb-1">Repeat</label>
+                <select class="form-select" id="sched-repeat">
                     <option value="once">Once</option>
                     <option value="daily">Daily</option>
                     <option value="hourly">Hourly</option>
                 </select>
             </div>
-            <div class="col-md-3">
-                <label class="form-label small text-muted mb-1">Media (photo/video)</label>
-                <input type="file" class="form-control form-control-sm" id="sched-media" accept="image/*,video/*">
-            </div>
-            <div class="col-md-1">
-                <button class="btn btn-primary btn-sm w-100" onclick="scheduleBatch()">
-                    <i class="bi bi-send"></i>
-                </button>
+            <div class="col-md-8 d-flex align-items-end">
+                <div class="w-100">
+                    <div id="sched-result" class="d-none mb-2"></div>
+                    <button class="btn btn-primary w-100 py-2" style="font-size:1.05em;" id="btn-schedule" onclick="scheduleBatch()">
+                        <i class="bi bi-calendar2-check me-1"></i> Schedule Batch
+                    </button>
+                </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- ── Batch history ───────────────────────────────────────────────────────── -->
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center py-2">
-        <span class="fw-semibold"><i class="bi bi-clock-history"></i> Batch History</span>
-        <button class="btn btn-sm btn-outline-secondary" onclick="loadBatchHistory()">
-            <i class="bi bi-arrow-clockwise"></i>
-        </button>
+<!-- ── STEP 3: Recent activity — side by side ──────────────────────────────── -->
+<div class="row g-3 mb-4">
+
+    <!-- Recent Stories -->
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <span class="fw-semibold">
+                    <i class="bi bi-collection"></i> Recent Stories
+                    &nbsp;<span id="stories-today-badge" class="badge rounded-pill"
+                          style="background:#22c55e;font-weight:500;">—</span>
+                    <small class="text-muted fw-normal">today</small>
+                </span>
+                <button class="btn btn-sm btn-outline-secondary p-1 lh-1"
+                        onclick="loadStories(1)" title="Refresh">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="card-body p-0" style="overflow-x:auto;">
+                <table class="table table-sm table-hover mb-0" style="font-size:.84em;">
+                    <thead>
+                        <tr>
+                            <th class="ps-3">Account</th>
+                            <th>Type</th>
+                            <th>Caption</th>
+                            <th class="text-end pe-3">When</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stories-table">
+                        <tr><td colspan="4" class="text-center text-muted py-3">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="card-footer py-1">
+                <nav><ul class="pagination pagination-sm justify-content-center mb-0" id="pagination"></ul></nav>
+            </div>
+        </div>
     </div>
-    <div class="card-body p-0">
-        <table class="table table-sm table-hover mb-0">
-            <thead>
-                <tr>
-                    <th class="ps-3">Run</th>
-                    <th>Started</th>
-                    <th>Attempted</th>
-                    <th class="text-success">OK</th>
-                    <th class="text-danger">Failed</th>
-                    <th>Pool</th>
-                </tr>
-            </thead>
-            <tbody id="batch-history-table">
-                <tr><td colspan="6" class="text-center text-muted py-2 ps-3">Loading...</td></tr>
-            </tbody>
-        </table>
+
+    <!-- Batch History -->
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <span class="fw-semibold"><i class="bi bi-clock-history"></i> Batch History</span>
+                <button class="btn btn-sm btn-outline-secondary p-1 lh-1"
+                        onclick="loadBatchHistory()" title="Refresh">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="card-body p-0" style="overflow-x:auto;">
+                <table class="table table-sm table-hover mb-0" style="font-size:.84em;">
+                    <thead>
+                        <tr>
+                            <th class="ps-3">Run</th>
+                            <th>Started</th>
+                            <th class="text-success">OK / Total</th>
+                            <th class="text-danger pe-3">Failed</th>
+                        </tr>
+                    </thead>
+                    <tbody id="batch-history-table">
+                        <tr><td colspan="4" class="text-center text-muted py-3">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Mention Blacklist — collapsed ───────────────────────────────────────── -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center py-2"
+         style="cursor:pointer;" onclick="toggleSection('blacklist-section','blacklist-chevron')">
+        <span class="fw-semibold text-muted">
+            <i class="bi bi-person-slash"></i> Mention Blacklist
+            <span class="badge bg-secondary ms-1 fw-normal small" id="blacklist-count"></span>
+        </span>
+        <i class="bi bi-chevron-down text-muted" id="blacklist-chevron"></i>
+    </div>
+    <div id="blacklist-section" style="display:none;">
+        <div class="card-body border-bottom py-2">
+            <div class="row g-2">
+                <div class="col-md-3">
+                    <input type="text" class="form-control form-control-sm" id="bl-username" placeholder="@username">
+                </div>
+                <div class="col-md-3">
+                    <input type="text" class="form-control form-control-sm" id="bl-userid" placeholder="User ID">
+                </div>
+                <div class="col-md-4">
+                    <input type="text" class="form-control form-control-sm" id="bl-reason" placeholder="Reason (optional)">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-sm btn-primary w-100" onclick="addBlacklist()">Add</button>
+                </div>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th class="ps-3">Username</th><th>User ID</th><th>Reason</th>
+                        <th style="width:36px;"></th>
+                    </tr>
+                </thead>
+                <tbody id="blacklist-table">
+                    <tr><td colspan="4" class="text-center text-muted py-2 ps-3">No entries</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -214,9 +241,7 @@
                 <div class="row g-3">
                     <div class="col-md-6">
                         <label class="form-label">Account</label>
-                        <select class="form-select" id="story-account">
-                            <option>Loading...</option>
-                        </select>
+                        <select class="form-select" id="story-account"><option>Loading...</option></select>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">Media Path</label>
@@ -228,7 +253,7 @@
                         <textarea class="form-control" id="story-caption" rows="3"></textarea>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label">Mentions <small class="text-muted">(user IDs, comma-separated)</small></label>
+                        <label class="form-label">Mentions <small class="text-muted">(user IDs, comma-sep)</small></label>
                         <input type="text" class="form-control" id="story-mentions" placeholder="123456, 789012">
                     </div>
                 </div>
@@ -241,12 +266,12 @@
     </div>
 </div>
 
-<!-- ── Batch Publish Modal ─────────────────────────────────────────────────── -->
+<!-- ── Quick Batch Modal ───────────────────────────────────────────────────── -->
 <div class="modal fade" id="batchPublishModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content bg-dark">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-layers"></i> Batch Publish</h5>
+                <h5 class="modal-title"><i class="bi bi-layers"></i> Quick Batch</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -270,7 +295,7 @@
                 </div>
                 <div id="batch-result" class="d-none mb-3"></div>
                 <button class="btn btn-primary w-100" id="btn-batch-start" onclick="batchPublish()">
-                    <i class="bi bi-layers"></i> Start Batch
+                    <i class="bi bi-layers"></i> Start Batch Now
                 </button>
             </div>
         </div>
@@ -281,123 +306,214 @@
 
 {% block extra_js %}
 <script>
-let currentPage  = 1;
-let _accountMap  = {};   // account_id → account object
+let currentPage = 1;
+let _accountMap = {};  // account_id → account object
 
-// ── Fleet health + account map ────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
+function relTime(iso) {
+    const diff = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m <   1) return 'just now';
+    if (m <  60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h <  24) return h + 'h ago';
+    const d = Math.floor(h / 24);
+    if (d <   7) return d + 'd ago';
+    return new Date(iso).toLocaleDateString(undefined, { month:'short', day:'numeric' });
+}
+
+function toggleSection(sectionId, chevronId) {
+    const sec = document.getElementById(sectionId);
+    const chv = chevronId && document.getElementById(chevronId);
+    const open = sec.style.display !== 'none';
+    sec.style.display = open ? 'none' : '';
+    if (chv) chv.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+// ── Fleet readiness ────────────────────────────────────────────────────────
 async function loadFleetStatus() {
     try {
         const resp = await fetch('/api/accounts?limit=500');
         if (!resp.ok) return;
         const accounts = await resp.json();
 
-        // Build lookup map used by the stories table
+        // Build account lookup map for stories table
         accounts.forEach(a => { _accountMap[a.id] = a; });
 
-        // Populate publish-story account dropdown (active accounts only)
+        // Populate Publish Story account dropdown
         const sel = document.getElementById('story-account');
         const active = accounts.filter(a => a.status === 'active');
         sel.innerHTML = active.length
             ? active.map(a => {
-                const label = (a.phone_number || String(a.id)) + (a.username ? ' (@' + a.username + ')' : '');
-                return `<option value="${a.id}">${label}</option>`;
+                const lbl = (a.phone_number || String(a.id)) + (a.username ? ' (@' + a.username + ')' : '');
+                return `<option value="${a.id}">${lbl}</option>`;
               }).join('')
             : '<option disabled>No active accounts</option>';
 
-        // Compute fleet pills
         const healthy     = accounts.filter(a => a.general_health_label === 'Alive').length;
         const storyReady  = accounts.filter(a => a.publish_story_status === 'yes' && a.status === 'active').length;
         const rateLimited = accounts.filter(a =>
             a.status === 'flood_wait' || a.general_health_label === 'Flood Wait').length;
         const frozen      = accounts.filter(a =>
             (a.general_health_label || '').toLowerCase() === 'frozen' ||
-            (a.story_precheck_status || '').toLowerCase() === 'frozen').length;
+            (a.story_precheck_status  || '').toLowerCase() === 'frozen').length;
 
-        setFleetPill('fleet-healthy',      `${healthy} Healthy`,       '#22c55e');
-        setFleetPill('fleet-story-ready',  `${storyReady} Story Ready`, '#22c55e');
-        setFleetPill('fleet-rate-limited', `${rateLimited} Rate Limited`,
-                     rateLimited > 0 ? '#f59e0b' : '#6b7280');
-        setFleetPill('fleet-frozen',       `${frozen} Frozen`,
-                     frozen > 0 ? '#ef4444' : '#6b7280');
+        setText('fleet-story-ready-count', storyReady,  storyReady  > 0 ? '#22c55e' : '#94a3b8');
+        setText('fleet-healthy-count',     healthy,      '#94a3b8');
+        setText('fleet-limited-count',     rateLimited,  rateLimited > 0 ? '#f59e0b' : '#94a3b8');
+        setText('fleet-blocked-count',     frozen,       frozen      > 0 ? '#ef4444' : '#94a3b8');
 
-        document.getElementById('accounts-ready').textContent = storyReady;
-    } catch (e) { console.error('Fleet status load failed', e); }
+        const lbl = document.getElementById('sched-ready-label');
+        if (lbl) lbl.textContent = storyReady > 0
+            ? `${storyReady} accounts ready`
+            : 'No accounts story-ready — run precheck first';
+    } catch (e) { console.error('Fleet load failed', e); }
 }
 
-function setFleetPill(id, text, color) {
+function setText(id, value, color) {
     const el = document.getElementById(id);
-    if (el) { el.textContent = text; el.style.background = color; }
+    if (!el) return;
+    el.textContent = value;
+    if (color) el.style.color = color;
 }
 
 // ── Stories table ──────────────────────────────────────────────────────────
 async function loadStories(page = 1) {
     currentPage = page;
     const tbody = document.getElementById('stories-table');
-    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">'
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">'
         + '<span class="spinner-border spinner-border-sm"></span></td></tr>';
     try {
         const resp = await fetch(`/api/stories?page=${page}&per_page=20`);
         const data = await resp.json();
 
-        document.getElementById('total-stories').textContent = data.total ?? '—';
-
-        // Compute today's count and visible mention sum
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-        let todayCount = 0, mentionSum = 0;
+        let todayCount = 0;
         (data.stories || []).forEach(s => {
             if (new Date(s.published_at) >= todayStart) todayCount++;
-            mentionSum += (s.mentions || 0);
         });
-        document.getElementById('today-stories').textContent = todayCount;
-        document.getElementById('total-mentions').textContent = mentionSum;
+        const badge = document.getElementById('stories-today-badge');
+        if (badge) badge.textContent = todayCount;
 
         if (!data.stories || data.stories.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No stories yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">No stories yet</td></tr>';
             updatePagination(page, 0);
             return;
         }
 
         const MEDIA_COLORS = { photo: '#6366f1', video: '#f59e0b', gif: '#22c55e' };
         tbody.innerHTML = data.stories.map(s => {
-            const acc      = _accountMap[s.account_id];
-            const phone    = acc ? (acc.phone_number || `#${s.account_id}`) : `#${s.account_id}`;
-            const uname    = acc && acc.username ? ` <small class="text-muted">@${acc.username}</small>` : '';
-            const mt       = (s.media_type || 'photo').toLowerCase();
-            const mtColor  = MEDIA_COLORS[mt] || '#6b7280';
-            const caption  = s.caption
-                ? `<span title="${s.caption.replace(/"/g,'&quot;')}">${s.caption.length > 40 ? s.caption.slice(0,40) + '…' : s.caption}</span>`
+            const acc    = _accountMap[s.account_id];
+            const phone  = acc ? (acc.phone_number || `#${s.account_id}`) : `#${s.account_id}`;
+            const uname  = acc && acc.username
+                ? `<br><span class="text-muted" style="font-size:.78em;">@${acc.username}</span>` : '';
+            const mt     = (s.media_type || 'photo').toLowerCase();
+            const cap    = s.caption
+                ? (s.caption.length > 35 ? s.caption.slice(0, 35) + '…' : s.caption)
                 : '<span class="text-muted">—</span>';
             return `<tr>
-                <td class="ps-3 text-muted small">${s.id}</td>
-                <td>${phone}${uname}</td>
-                <td><span class="badge" style="background:${mtColor};">${mt}</span></td>
-                <td>${caption}</td>
-                <td>${s.mentions ?? 0}</td>
-                <td>${s.views ?? 0}</td>
-                <td class="text-muted small">${new Date(s.published_at).toLocaleString()}</td>
+                <td class="ps-3">${phone}${uname}</td>
+                <td><span class="badge" style="background:${MEDIA_COLORS[mt]||'#6b7280'}">${mt}</span></td>
+                <td title="${(s.caption||'').replace(/"/g,'&quot;')}">${cap}</td>
+                <td class="text-end pe-3 text-muted">${relTime(s.published_at)}</td>
             </tr>`;
         }).join('');
 
         updatePagination(page, Math.ceil(data.total / (data.per_page || 20)));
     } catch (e) {
-        console.error('Failed to load stories:', e);
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger py-3">Failed to load</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger py-3">Failed to load</td></tr>';
     }
 }
 
 function updatePagination(current, total) {
     const pg = document.getElementById('pagination');
     if (total <= 1) { pg.innerHTML = ''; return; }
-    const start = Math.max(1, current - 3);
-    const end   = Math.min(total, current + 3);
-    let html = '';
-    if (start > 1)   html += `<li class="page-item"><a class="page-link" href="#" onclick="loadStories(1);return false;">1…</a></li>`;
-    for (let i = start; i <= end; i++) {
+    const start = Math.max(1, current - 3), end = Math.min(total, current + 3);
+    let html = start > 1
+        ? `<li class="page-item"><a class="page-link" href="#" onclick="loadStories(1);return false;">1…</a></li>` : '';
+    for (let i = start; i <= end; i++)
         html += `<li class="page-item ${i === current ? 'active' : ''}">
             <a class="page-link" href="#" onclick="loadStories(${i});return false;">${i}</a></li>`;
-    }
-    if (end < total) html += `<li class="page-item"><a class="page-link" href="#" onclick="loadStories(${total});return false;">…${total}</a></li>`;
+    if (end < total)
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadStories(${total});return false;">…${total}</a></li>`;
     pg.innerHTML = html;
+}
+
+// ── Batch history ──────────────────────────────────────────────────────────
+async function loadBatchHistory() {
+    const tbody = document.getElementById('batch-history-table');
+    try {
+        const r = await fetch('/api/stories/runs');
+        if (!r.ok) { tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">No data</td></tr>'; return; }
+        const data = await r.json();
+        const runs = data.runs || data || [];
+        tbody.innerHTML = runs.length
+            ? runs.map(b => {
+                const ok      = b.ok ?? b.successful ?? 0;
+                const total   = b.attempted ?? b.total ?? 0;
+                const failed  = b.failed ?? 0;
+                return `<tr>
+                    <td class="ps-3 text-muted">#${b.id}</td>
+                    <td>${relTime(b.started_at || b.created_at)}</td>
+                    <td class="text-success fw-semibold">${ok}<span class="text-muted fw-normal"> / ${total}</span></td>
+                    <td class="pe-3 ${failed > 0 ? 'text-danger' : 'text-muted'}">${failed}</td>
+                </tr>`;
+              }).join('')
+            : '<tr><td colspan="4" class="text-center text-muted py-3">No runs yet</td></tr>';
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">No data</td></tr>';
+    }
+}
+
+// ── Schedule batch (hero form) ─────────────────────────────────────────────
+async function loadTemplates() {
+    try {
+        const r = await fetch('/api/stories/templates');
+        if (!r.ok) return;
+        const data  = await r.json();
+        const items = data.templates || data || [];
+        if (!items.length) return;
+        document.getElementById('sched-template').innerHTML =
+            '<option value="">— Select template —</option>'
+            + items.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+    } catch (e) {}
+}
+
+async function scheduleBatch() {
+    const runAt    = document.getElementById('sched-run-at').value;
+    const btn      = document.getElementById('btn-schedule');
+    const resultEl = document.getElementById('sched-result');
+    if (!runAt) { alert('Set a run time.'); return; }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scheduling…';
+    resultEl.classList.add('d-none');
+    try {
+        const r = await fetch('/api/stories/schedule', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                template_id: document.getElementById('sched-template').value || null,
+                run_at:      runAt,
+                repeat:      document.getElementById('sched-repeat').value,
+            })
+        });
+        const d = await r.json().catch(() => ({}));
+        resultEl.classList.remove('d-none');
+        if (r.ok) {
+            resultEl.className = 'alert alert-success mb-2';
+            resultEl.textContent = 'Batch scheduled!';
+            loadBatchHistory();
+        } else {
+            resultEl.className = 'alert alert-danger mb-2';
+            resultEl.textContent = d.error || 'Failed to schedule';
+        }
+    } catch (e) {
+        resultEl.classList.remove('d-none');
+        resultEl.className = 'alert alert-danger mb-2';
+        resultEl.textContent = 'Error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-calendar2-check me-1"></i> Schedule Batch';
+    }
 }
 
 // ── Publish single story ───────────────────────────────────────────────────
@@ -408,18 +524,16 @@ async function publishStory() {
         account_id: parseInt(document.getElementById('story-account').value),
         media_path: document.getElementById('story-media').value.trim(),
         caption:    document.getElementById('story-caption').value,
-        mentions:   document.getElementById('story-mentions').value.split(',').map(m => m.trim()).filter(Boolean),
+        mentions:   document.getElementById('story-mentions').value
+                        .split(',').map(m => m.trim()).filter(Boolean),
     };
-    if (!data.account_id || !data.media_path) {
-        alert('Select an account and enter a media path.');
-        return;
-    }
+    if (!data.account_id || !data.media_path) { alert('Select an account and enter a media path.'); return; }
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Publishing…';
     resultEl.classList.add('d-none');
     try {
         const resp   = await fetch('/api/stories/publish', {
-            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
         });
         const result = await resp.json();
         resultEl.classList.remove('d-none');
@@ -429,7 +543,7 @@ async function publishStory() {
             loadStories(1);
         } else {
             resultEl.className = 'alert alert-danger mt-3';
-            resultEl.textContent = 'Error: ' + (result.error || 'Unknown error');
+            resultEl.textContent = 'Error: ' + (result.error || 'Unknown');
         }
     } catch (e) {
         resultEl.classList.remove('d-none');
@@ -441,7 +555,7 @@ async function publishStory() {
     }
 }
 
-// ── Batch publish ──────────────────────────────────────────────────────────
+// ── Quick Batch Publish ────────────────────────────────────────────────────
 async function batchPublish() {
     const btn      = document.getElementById('btn-batch-start');
     const resultEl = document.getElementById('batch-result');
@@ -450,7 +564,7 @@ async function batchPublish() {
     resultEl.classList.add('d-none');
     try {
         const resp   = await fetch('/api/stories/batch', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+            method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({
                 media_path:         document.getElementById('batch-media').value.trim(),
                 caption:            document.getElementById('batch-caption').value,
@@ -460,44 +574,39 @@ async function batchPublish() {
         });
         const result = await resp.json();
         resultEl.classList.remove('d-none');
-        const ok = result.successful ?? 0;
-        const total = result.total_attempted ?? 0;
+        const ok = result.successful ?? 0, total = result.total_attempted ?? 0;
         resultEl.className = 'alert ' + (ok > 0 ? 'alert-success' : 'alert-warning') + ' mb-3';
         resultEl.textContent = `Done — ${ok} / ${total} published.`;
-        loadStories(1);
-        loadBatchHistory();
+        loadStories(1); loadBatchHistory();
     } catch (e) {
         resultEl.classList.remove('d-none');
         resultEl.className = 'alert alert-danger mb-3';
         resultEl.textContent = 'Batch failed: ' + e.message;
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-layers"></i> Start Batch';
+        btn.innerHTML = '<i class="bi bi-layers"></i> Start Batch Now';
     }
 }
 
 // ── Mention blacklist ──────────────────────────────────────────────────────
-function toggleBlacklistForm() {
-    const area = document.getElementById('blacklist-form-area');
-    area.style.display = area.style.display === 'none' ? '' : 'none';
-}
-
 async function loadBlacklist() {
     try {
         const r = await fetch('/api/stories/blacklist');
         if (!r.ok) return;
         const data = await r.json();
         const entries = data.entries || data || [];
-        const tbody = document.getElementById('blacklist-table');
-        tbody.innerHTML = entries.length
+        const countEl = document.getElementById('blacklist-count');
+        if (countEl) countEl.textContent = entries.length || '';
+        document.getElementById('blacklist-table').innerHTML = entries.length
             ? entries.map(e => `<tr>
                 <td class="ps-3">${e.username ? '@' + e.username : '—'}</td>
                 <td>${e.user_id || '—'}</td>
                 <td class="text-muted">${e.reason || '—'}</td>
-                <td><button class="btn btn-sm btn-outline-danger py-0 px-1 lh-1" onclick="removeBlacklist(${e.id})">×</button></td>
+                <td><button class="btn btn-sm btn-outline-danger py-0 px-1 lh-1"
+                            onclick="removeBlacklist(${e.id})">×</button></td>
               </tr>`).join('')
             : '<tr><td colspan="4" class="text-center text-muted py-2 ps-3">No entries</td></tr>';
-    } catch (e) { /* API may not exist */ }
+    } catch (e) {}
 }
 
 async function addBlacklist() {
@@ -508,7 +617,7 @@ async function addBlacklist() {
     };
     try {
         const r = await fetch('/api/stories/blacklist', {
-            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
         });
         if (r.ok) {
             ['bl-username','bl-userid','bl-reason'].forEach(id => document.getElementById(id).value = '');
@@ -522,80 +631,16 @@ async function addBlacklist() {
 
 async function removeBlacklist(id) {
     if (!confirm('Remove from blacklist?')) return;
-    try {
-        await fetch('/api/stories/blacklist/' + id, { method: 'DELETE' });
-        loadBlacklist();
-    } catch (e) {}
-}
-
-// ── Schedule batch ─────────────────────────────────────────────────────────
-async function loadTemplates() {
-    try {
-        const r = await fetch('/api/stories/templates');
-        if (!r.ok) return;
-        const data  = await r.json();
-        const items = data.templates || data || [];
-        if (!items.length) return;
-        const sel = document.getElementById('sched-template');
-        sel.innerHTML = '<option value="">— Select template —</option>'
-            + items.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-    } catch (e) {}
-}
-
-async function scheduleBatch() {
-    const runAt = document.getElementById('sched-run-at').value;
-    if (!runAt) { alert('Set a run time.'); return; }
-    try {
-        const r = await fetch('/api/stories/schedule', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                template_id: document.getElementById('sched-template').value || null,
-                run_at:      runAt,
-                repeat:      document.getElementById('sched-repeat').value,
-            })
-        });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) { alert('Batch scheduled!'); loadBatchHistory(); }
-        else alert(d.error || 'Failed to schedule');
-    } catch (e) { alert('Error: ' + e.message); }
-}
-
-// ── Batch history ──────────────────────────────────────────────────────────
-async function loadBatchHistory() {
-    const tbody = document.getElementById('batch-history-table');
-    try {
-        const r = await fetch('/api/stories/runs');
-        if (!r.ok) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-2 ps-3">No data</td></tr>';
-            return;
-        }
-        const data = await r.json();
-        const runs = data.runs || data || [];
-        tbody.innerHTML = runs.length
-            ? runs.map(b => {
-                const failed = b.failed ?? 0;
-                return `<tr>
-                    <td class="ps-3 text-muted">#${b.id}</td>
-                    <td class="small">${new Date(b.started_at || b.created_at).toLocaleString()}</td>
-                    <td>${b.attempted ?? b.total ?? '—'}</td>
-                    <td class="text-success fw-semibold">${b.ok ?? b.successful ?? '—'}</td>
-                    <td class="${failed > 0 ? 'text-danger' : 'text-muted'}">${failed}</td>
-                    <td class="text-muted">${b.pool ?? '—'}</td>
-                </tr>`;
-              }).join('')
-            : '<tr><td colspan="6" class="text-center text-muted py-2 ps-3">No runs yet</td></tr>';
-    } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-2 ps-3">No data</td></tr>';
-    }
+    try { await fetch('/api/stories/blacklist/' + id, { method:'DELETE' }); loadBlacklist(); } catch (e) {}
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     loadFleetStatus();
     loadStories();
-    loadBlacklist();
     loadBatchHistory();
     loadTemplates();
+    loadBlacklist();
 });
 </script>
 {% endblock %}
