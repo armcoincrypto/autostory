@@ -332,7 +332,6 @@ class StoryRun(Base):
 
     pool = relationship("StoryPool", back_populates="runs")
     steps = relationship("StoryRunStep", back_populates="run",
-                         order_by="desc(StoryRunStep.executed_at)",
                          cascade="all, delete-orphan")
 
     def __repr__(self):

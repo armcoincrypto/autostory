@@ -43,6 +43,10 @@ def create_app() -> Flask:
     login_manager.login_view = 'auth.login'
     csrf.init_app(app)
 
+    # Ensure all DB tables exist (additive — never drops columns)
+    from src.core.database import init_db
+    init_db()
+
     # Register blueprints
     from .routes import register_routes, api
     from .scheduler_routes import scheduler_api
