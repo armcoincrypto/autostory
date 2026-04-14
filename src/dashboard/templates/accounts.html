@@ -859,7 +859,10 @@ async function runFleetHealthCheck() {
     statusEl.classList.remove('d-none');
 
     try {
-        const r = await fetch('/api/accounts/healthcheck/start', { method: 'POST' });
+        const r = await fetch('/api/accounts/healthcheck/start', {
+            method: 'POST',
+            headers: {'X-Admin-Token': ADMIN_TOKEN},
+        });
         const data = await r.json();
         if (!r.ok) {
             statusEl.className = 'alert alert-danger mb-3';
@@ -874,7 +877,9 @@ async function runFleetHealthCheck() {
         const poll = async () => {
             attempts++;
             try {
-                const pr = await fetch(`/api/accounts/healthcheck/${jobId}`);
+                const pr = await fetch(`/api/accounts/healthcheck/${jobId}`, {
+                    headers: {'X-Admin-Token': ADMIN_TOKEN},
+                });
                 const pd = await pr.json();
                 const done = pd.status === 'done' || pd.status === 'complete' || pd.status === 'completed' || pd.done;
                 const pct = pd.progress_pct ?? (pd.checked && pd.total ? Math.round(pd.checked / pd.total * 100) : null);

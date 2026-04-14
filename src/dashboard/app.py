@@ -55,6 +55,11 @@ def create_app() -> Flask:
     csrf.exempt(api)
     csrf.exempt(scheduler_api)
 
+    # Inject admin token into every template context so JS can send it
+    @app.context_processor
+    def inject_admin_token():
+        return {'admin_token': os.environ.get('DASHBOARD_ADMIN_TOKEN', '')}
+
     # Error handlers
     @app.errorhandler(404)
     def not_found(error):
