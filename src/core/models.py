@@ -61,9 +61,15 @@ class Account(Base):
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
 
-    # Status and health (use enum values in DB so "auth_required" etc. load correctly)
+    # Status and health — SQLite stores lowercase strings (active, inactive, ...). Use non-native
+    # Enum so ORM loads by value, not Python enum member names (avoids LookupError on 'active').
     status = Column(
-        SQLEnum(AccountStatus, values_callable=lambda x: [e.value for e in x]),
+        SQLEnum(
+            AccountStatus,
+            native_enum=False,
+            length=32,
+            values_callable=lambda x: [e.value for e in x],
+        ),
         default=AccountStatus.AUTH_REQUIRED,
     )
     last_active = Column(DateTime, nullable=True)
@@ -273,6 +279,51 @@ class StoryBatchRun(Base):
     skipped_count = Column(Integer, default=0)
     errors_json = Column(JSON, nullable=True)  # list of error strings
     mention_pool_size = Column(Integer, nullable=True)
+
+
+class StoryPool(Base):
+    """Logical pool of accounts for story rotation (existing story_pools table)."""
+    __tablename__ = "story_pools"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    slug = Column(String(50), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StoryPoolMember(Base):
+    """Membership of an account in a story pool."""
+    __tablename__ = "story_pool_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pool_id = Column(Integer, ForeignKey("story_pools.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    is_enabled = Column(Boolean, default=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StoryRun(Base):
+    """Queued or running story rotation run (existing story_runs table)."""
+    __tablename__ = "story_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pool_id = Column(Integer, ForeignKey("story_pools.id"), nullable=True, index=True)
+    mode = Column(String(20), nullable=True)
+    interval_minutes = Column(Integer, nullable=True)
+    caption = Column(Text, nullable=True)
+    media_path = Column(String(500), nullable=True)
+    mentions_per_story = Column(Integer, nullable=True)
+    max_stories = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    last_tick_at = Column(DateTime, nullable=True)
+    next_tick_at = Column(DateTime, nullable=True)
+    stories_ok = Column(Integer, default=0)
+    stories_failed = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class StoryTemplate(Base):
