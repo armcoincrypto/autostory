@@ -217,6 +217,114 @@
     </div>
 </div>
 
+<!-- ── Pool Management — collapsed ─────────────────────────────────────────── -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center py-2"
+         style="cursor:pointer;" onclick="toggleSection('pool-mgmt-section','pool-mgmt-chevron')">
+        <span class="fw-semibold text-muted">
+            <i class="bi bi-collection"></i> Pool Management
+            <span class="badge bg-secondary ms-1 fw-normal small" id="pool-count"></span>
+        </span>
+        <i class="bi bi-chevron-down text-muted" id="pool-mgmt-chevron"></i>
+    </div>
+    <div id="pool-mgmt-section" style="display:none;">
+
+        <!-- Create pool -->
+        <div class="card-body border-bottom py-2">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label form-label-sm mb-1">Pool name</label>
+                    <input type="text" class="form-control form-control-sm" id="new-pool-name" placeholder="armcoinstory">
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label form-label-sm mb-1">Description <span class="text-muted">(optional)</span></label>
+                    <input type="text" class="form-control form-control-sm" id="new-pool-desc" placeholder="Main story rotation pool">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-sm btn-primary w-100" onclick="createPool()">
+                        <i class="bi bi-plus-circle me-1"></i>Create
+                    </button>
+                </div>
+                <div class="col-md-2">
+                    <div id="pool-create-result" class="d-none"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pool list -->
+        <div class="card-body p-0">
+            <table class="table table-sm mb-0" style="font-size:.84em;">
+                <thead>
+                    <tr>
+                        <th class="ps-3">Pool</th>
+                        <th>Slug</th>
+                        <th>Accounts</th>
+                        <th>Created</th>
+                        <th style="width:80px;"></th>
+                    </tr>
+                </thead>
+                <tbody id="pool-list-table">
+                    <tr><td colspan="5" class="text-center text-muted py-3">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pool detail panel (shown when a pool is opened) -->
+        <div id="pool-detail-panel" class="d-none border-top">
+            <div class="card-body border-bottom py-2 bg-dark">
+                <div class="d-flex justify-content-between align-items-center">
+                    <strong id="pool-detail-title" class="text-primary">—</strong>
+                    <button class="btn btn-sm btn-outline-secondary py-0" onclick="closePoolDetail()">
+                        <i class="bi bi-x"></i> Close
+                    </button>
+                </div>
+            </div>
+
+            <!-- Add accounts -->
+            <div class="card-body border-bottom py-2">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-8">
+                        <label class="form-label form-label-sm mb-1">Add accounts to pool</label>
+                        <select class="form-select form-select-sm" id="pool-add-accounts" multiple
+                                style="height:90px;">
+                            <option disabled>Loading accounts…</option>
+                        </select>
+                        <small class="text-muted">Hold Ctrl/Cmd to select multiple</small>
+                    </div>
+                    <div class="col-md-4 d-flex flex-column gap-2">
+                        <button class="btn btn-sm btn-success" onclick="addAccountsToPool()">
+                            <i class="bi bi-person-plus me-1"></i>Add selected
+                        </button>
+                        <div id="pool-add-result" class="d-none small"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Member table -->
+            <div class="card-body p-0">
+                <table class="table table-sm mb-0" style="font-size:.83em;">
+                    <thead>
+                        <tr>
+                            <th class="ps-3">Account</th>
+                            <th>Health</th>
+                            <th>Story ready</th>
+                            <th>Total</th>
+                            <th>Today</th>
+                            <th>Last story</th>
+                            <th>Next allowed</th>
+                            <th style="width:36px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="pool-members-table">
+                        <tr><td colspan="8" class="text-center text-muted py-3">Select a pool to view members</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+</div>
+
 <!-- ── Mention Blacklist — collapsed ───────────────────────────────────────── -->
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center py-2"
@@ -507,20 +615,6 @@ async function loadBatchHistory() {
 }
 
 // ── Pools + run form helpers ───────────────────────────────────────────────
-async function loadPools() {
-    try {
-        const r = await fetch('/api/stories/pools');
-        if (!r.ok) return;
-        const data = await r.json();
-        const sel  = document.getElementById('sched-pool');
-        if (!sel) return;
-        const opts = (data.pools || []).map(p =>
-            `<option value="${p.id}">${p.name} (${p.enabled_count} accounts)</option>`
-        ).join('');
-        sel.innerHTML = '<option value="">— All ready accounts —</option>' + opts;
-    } catch (e) {}
-}
-
 function toggleInterval() {
     const mode = document.getElementById('sched-mode').value;
     const grp  = document.getElementById('interval-group');
@@ -729,15 +823,216 @@ async function removeBlacklist(id) {
     try { await fetch('/api/stories/blacklist/' + id, { method:'DELETE' }); loadBlacklist(); } catch (e) {}
 }
 
+// ── Pool management ───────────────────────────────────────────────────────
+let _openPoolId   = null;
+let _allAccounts  = [];   // populated by loadFleetStatus
+
+async function loadPoolsUI() {
+    try {
+        const r    = await fetch('/api/stories/pools');
+        if (!r.ok) return;
+        const data = await r.json();
+        const pools = data.pools || [];
+
+        // update count badge
+        const badge = document.getElementById('pool-count');
+        if (badge) badge.textContent = pools.length || '';
+
+        // also refresh the hero form dropdown (reuse loadPools logic)
+        const sel = document.getElementById('sched-pool');
+        if (sel) {
+            const opts = pools.map(p =>
+                `<option value="${p.id}">${p.name} (${p.enabled_count} accounts)</option>`
+            ).join('');
+            sel.innerHTML = '<option value="">— All ready accounts —</option>' + opts;
+        }
+
+        const tbody = document.getElementById('pool-list-table');
+        if (!tbody) return;
+        tbody.innerHTML = pools.length
+            ? pools.map(p => `<tr>
+                <td class="ps-3 fw-semibold">${p.name}</td>
+                <td class="text-muted">${p.slug}</td>
+                <td>${p.enabled_count} <span class="text-muted">/ ${p.member_count}</span></td>
+                <td class="text-muted">${relTime(p.created_at)}</td>
+                <td class="text-end pe-2">
+                    <button class="btn btn-xs btn-outline-primary py-0 px-2"
+                            style="font-size:.78em;"
+                            onclick="openPool(${p.id},'${p.name.replace(/'/g,'\\\'')}')"
+                    ><i class="bi bi-folder2-open"></i></button>
+                    <button class="btn btn-xs btn-outline-danger py-0 px-2 ms-1"
+                            style="font-size:.78em;"
+                            onclick="deletePool(${p.id},'${p.name.replace(/'/g,'\\\'')}')"
+                    ><i class="bi bi-trash3"></i></button>
+                </td>
+              </tr>`).join('')
+            : '<tr><td colspan="5" class="text-center text-muted py-3">No pools yet — create one above</td></tr>';
+    } catch (e) { console.error('loadPoolsUI', e); }
+}
+
+async function createPool() {
+    const name = (document.getElementById('new-pool-name').value || '').trim();
+    if (!name) { alert('Enter a pool name.'); return; }
+    const desc = (document.getElementById('new-pool-desc').value || '').trim();
+    const res  = document.getElementById('pool-create-result');
+    try {
+        const r = await fetch('/api/stories/pools', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ name, description: desc })
+        });
+        const d = await r.json().catch(() => ({}));
+        res.classList.remove('d-none');
+        if (r.ok) {
+            res.className = 'alert alert-success py-1 px-2 small mb-0';
+            res.textContent = `Pool "${name}" created`;
+            document.getElementById('new-pool-name').value = '';
+            document.getElementById('new-pool-desc').value = '';
+            loadPoolsUI();
+        } else {
+            res.className = 'alert alert-danger py-1 px-2 small mb-0';
+            res.textContent = d.error || 'Failed';
+        }
+    } catch (e) {
+        res.classList.remove('d-none');
+        res.className = 'alert alert-danger py-1 px-2 small mb-0';
+        res.textContent = e.message;
+    }
+}
+
+async function deletePool(poolId, poolName) {
+    if (!confirm(`Delete pool "${poolName}"? This removes all members but does NOT affect the accounts themselves.`)) return;
+    try {
+        const r = await fetch(`/api/stories/pools/${poolId}`, { method: 'DELETE' });
+        if (r.ok) {
+            if (_openPoolId === poolId) closePoolDetail();
+            loadPoolsUI();
+        } else {
+            const d = await r.json().catch(() => ({}));
+            alert(d.error || 'Delete failed');
+        }
+    } catch (e) { alert(e.message); }
+}
+
+async function openPool(poolId, poolName) {
+    _openPoolId = poolId;
+    const panel = document.getElementById('pool-detail-panel');
+    const title = document.getElementById('pool-detail-title');
+    panel.classList.remove('d-none');
+    title.textContent = poolName;
+
+    // Populate add-accounts selector with all active accounts not already in pool
+    const addSel = document.getElementById('pool-add-accounts');
+    addSel.innerHTML = '<option disabled>Loading…</option>';
+
+    // Get current members to exclude them
+    const [membersResp, accsResp] = await Promise.all([
+        fetch(`/api/stories/pools/${poolId}/members`),
+        fetch('/api/accounts?limit=500'),
+    ]);
+    const membersData = await membersResp.json().catch(() => ({}));
+    const accsData    = await accsResp.json().catch(() => ([]));
+
+    const memberIds = new Set((membersData.members || []).map(m => m.account_id));
+    const allAccs   = Array.isArray(accsData) ? accsData : (accsData.accounts || []);
+
+    addSel.innerHTML = allAccs
+        .filter(a => !memberIds.has(a.id) && a.status === 'active')
+        .map(a => {
+            const lbl = (a.phone_number || `#${a.id}`)
+                + (a.username ? ` (@${a.username})` : '')
+                + (a.publish_story_status === 'yes' ? ' ✓' : '');
+            return `<option value="${a.id}">${lbl}</option>`;
+        }).join('') || '<option disabled>All active accounts already in pool</option>';
+
+    // Render member table
+    await refreshPoolMembers(poolId, membersData.members || []);
+}
+
+async function refreshPoolMembers(poolId, members) {
+    const tbody = document.getElementById('pool-members-table');
+    if (!members || members.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">No members yet — add accounts above</td></tr>';
+        return;
+    }
+
+    const HEALTH_COLOR = { Alive:'success', Banned:'danger', 'Flood Wait':'warning',
+                           Frozen:'warning', Unknown:'secondary' };
+    tbody.innerHTML = members.map(m => {
+        const hc = HEALTH_COLOR[m.health] || 'secondary';
+        const ready = m.story_precheck === 'allowed'
+            ? '<span class="badge bg-success">Yes</span>'
+            : '<span class="badge bg-secondary">No</span>';
+        const lastStory  = m.last_story_at  ? relTime(m.last_story_at)  : '—';
+        const nextAllowed = m.next_allowed_at ? relTime(m.next_allowed_at) : '<span class="text-success">now</span>';
+        const label = (m.phone || `#${m.account_id}`) + (m.username ? `<br><small class="text-muted">@${m.username}</small>` : '');
+        return `<tr>
+            <td class="ps-3">${label}</td>
+            <td><span class="badge bg-${hc}" style="font-size:.75em;">${m.health || '—'}</span></td>
+            <td>${ready}</td>
+            <td>${m.total_stories ?? '—'}</td>
+            <td>${m.today_stories ?? '—'}</td>
+            <td class="text-muted">${lastStory}</td>
+            <td>${nextAllowed}</td>
+            <td class="text-end pe-2">
+                <button class="btn btn-outline-danger py-0 px-1 lh-1" style="font-size:.78em;"
+                        onclick="removeMember(${m.account_id})">×</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function addAccountsToPool() {
+    if (!_openPoolId) return;
+    const sel  = document.getElementById('pool-add-accounts');
+    const ids  = Array.from(sel.selectedOptions).map(o => parseInt(o.value));
+    const res  = document.getElementById('pool-add-result');
+    if (!ids.length) { alert('Select at least one account.'); return; }
+    try {
+        const r = await fetch(`/api/stories/pools/${_openPoolId}/members`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ account_ids: ids })
+        });
+        const d = await r.json().catch(() => ({}));
+        res.classList.remove('d-none');
+        if (r.ok) {
+            res.className = 'text-success';
+            res.textContent = `Added ${d.added} account(s)`;
+            openPool(_openPoolId, document.getElementById('pool-detail-title').textContent);
+            loadPoolsUI();
+        } else {
+            res.className = 'text-danger';
+            res.textContent = d.error || 'Failed';
+        }
+    } catch (e) {
+        res.classList.remove('d-none');
+        res.className = 'text-danger';
+        res.textContent = e.message;
+    }
+}
+
+async function removeMember(accountId) {
+    if (!_openPoolId) return;
+    if (!confirm('Remove this account from the pool?')) return;
+    try {
+        await fetch(`/api/stories/pools/${_openPoolId}/members/${accountId}`, { method: 'DELETE' });
+        openPool(_openPoolId, document.getElementById('pool-detail-title').textContent);
+        loadPoolsUI();
+    } catch (e) { alert(e.message); }
+}
+
+function closePoolDetail() {
+    _openPoolId = null;
+    document.getElementById('pool-detail-panel').classList.add('d-none');
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     loadFleetStatus();
-    loadPools();
+    loadPoolsUI();        // populates pool list + hero dropdown
     loadStories();
     loadBatchHistory();
     loadActiveRun();
     loadBlacklist();
-    // Refresh active run status every 30 s
     setInterval(loadActiveRun, 30000);
 });
 </script>
