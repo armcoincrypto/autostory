@@ -332,24 +332,29 @@ def list_accounts():
                     " stories_today, health_status, health_reason, health_checked_at"
                     " FROM accounts"
                 )).fetchall()
+            def _dt_str(v):
+                """Return ISO string from a datetime or an already-string SQLite value."""
+                if v is None:
+                    return None
+                return v.isoformat() if hasattr(v, 'isoformat') else str(v)
+
             result = []
             for r in rows:
                 st = getattr(r, "status", None)
                 st = getattr(st, "value", st) if st is not None else "inactive"
+                hc_at = getattr(r, "health_checked_at", None)
                 entry = {
                     "id": r.id,
                     "phone_number": r.phone_number,
-                    "username": r.username,
-                    "first_name": r.first_name,
+                    "username": getattr(r, "username", None),
+                    "first_name": getattr(r, "first_name", None),
                     "status": st,
                     "purpose": getattr(r, "purpose", None) or "both",
-                    "last_active": r.last_active.isoformat() if getattr(r, "last_active", None) else None,
+                    "last_active": _dt_str(getattr(r, "last_active", None)),
                     "stories_today": getattr(r, "stories_today", None) or 0,
                     "health_status": getattr(r, "health_status", None),
-                    "health_checked_at": (
-                        r.health_checked_at.isoformat() if getattr(r, "health_checked_at", None) else None
-                    ),
-                    "health_check_stale": _is_health_stale(getattr(r, "health_checked_at", None)),
+                    "health_checked_at": _dt_str(hc_at),
+                    "health_check_stale": _is_health_stale(hc_at),
                 }
                 # Derive health label/reason using a minimal object shim
                 class _Shim:

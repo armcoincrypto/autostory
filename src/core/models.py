@@ -54,7 +54,8 @@ class Account(Base):
     last_name = Column(String(100), nullable=True)
 
     # Status and health
-    status = Column(SQLEnum(AccountStatus), default=AccountStatus.AUTH_REQUIRED)
+    status = Column(SQLEnum(AccountStatus, values_callable=lambda obj: [e.value for e in obj]),
+                    default=AccountStatus.AUTH_REQUIRED)
     last_active = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
     flood_wait_until = Column(DateTime, nullable=True)
