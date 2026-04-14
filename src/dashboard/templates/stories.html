@@ -112,11 +112,74 @@
                        value="60" min="5" max="1440" placeholder="60">
             </div>
 
-            <!-- Media path -->
-            <div class="col-md-6">
-                <label class="form-label fw-semibold mb-1">Media path <span class="text-muted fw-normal small">(server path)</span></label>
-                <input type="text" class="form-control form-control-sm" id="sched-media-path"
-                       placeholder="/opt/autostory/media/story.jpg">
+            <!-- Media picker -->
+            <div class="col-12">
+                <label class="form-label fw-semibold mb-1">Media</label>
+
+                <!-- Selected file display -->
+                <div id="media-selected-display" class="d-none mb-2 d-flex align-items-center gap-2 p-2 rounded"
+                     style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);">
+                    <span id="media-selected-icon" class="fs-5">📷</span>
+                    <div class="flex-grow-1 overflow-hidden">
+                        <div class="fw-semibold small text-truncate" id="media-selected-name">—</div>
+                        <div class="text-muted" style="font-size:.75em;" id="media-selected-size">—</div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="clearMediaSelection()"
+                            title="Clear selection">×</button>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="d-flex gap-2 flex-wrap">
+                    <!-- Upload new file -->
+                    <label class="btn btn-sm btn-outline-primary mb-0" style="cursor:pointer;">
+                        <i class="bi bi-upload me-1"></i>Upload file
+                        <input type="file" id="media-upload-input" class="d-none"
+                               accept=".jpg,.jpeg,.png,.webp,.mp4,.mov"
+                               onchange="handleMediaUpload(this)">
+                    </label>
+
+                    <!-- Browse uploaded files -->
+                    <button class="btn btn-sm btn-outline-secondary" type="button"
+                            onclick="toggleMediaBrowser()">
+                        <i class="bi bi-folder2-open me-1"></i>Browse uploaded
+                        <span id="media-file-count" class="badge bg-secondary ms-1" style="font-size:.7em;"></span>
+                    </button>
+
+                    <!-- Advanced: raw server path toggle -->
+                    <button class="btn btn-sm btn-link text-muted p-0 ms-auto" style="font-size:.8em;"
+                            onclick="toggleSection('media-advanced','media-adv-chevron')">
+                        <i class="bi bi-chevron-right" id="media-adv-chevron"
+                           style="transition:transform .2s;"></i> Advanced path
+                    </button>
+                </div>
+
+                <!-- Upload progress -->
+                <div id="media-upload-progress" class="d-none mt-2">
+                    <div class="progress" style="height:4px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                             style="width:100%"></div>
+                    </div>
+                    <small class="text-muted">Uploading…</small>
+                </div>
+
+                <!-- Media browser (inline collapsible) -->
+                <div id="media-browser" class="d-none mt-2 p-2 rounded"
+                     style="background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.08);max-height:180px;overflow-y:auto;">
+                    <div id="media-browser-list" class="d-flex flex-wrap gap-2">
+                        <span class="text-muted small">Loading…</span>
+                    </div>
+                </div>
+
+                <!-- Advanced raw path -->
+                <div id="media-advanced" style="display:none;" class="mt-2">
+                    <input type="text" class="form-control form-control-sm" id="sched-media-path"
+                           placeholder="/opt/autostory/media/story.jpg"
+                           oninput="onManualPathInput(this.value)">
+                    <small class="text-muted">Full server path — overrides file picker above</small>
+                </div>
+
+                <!-- Hidden field holding the resolved server path -->
+                <input type="hidden" id="sched-media-path-resolved">
             </div>
 
             <!-- Caption -->
@@ -473,24 +536,21 @@ function toggleSection(sectionId, chevronId) {
 async function loadFleetStatus() {
     try {
         const resp = await fetch('/api/accounts?limit=500');
-        if (!resp.ok) return;
-        const accounts = await resp.json();
+        if (!resp.ok) {
+            ['fleet-story-ready-count','fleet-healthy-count','fleet-limited-count','fleet-blocked-count']
+                .forEach(id => setText(id, '!', '#ef4444'));
+            const lbl = document.getElementById('sched-ready-label');
+            if (lbl) lbl.textContent = `API error ${resp.status}`;
+            return;
+        }
+        const raw = await resp.json();
+        // API returns array directly; guard against future object wrapping
+        const accounts = Array.isArray(raw) ? raw : (raw.accounts || raw.data || []);
 
-        // Build account lookup map for stories table
-        accounts.forEach(a => { _accountMap[a.id] = a; });
-
-        // Populate Publish Story account dropdown
-        const sel = document.getElementById('story-account');
-        const active = accounts.filter(a => a.status === 'active');
-        sel.innerHTML = active.length
-            ? active.map(a => {
-                const lbl = (a.phone_number || String(a.id)) + (a.username ? ' (@' + a.username + ')' : '');
-                return `<option value="${a.id}">${lbl}</option>`;
-              }).join('')
-            : '<option disabled>No active accounts</option>';
-
+        // ── Fleet cards — update FIRST, no other DOM dependencies ──────────
         const healthy     = accounts.filter(a => a.general_health_label === 'Alive').length;
-        const storyReady  = accounts.filter(a => a.publish_story_status === 'yes' && a.status === 'active').length;
+        const storyReady  = accounts.filter(a =>
+            a.publish_story_status === 'yes' && a.status === 'active').length;
         const rateLimited = accounts.filter(a =>
             a.status === 'flood_wait' || a.general_health_label === 'Flood Wait').length;
         const frozen      = accounts.filter(a =>
@@ -498,15 +558,37 @@ async function loadFleetStatus() {
             (a.story_precheck_status  || '').toLowerCase() === 'frozen').length;
 
         setText('fleet-story-ready-count', storyReady,  storyReady  > 0 ? '#22c55e' : '#94a3b8');
-        setText('fleet-healthy-count',     healthy,      '#94a3b8');
-        setText('fleet-limited-count',     rateLimited,  rateLimited > 0 ? '#f59e0b' : '#94a3b8');
-        setText('fleet-blocked-count',     frozen,       frozen      > 0 ? '#ef4444' : '#94a3b8');
+        setText('fleet-healthy-count',     healthy,     healthy     > 0 ? '#22c55e' : '#94a3b8');
+        setText('fleet-limited-count',     rateLimited, rateLimited > 0 ? '#f59e0b' : '#94a3b8');
+        setText('fleet-blocked-count',     frozen,      frozen      > 0 ? '#ef4444' : '#94a3b8');
 
         const lbl = document.getElementById('sched-ready-label');
         if (lbl) lbl.textContent = storyReady > 0
-            ? `${storyReady} accounts ready`
+            ? `${storyReady} account${storyReady > 1 ? 's' : ''} ready to publish`
             : 'No accounts story-ready — run precheck first';
-    } catch (e) { console.error('Fleet load failed', e); }
+
+        // ── Build account map + populate modal dropdown (non-critical) ──────
+        accounts.forEach(a => { _accountMap[a.id] = a; });
+        try {
+            const sel = document.getElementById('story-account');
+            if (sel) {
+                const active = accounts.filter(a => a.status === 'active');
+                sel.innerHTML = active.length
+                    ? active.map(a => {
+                        const lbl = (a.phone_number || String(a.id))
+                            + (a.username ? ` (@${a.username})` : '');
+                        return `<option value="${a.id}">${lbl}</option>`;
+                      }).join('')
+                    : '<option disabled>No active accounts</option>';
+            }
+        } catch (_) {}
+    } catch (e) {
+        console.error('Fleet load failed', e);
+        ['fleet-story-ready-count','fleet-healthy-count','fleet-limited-count','fleet-blocked-count']
+            .forEach(id => setText(id, '?', '#6b7280'));
+        const lbl = document.getElementById('sched-ready-label');
+        if (lbl) lbl.textContent = 'Failed to load — check console';
+    }
 }
 
 function setText(id, value, color) {
@@ -659,11 +741,113 @@ async function cancelActiveRun() {
     } catch (e) { alert('Failed: ' + e.message); }
 }
 
+// ── Media upload / browser ─────────────────────────────────────────────────
+function setMediaSelection(path, filename, sizeTxt, isVideo) {
+    document.getElementById('sched-media-path-resolved').value = path;
+    document.getElementById('media-selected-name').textContent = filename;
+    document.getElementById('media-selected-size').textContent = sizeTxt;
+    document.getElementById('media-selected-icon').textContent = isVideo ? '🎬' : '🖼️';
+    document.getElementById('media-selected-display').classList.remove('d-none');
+    // close browser if open
+    document.getElementById('media-browser').classList.add('d-none');
+}
+
+function clearMediaSelection() {
+    document.getElementById('sched-media-path-resolved').value = '';
+    document.getElementById('media-selected-display').classList.add('d-none');
+    const adv = document.getElementById('sched-media-path');
+    if (adv) adv.value = '';
+}
+
+function onManualPathInput(val) {
+    // When operator types a raw path, sync it to the resolved field
+    document.getElementById('sched-media-path-resolved').value = val.trim();
+    if (val.trim()) {
+        const name = val.split('/').pop() || val;
+        const isVideo = /\.(mp4|mov)$/i.test(name);
+        document.getElementById('media-selected-name').textContent = name;
+        document.getElementById('media-selected-size').textContent = 'server path';
+        document.getElementById('media-selected-icon').textContent = isVideo ? '🎬' : '🖼️';
+        document.getElementById('media-selected-display').classList.remove('d-none');
+    } else {
+        document.getElementById('media-selected-display').classList.add('d-none');
+    }
+}
+
+async function handleMediaUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const prog = document.getElementById('media-upload-progress');
+    prog.classList.remove('d-none');
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+        const r = await fetch('/api/media/upload', { method: 'POST', body: fd });
+        const d = await r.json();
+        prog.classList.add('d-none');
+        if (r.ok && d.success) {
+            setMediaSelection(d.path, d.filename,
+                (d.size / 1024).toFixed(0) + ' KB', d.type === 'video');
+            loadMediaBrowser(); // refresh browser list
+        } else {
+            alert(d.error || 'Upload failed');
+        }
+    } catch (e) {
+        prog.classList.add('d-none');
+        alert('Upload error: ' + e.message);
+    }
+    input.value = ''; // reset so same file can be re-uploaded
+}
+
+let _mediaBrowserLoaded = false;
+async function toggleMediaBrowser() {
+    const browser = document.getElementById('media-browser');
+    const isOpen  = !browser.classList.contains('d-none');
+    if (isOpen) { browser.classList.add('d-none'); return; }
+    browser.classList.remove('d-none');
+    if (!_mediaBrowserLoaded) await loadMediaBrowser();
+}
+
+async function loadMediaBrowser() {
+    _mediaBrowserLoaded = true;
+    const list = document.getElementById('media-browser-list');
+    list.innerHTML = '<span class="text-muted small">Loading…</span>';
+    const countBadge = document.getElementById('media-file-count');
+    try {
+        const r = await fetch('/api/media/files');
+        const d = await r.json();
+        const files = d.files || [];
+        if (countBadge) countBadge.textContent = files.length || '';
+        if (!files.length) {
+            list.innerHTML = '<span class="text-muted small">No files uploaded yet</span>';
+            return;
+        }
+        list.innerHTML = files.map(f => {
+            const isVid = f.type === 'video';
+            const kb    = (f.size / 1024).toFixed(0);
+            return `<button class="btn btn-sm btn-outline-secondary d-flex flex-column align-items-center gap-1"
+                            style="min-width:80px;font-size:.75em;"
+                            onclick="selectMediaFile('${f.path.replace(/'/g,"\\'")}','${f.filename.replace(/'/g,"\\'")}','${kb} KB',${isVid})"
+                            title="${f.filename}">
+                <span style="font-size:1.4em;">${isVid ? '🎬' : '🖼️'}</span>
+                <span class="text-truncate" style="max-width:76px;">${f.filename}</span>
+                <small class="text-muted">${kb} KB</small>
+            </button>`;
+        }).join('');
+    } catch (e) {
+        list.innerHTML = '<span class="text-danger small">Failed to load</span>';
+    }
+}
+
+function selectMediaFile(path, filename, sizeTxt, isVideo) {
+    setMediaSelection(path, filename, sizeTxt, isVideo);
+}
+
 async function scheduleRun() {
     const btn      = document.getElementById('btn-schedule');
     const resultEl = document.getElementById('sched-result');
-    const mediaPath = (document.getElementById('sched-media-path').value || '').trim();
-    if (!mediaPath) { alert('Enter the server media path.'); return; }
+    const mediaPath = (document.getElementById('sched-media-path-resolved').value || '').trim();
+    if (!mediaPath) { alert('Select or upload a media file first.'); return; }
     const mode = document.getElementById('sched-mode').value;
     const interval = parseInt(document.getElementById('sched-interval').value) || 60;
     if (mode === 'continuous' && interval < 5) { alert('Interval must be at least 5 minutes.'); return; }
@@ -1028,7 +1212,8 @@ function closePoolDetail() {
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     loadFleetStatus();
-    loadPoolsUI();        // populates pool list + hero dropdown
+    loadPoolsUI();
+    loadMediaBrowser();   // pre-fetch file count for badge
     loadStories();
     loadBatchHistory();
     loadActiveRun();

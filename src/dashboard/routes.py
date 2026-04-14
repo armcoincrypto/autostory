@@ -1154,8 +1154,88 @@ def get_login_code(account_id):
 
 
 # ============================================
+# Media Upload API
+# ============================================
+
+_ALLOWED_MEDIA = {'.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov'}
+
+
+@api.route('/media/upload', methods=['POST'])
+def upload_media():
+    """Upload a media file for story publishing."""
+    import time
+    from pathlib import Path
+    from werkzeug.utils import secure_filename
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    ext = Path(f.filename).suffix.lower()
+    if ext not in _ALLOWED_MEDIA:
+        return jsonify({'error': f'Type {ext} not allowed. Use: jpg, png, webp, mp4, mov'}), 400
+
+    media_dir = Path(settings.storage.media_dir)
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    base = secure_filename(f.filename)
+    dest = media_dir / base
+    if dest.exists():
+        base = f"{Path(base).stem}_{int(time.time())}{ext}"
+        dest = media_dir / base
+
+    f.save(str(dest))
+    return jsonify({
+        'success': True,
+        'filename': base,
+        'path': str(dest),
+        'size': dest.stat().st_size,
+        'type': 'video' if ext in {'.mp4', '.mov'} else 'photo',
+    })
+
+
+@api.route('/media/files', methods=['GET'])
+def list_media_files():
+    """List uploaded media files."""
+    from pathlib import Path
+
+    media_dir = Path(settings.storage.media_dir)
+    if not media_dir.exists():
+        return jsonify({'files': []})
+
+    files = []
+    for f in sorted(media_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if f.suffix.lower() in _ALLOWED_MEDIA and f.is_file() and f.name != '.gitkeep':
+            files.append({
+                'filename': f.name,
+                'path': str(f),
+                'size': f.stat().st_size,
+                'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                'type': 'video' if f.suffix.lower() in {'.mp4', '.mov'} else 'photo',
+            })
+    return jsonify({'files': files})
+
+
+@api.route('/media/file/<path:filename>', methods=['GET'])
+def serve_media_file(filename):
+    """Serve an uploaded media file (used for preview thumbnails)."""
+    from pathlib import Path
+    from flask import send_from_directory
+
+    media_dir = Path(settings.storage.media_dir).resolve()
+    # Security: only serve files directly inside media_dir (no path traversal)
+    target = (media_dir / filename).resolve()
+    if not str(target).startswith(str(media_dir)):
+        return jsonify({'error': 'Forbidden'}), 403
+    return send_from_directory(str(media_dir), filename)
+
+
+# ============================================
 # Stories API
 # ============================================
+
 @api.route('/stories', methods=['GET'])
 def list_stories():
     """List stories with pagination"""
