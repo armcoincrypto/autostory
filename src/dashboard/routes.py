@@ -1229,6 +1229,397 @@ def publish_batch():
 
 
 # ============================================
+# Story Pools API
+# ============================================
+
+@api.route('/stories/pools', methods=['GET'])
+def list_story_pools():
+    """List all story pools with member counts."""
+    from src.core.models import StoryPool, StoryPoolMember
+    with get_db_context() as db:
+        pools = db.query(StoryPool).order_by(StoryPool.created_at.desc()).all()
+        result = []
+        for p in pools:
+            total = db.query(StoryPoolMember).filter(
+                StoryPoolMember.pool_id == p.id).count()
+            enabled = db.query(StoryPoolMember).filter(
+                StoryPoolMember.pool_id == p.id,
+                StoryPoolMember.is_enabled == True).count()
+            result.append({
+                'id': p.id,
+                'name': p.name,
+                'slug': p.slug,
+                'description': p.description,
+                'is_active': p.is_active,
+                'member_count': total,
+                'enabled_count': enabled,
+                'created_at': p.created_at.isoformat(),
+            })
+        return jsonify({'pools': result})
+
+
+@api.route('/stories/pools', methods=['POST'])
+def create_story_pool():
+    """Create a new story pool."""
+    from src.core.models import StoryPool
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+    slug = (data.get('slug') or name.lower().replace(' ', '_').replace('-', '_'))
+    with get_db_context() as db:
+        if db.query(StoryPool).filter(StoryPool.slug == slug).first():
+            return jsonify({'error': f"Pool '{slug}' already exists"}), 409
+        pool = StoryPool(
+            name=name,
+            slug=slug,
+            description=(data.get('description') or '').strip(),
+        )
+        db.add(pool)
+        db.commit()
+        return jsonify({'success': True, 'id': pool.id, 'slug': pool.slug})
+
+
+@api.route('/stories/pools/<int:pool_id>', methods=['DELETE'])
+def delete_story_pool(pool_id):
+    """Delete a story pool (cascades members)."""
+    from src.core.models import StoryPool
+    with get_db_context() as db:
+        pool = db.get(StoryPool, pool_id)
+        if not pool:
+            return jsonify({'error': 'Not found'}), 404
+        db.delete(pool)
+        db.commit()
+        return jsonify({'success': True})
+
+
+@api.route('/stories/pools/<int:pool_id>/members', methods=['GET'])
+def list_pool_members(pool_id):
+    """List accounts in a pool with story stats."""
+    from src.core.models import StoryPool, StoryPoolMember
+    with get_db_context() as db:
+        pool = db.get(StoryPool, pool_id)
+        if not pool:
+            return jsonify({'error': 'Pool not found'}), 404
+        members = db.query(StoryPoolMember).filter(
+            StoryPoolMember.pool_id == pool_id).all()
+        rows = []
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        for m in members:
+            acc = db.get(Account, m.account_id)
+            if not acc:
+                continue
+            total_stories = db.query(Story).filter(Story.account_id == acc.id).count()
+            today_stories = db.query(Story).filter(
+                Story.account_id == acc.id,
+                Story.published_at >= today_start,
+            ).count()
+            last_story = db.query(Story).filter(
+                Story.account_id == acc.id
+            ).order_by(Story.published_at.desc()).first()
+            last_story_at = last_story.published_at.isoformat() if last_story else None
+            # Next allowed = last_active + cooldown
+            next_allowed_at = None
+            if acc.last_active:
+                from src.stories.rotation import ACCOUNT_STORY_COOLDOWN_SEC
+                next_dt = acc.last_active + timedelta(seconds=ACCOUNT_STORY_COOLDOWN_SEC)
+                next_allowed_at = next_dt.isoformat() if next_dt > datetime.utcnow() else None
+            rows.append({
+                'member_id': m.id,
+                'account_id': acc.id,
+                'phone': acc.phone_number,
+                'username': acc.username,
+                'status': acc.status.value if hasattr(acc.status, 'value') else acc.status,
+                'health': acc.health_status,
+                'story_precheck': acc.story_precheck_status,
+                'is_enabled': m.is_enabled,
+                'total_stories': total_stories,
+                'today_stories': today_stories,
+                'last_story_at': last_story_at,
+                'next_allowed_at': next_allowed_at,
+                'added_at': m.added_at.isoformat(),
+            })
+        return jsonify({'pool_id': pool_id, 'pool_name': pool.name, 'members': rows})
+
+
+@api.route('/stories/pools/<int:pool_id>/members', methods=['POST'])
+def add_pool_members(pool_id):
+    """Add one or more accounts to a pool."""
+    from src.core.models import StoryPool, StoryPoolMember
+    data = request.get_json() or {}
+    account_ids = data.get('account_ids', [])
+    if not account_ids:
+        return jsonify({'error': 'account_ids required'}), 400
+    with get_db_context() as db:
+        if not db.get(StoryPool, pool_id):
+            return jsonify({'error': 'Pool not found'}), 404
+        added = 0
+        for aid in account_ids:
+            existing = db.query(StoryPoolMember).filter(
+                StoryPoolMember.pool_id == pool_id,
+                StoryPoolMember.account_id == aid,
+            ).first()
+            if not existing:
+                db.add(StoryPoolMember(pool_id=pool_id, account_id=aid))
+                added += 1
+        db.commit()
+        return jsonify({'success': True, 'added': added})
+
+
+@api.route('/stories/pools/<int:pool_id>/members/<int:account_id>', methods=['DELETE'])
+def remove_pool_member(pool_id, account_id):
+    """Remove an account from a pool."""
+    from src.core.models import StoryPoolMember
+    with get_db_context() as db:
+        m = db.query(StoryPoolMember).filter(
+            StoryPoolMember.pool_id == pool_id,
+            StoryPoolMember.account_id == account_id,
+        ).first()
+        if not m:
+            return jsonify({'error': 'Member not found'}), 404
+        db.delete(m)
+        db.commit()
+        return jsonify({'success': True})
+
+
+# ============================================
+# Story Runs API
+# ============================================
+
+@api.route('/stories/runs', methods=['GET'])
+def list_story_runs():
+    """List story runs (batch history)."""
+    from src.core.models import StoryRun, StoryPool
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    with get_db_context() as db:
+        q = db.query(StoryRun).order_by(StoryRun.created_at.desc())
+        total = q.count()
+        runs = q.offset((page - 1) * per_page).limit(per_page).all()
+        pool_ids = {r.pool_id for r in runs if r.pool_id}
+        pool_names = {}
+        if pool_ids:
+            for p in db.query(StoryPool).filter(StoryPool.id.in_(pool_ids)).all():
+                pool_names[p.id] = p.name
+        return jsonify({
+            'total': total,
+            'page': page,
+            'runs': [
+                {
+                    'id': r.id,
+                    'pool_id': r.pool_id,
+                    'pool_name': pool_names.get(r.pool_id, '—'),
+                    'mode': r.mode,
+                    'interval_minutes': r.interval_minutes,
+                    'caption': (r.caption or '')[:60] or None,
+                    'media_path': r.media_path,
+                    'mentions_per_story': r.mentions_per_story,
+                    'status': r.status,
+                    'stories_ok': r.stories_ok,
+                    'stories_failed': r.stories_failed,
+                    'started_at': r.started_at.isoformat() if r.started_at else None,
+                    'last_tick_at': r.last_tick_at.isoformat() if r.last_tick_at else None,
+                    'next_tick_at': r.next_tick_at.isoformat() if r.next_tick_at else None,
+                    'created_at': r.created_at.isoformat(),
+                }
+                for r in runs
+            ],
+        })
+
+
+@api.route('/stories/runs', methods=['POST'])
+def create_story_run():
+    """Create and queue a new story run (picked up by worker)."""
+    from src.core.models import StoryRun
+    data = request.get_json() or {}
+    media_path = (data.get('media_path') or '').strip()
+    if not media_path:
+        return jsonify({'error': 'media_path required'}), 400
+    mode = data.get('mode', 'once')
+    if mode not in ('once', 'continuous'):
+        return jsonify({'error': "mode must be 'once' or 'continuous'"}), 400
+    interval = data.get('interval_minutes')
+    if mode == 'continuous' and not interval:
+        return jsonify({'error': 'interval_minutes required for continuous mode'}), 400
+    with get_db_context() as db:
+        run = StoryRun(
+            pool_id=data.get('pool_id') or None,
+            mode=mode,
+            interval_minutes=int(interval) if interval else None,
+            caption=data.get('caption'),
+            media_path=media_path,
+            mentions_per_story=int(data.get('mentions_per_story', 5)),
+            max_stories=int(data.get('max_stories')) if data.get('max_stories') else None,
+            status='pending',
+        )
+        db.add(run)
+        db.commit()
+        return jsonify({'success': True, 'run_id': run.id, 'status': 'pending'})
+
+
+@api.route('/stories/runs/<int:run_id>', methods=['GET'])
+def get_story_run(run_id):
+    """Get detail + recent steps for a run."""
+    from src.core.models import StoryRun, StoryRunStep
+    with get_db_context() as db:
+        run = db.get(StoryRun, run_id)
+        if not run:
+            return jsonify({'error': 'Not found'}), 404
+        steps = db.query(StoryRunStep).filter(
+            StoryRunStep.run_id == run_id
+        ).order_by(StoryRunStep.executed_at.desc()).limit(20).all()
+        return jsonify({
+            'run': {
+                'id': run.id, 'mode': run.mode, 'status': run.status,
+                'pool_id': run.pool_id, 'interval_minutes': run.interval_minutes,
+                'stories_ok': run.stories_ok, 'stories_failed': run.stories_failed,
+                'started_at': run.started_at.isoformat() if run.started_at else None,
+                'last_tick_at': run.last_tick_at.isoformat() if run.last_tick_at else None,
+                'next_tick_at': run.next_tick_at.isoformat() if run.next_tick_at else None,
+            },
+            'steps': [
+                {
+                    'id': s.id, 'account_id': s.account_id,
+                    'status': s.status, 'error': s.error,
+                    'executed_at': s.executed_at.isoformat(),
+                }
+                for s in steps
+            ],
+        })
+
+
+@api.route('/stories/runs/<int:run_id>/cancel', methods=['POST'])
+def cancel_story_run(run_id):
+    """Cancel a pending or running story run."""
+    from src.core.models import StoryRun
+    with get_db_context() as db:
+        run = db.get(StoryRun, run_id)
+        if not run:
+            return jsonify({'error': 'Not found'}), 404
+        if run.status in ('completed', 'failed', 'cancelled'):
+            return jsonify({'error': f'Run is already {run.status}'}), 409
+        run.status = 'cancelled'
+        run.completed_at = datetime.utcnow()
+        db.commit()
+        return jsonify({'success': True})
+
+
+# ============================================
+# Story Blacklist API
+# ============================================
+
+@api.route('/stories/blacklist', methods=['GET'])
+def list_blacklist():
+    """List blacklisted discovered users."""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    with get_db_context() as db:
+        q = db.query(DiscoveredUser).filter(DiscoveredUser.is_blocked == True)
+        total = q.count()
+        users = q.order_by(DiscoveredUser.discovered_at.desc()).offset(
+            (page - 1) * per_page).limit(per_page).all()
+        return jsonify({
+            'total': total,
+            'entries': [
+                {
+                    'id': u.id,
+                    'user_id': u.user_id,
+                    'username': u.username,
+                    'first_name': u.first_name,
+                    'source': u.source_chat_title,
+                    'discovered_at': u.discovered_at.isoformat(),
+                }
+                for u in users
+            ],
+        })
+
+
+@api.route('/stories/blacklist', methods=['POST'])
+def add_to_blacklist():
+    """Blacklist a discovered user by user_id or username."""
+    data = request.get_json() or {}
+    user_id = data.get('user_id')
+    username = (data.get('username') or '').lstrip('@').strip() or None
+    if not user_id and not username:
+        return jsonify({'error': 'user_id or username required'}), 400
+    with get_db_context() as db:
+        if user_id:
+            user = db.query(DiscoveredUser).filter(
+                DiscoveredUser.user_id == int(user_id)).first()
+        else:
+            user = db.query(DiscoveredUser).filter(
+                DiscoveredUser.username == username).first()
+        if not user:
+            return jsonify({'error': 'User not found in discovered users'}), 404
+        user.is_blocked = True
+        db.commit()
+        return jsonify({'success': True, 'user_id': user.user_id, 'username': user.username})
+
+
+@api.route('/stories/blacklist/<int:discovered_id>', methods=['DELETE'])
+def remove_from_blacklist(discovered_id):
+    """Unblock a discovered user."""
+    with get_db_context() as db:
+        user = db.query(DiscoveredUser).filter(
+            DiscoveredUser.id == discovered_id).first()
+        if not user:
+            return jsonify({'error': 'Not found'}), 404
+        user.is_blocked = False
+        db.commit()
+        return jsonify({'success': True})
+
+
+# ============================================
+# Story Account Stats API
+# ============================================
+
+@api.route('/stories/account-stats', methods=['GET'])
+def story_account_stats():
+    """
+    Per-account story counters for fleet status table.
+    Returns accounts with story-ready status and their posting history.
+    """
+    from src.stories.rotation import ACCOUNT_STORY_COOLDOWN_SEC
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    with get_db_context() as db:
+        accounts = db.query(Account).filter(
+            Account.status == AccountStatus.ACTIVE,
+        ).order_by(Account.last_active.desc().nullslast()).all()
+
+        rows = []
+        for acc in accounts:
+            total = db.query(Story).filter(Story.account_id == acc.id).count()
+            today = db.query(Story).filter(
+                Story.account_id == acc.id,
+                Story.published_at >= today_start,
+            ).count()
+            last_s = db.query(Story).filter(
+                Story.account_id == acc.id
+            ).order_by(Story.published_at.desc()).first()
+            last_at = last_s.published_at.isoformat() if last_s else None
+
+            next_allowed = None
+            if acc.last_active:
+                nxt = acc.last_active + timedelta(seconds=ACCOUNT_STORY_COOLDOWN_SEC)
+                if nxt > datetime.utcnow():
+                    next_allowed = nxt.isoformat()
+
+            rows.append({
+                'account_id': acc.id,
+                'phone': acc.phone_number,
+                'username': acc.username,
+                'status': acc.status.value if hasattr(acc.status, 'value') else acc.status,
+                'health': acc.health_status,
+                'story_precheck': acc.story_precheck_status,
+                'total_stories': total,
+                'today_stories': today,
+                'last_story_at': last_at,
+                'next_allowed_at': next_allowed,
+            })
+        return jsonify({'accounts': rows})
+
+
+# ============================================
 # Discovery API
 # ============================================
 @api.route('/discovery/users', methods=['GET'])

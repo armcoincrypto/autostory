@@ -122,6 +122,9 @@ async def run_scheduler_loop():
     await client_manager.initialize()
     await client_manager.connect_all()
 
+    # Lazy import — models must be registered before rotation engine loads
+    from src.stories.rotation import story_rotation_engine
+
     global LAST_GEN_DATE
     logger.info("Scheduler worker started")
 
@@ -145,6 +148,9 @@ async def run_scheduler_loop():
             if _last_story_precheck_trigger is None or \
                     now - _last_story_precheck_trigger > timedelta(hours=STORY_PRECHECK_INTERVAL_HOURS):
                 _trigger_story_precheck()
+
+            # Story rotation — execute any pending/due runs
+            await story_rotation_engine.tick()
 
             from src.core.database import get_db_context
             with get_db_context() as db:

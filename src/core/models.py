@@ -250,5 +250,114 @@ class SystemLog(Base):
         return f"<SystemLog {self.level} {self.component}>"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Story Rotation Models
+# ──────────────────────────────────────────────────────────────────────────────
+
+from sqlalchemy import UniqueConstraint  # noqa: E402 (needed for StoryPoolMember)
+
+
+class StoryPool(Base):
+    """
+    Named pool of accounts dedicated to story publishing.
+    Example: armcoinstory, warmup_pool, backup_pool
+    """
+    __tablename__ = "story_pools"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False)
+    slug = Column(String(50), unique=True, nullable=False)   # armcoinstory
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    members = relationship("StoryPoolMember", back_populates="pool",
+                           cascade="all, delete-orphan")
+    runs = relationship("StoryRun", back_populates="pool")
+
+    def __repr__(self):
+        return f"<StoryPool {self.slug}>"
+
+
+class StoryPoolMember(Base):
+    """Account membership in a story pool."""
+    __tablename__ = "story_pool_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pool_id = Column(Integer, ForeignKey("story_pools.id"), nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    is_enabled = Column(Boolean, default=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("pool_id", "account_id",
+                                       name="uq_pool_account"),)
+
+    pool = relationship("StoryPool", back_populates="members")
+    account = relationship("Account")
+
+    def __repr__(self):
+        return f"<StoryPoolMember pool={self.pool_id} account={self.account_id}>"
+
+
+class StoryRun(Base):
+    """
+    A story rotation run — one-shot batch or continuous rotation.
+    The worker picks this up and executes it.
+    """
+    __tablename__ = "story_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pool_id = Column(Integer, ForeignKey("story_pools.id"), nullable=True)
+
+    # Configuration (immutable after creation)
+    mode = Column(String(20), default="once")          # once | continuous
+    interval_minutes = Column(Integer, nullable=True)  # continuous only
+    caption = Column(Text, nullable=True)
+    media_path = Column(String(500), nullable=True)
+    mentions_per_story = Column(Integer, default=5)
+    max_stories = Column(Integer, nullable=True)       # None = unlimited
+
+    # State (updated by worker)
+    status = Column(String(20), default="pending")     # pending|running|completed|failed|cancelled
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    last_tick_at = Column(DateTime, nullable=True)     # last rotation step
+    next_tick_at = Column(DateTime, nullable=True)     # next scheduled step
+
+    # Counters
+    stories_ok = Column(Integer, default=0)
+    stories_failed = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    pool = relationship("StoryPool", back_populates="runs")
+    steps = relationship("StoryRunStep", back_populates="run",
+                         order_by="desc(StoryRunStep.executed_at)",
+                         cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<StoryRun {self.id} {self.mode} {self.status}>"
+
+
+class StoryRunStep(Base):
+    """One story publish attempt within a StoryRun."""
+    __tablename__ = "story_run_steps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("story_runs.id"), nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    story_id = Column(Integer, ForeignKey("stories.id"), nullable=True)
+
+    status = Column(String(20), default="pending")  # ok | failed | skipped
+    error = Column(Text, nullable=True)
+    executed_at = Column(DateTime, default=datetime.utcnow)
+
+    run = relationship("StoryRun", back_populates="steps")
+    account = relationship("Account")
+
+    def __repr__(self):
+        return f"<StoryRunStep run={self.run_id} account={self.account_id} {self.status}>"
+
+
 # Import scheduler models so they're registered with Base
 from . import scheduler_models  # noqa: F401, E402
