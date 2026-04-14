@@ -317,12 +317,21 @@ def list_accounts():
         try:
             accounts = db.query(Account).all()
         except Exception as e:
-            logger.warning("Accounts query failed (missing purpose column?), falling back", error=str(e))
+            logger.warning("Accounts ORM query failed, falling back to raw SQL", error=str(e))
             from sqlalchemy import text
-            rows = db.execute(text(
-                "SELECT id, phone_number, username, first_name, status, last_active, stories_today,"
-                " health_status, health_reason, health_checked_at, purpose FROM accounts"
-            )).fetchall()
+            # Minimal columns only — avoids breakage if newer columns are absent
+            try:
+                rows = db.execute(text(
+                    "SELECT id, phone_number, username, first_name, status, last_active,"
+                    " stories_today, health_status, health_reason, health_checked_at,"
+                    " purpose FROM accounts"
+                )).fetchall()
+            except Exception:
+                rows = db.execute(text(
+                    "SELECT id, phone_number, username, first_name, status, last_active,"
+                    " stories_today, health_status, health_reason, health_checked_at"
+                    " FROM accounts"
+                )).fetchall()
             result = []
             for r in rows:
                 st = getattr(r, "status", None)
@@ -366,25 +375,29 @@ def list_accounts():
                 continue
             if purpose_filter == "autostory" and p == "messaging":
                 continue
-            entry = {
-                "id": a.id,
-                "phone_number": a.phone_number,
-                "username": a.username,
-                "first_name": a.first_name,
-                "status": a.status.value,
-                "purpose": p,
-                "last_active": a.last_active.isoformat() if a.last_active else None,
-                "stories_today": a.stories_today,
-                "health_status": getattr(a, "health_status", None),
-                "health_checked_at": (
-                    getattr(a, "health_checked_at", None).isoformat()
-                    if getattr(a, "health_checked_at", None) else None
-                ),
-                "health_check_stale": _is_health_stale(getattr(a, "health_checked_at", None)),
-                **_general_health_fields_for_api(a),
-                **_derive_publish_story_fields(a),
-            }
-            result.append(entry)
+            try:
+                st = a.status
+                status_val = st.value if hasattr(st, "value") else (str(st) if st else "inactive")
+                hc_at = getattr(a, "health_checked_at", None)
+                entry = {
+                    "id": a.id,
+                    "phone_number": a.phone_number,
+                    "username": getattr(a, "username", None),
+                    "first_name": getattr(a, "first_name", None),
+                    "status": status_val,
+                    "purpose": p,
+                    "last_active": a.last_active.isoformat() if a.last_active else None,
+                    "stories_today": getattr(a, "stories_today", 0) or 0,
+                    "health_status": getattr(a, "health_status", None),
+                    "health_checked_at": hc_at.isoformat() if hc_at else None,
+                    "health_check_stale": _is_health_stale(hc_at),
+                    **_general_health_fields_for_api(a),
+                    **_derive_publish_story_fields(a),
+                }
+                result.append(entry)
+            except Exception as e:
+                logger.warning("Skipping account in list due to error",
+                               account_id=getattr(a, "id", "?"), error=str(e))
         return jsonify(result)
 
 
