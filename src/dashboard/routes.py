@@ -1878,6 +1878,18 @@ def favicon():
     return send_from_directory(_dir, 'favicon.svg', mimetype='image/svg+xml')
 
 
+@web.route('/logout')
+def logout():
+    """Log out the current user and redirect to home."""
+    try:
+        from flask_login import logout_user
+        logout_user()
+    except Exception:
+        pass
+    from flask import redirect
+    return redirect('/')
+
+
 @web.route('/')
 def index():
     """Dashboard home page"""
