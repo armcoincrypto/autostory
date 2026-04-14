@@ -25,7 +25,21 @@ _project_root = os.path.abspath(os.path.join(_here, "..", ".."))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 from config.settings import settings
-from src.core.models import Account, Story, DiscoveredUser, Campaign, Task, AccountStatus, StoryTemplate, MentionBlacklist, UploadedMentionSource, UploadedMentionEntry, StorySchedule
+from src.core.models import (
+    Account,
+    Story,
+    DiscoveredUser,
+    Campaign,
+    Task,
+    AccountStatus,
+    StoryTemplate,
+    MentionBlacklist,
+    UploadedMentionSource,
+    UploadedMentionEntry,
+    StorySchedule,
+    StoryRun,
+    StoryPool,
+)
 from src.core.database import get_db_context, run_with_sqlite_lock_retry
 
 logger = structlog.get_logger(__name__)
@@ -2859,6 +2873,175 @@ def stories_batch_history():
         })
 
 
+def _media_upload_handler():
+    """Save uploaded file to settings.storage.media_dir; return (dict, None) or (None, (response, status))."""
+    from pathlib import Path
+    import uuid
+
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return None, (jsonify({"error": "No file uploaded"}), 400)
+    ext = Path(file.filename).suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".avi", ".webm"):
+        return None, (jsonify({"error": "Unsupported format. Use JPG, PNG, MP4."}), 400)
+    media_dir = Path(settings.storage.media_dir)
+    media_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{uuid.uuid4().hex}{ext}"
+    path = media_dir / name
+    try:
+        file.save(str(path))
+    except Exception as e:
+        logger.exception("media upload failed")
+        return None, (jsonify({"error": str(e)}), 500)
+    st = path.stat()
+    is_video = ext in (".mp4", ".mov", ".avi", ".webm")
+    return {
+        "success": True,
+        "path": str(path),
+        "filename": name,
+        "size": st.st_size,
+        "type": "video" if is_video else "photo",
+    }, None
+
+
+@api.route("/stories/runs", methods=["GET"])
+def list_story_runs():
+    """List story rotation runs."""
+    page = request.args.get("page", 1, type=int)
+    per_page = min(100, max(1, request.args.get("per_page", 20, type=int)))
+    with get_db_context() as db:
+        q = db.query(StoryRun).order_by(StoryRun.created_at.desc())
+        total = q.count()
+        runs = q.offset((page - 1) * per_page).limit(per_page).all()
+        pool_ids = {r.pool_id for r in runs if r.pool_id}
+        pool_names = {}
+        if pool_ids:
+            for pl in db.query(StoryPool).filter(StoryPool.id.in_(pool_ids)).all():
+                pool_names[pl.id] = pl.name
+        return jsonify({
+            "total": total,
+            "page": page,
+            "runs": [
+                {
+                    "id": r.id,
+                    "pool_id": r.pool_id,
+                    "pool_name": pool_names.get(r.pool_id, "—"),
+                    "mode": r.mode,
+                    "interval_minutes": r.interval_minutes,
+                    "caption": (r.caption or "")[:60] or None,
+                    "media_path": r.media_path,
+                    "mentions_per_story": r.mentions_per_story,
+                    "status": r.status,
+                    "stories_ok": r.stories_ok,
+                    "stories_failed": r.stories_failed,
+                    "started_at": r.started_at.isoformat() if r.started_at else None,
+                    "last_tick_at": r.last_tick_at.isoformat() if r.last_tick_at else None,
+                    "next_tick_at": r.next_tick_at.isoformat() if r.next_tick_at else None,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in runs
+            ],
+        })
+
+
+@api.route("/stories/runs", methods=["POST"])
+def create_story_run():
+    """Create a pending StoryRun for the rotation worker."""
+    data = request.get_json() or {}
+    media_path = (data.get("media_path") or "").strip()
+    if not media_path:
+        return jsonify({"error": "media_path required"}), 400
+    mode = data.get("mode") or "once"
+    if mode not in ("once", "continuous"):
+        return jsonify({"error": "mode must be 'once' or 'continuous'"}), 400
+    raw_pool = data.get("pool_id", None)
+    if raw_pool in (None, "", "0", 0):
+        pool_id = None
+    else:
+        try:
+            pool_id = int(raw_pool)
+        except (TypeError, ValueError):
+            return jsonify({"error": "pool_id must be an integer"}), 400
+    interval = data.get("interval_minutes")
+    if mode == "continuous":
+        try:
+            interval = int(interval) if interval not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "interval_minutes must be an integer"}), 400
+        if not interval or interval < 1:
+            return jsonify({"error": "interval_minutes required for continuous mode"}), 400
+    else:
+        interval = None
+    try:
+        mentions = int(data.get("mentions_per_story", 5) or 5)
+    except (TypeError, ValueError):
+        return jsonify({"error": "mentions_per_story must be an integer"}), 400
+    raw_max = data.get("max_stories", None)
+    if raw_max in (None, "", "null"):
+        max_stories = None
+    else:
+        try:
+            max_stories = int(raw_max)
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_stories must be an integer"}), 400
+    caption = data.get("caption")
+    if caption is not None and not isinstance(caption, str):
+        caption = str(caption)
+    with get_db_context() as db:
+        run = StoryRun(
+            pool_id=pool_id,
+            mode=mode,
+            interval_minutes=interval,
+            caption=caption,
+            media_path=media_path,
+            mentions_per_story=mentions,
+            max_stories=max_stories,
+            status="pending",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return jsonify({"success": True, "run_id": run.id, "status": "pending"})
+
+
+@api.route("/media/upload", methods=["POST"])
+def upload_media():
+    """Dashboard alias: POST /api/media/upload."""
+    rv, err = _media_upload_handler()
+    if err:
+        return err
+    return jsonify(rv)
+
+
+@api.route("/media/files", methods=["GET"])
+def list_media_files():
+    """List media files for the browser (GET /api/media/files)."""
+    from pathlib import Path
+
+    allowed = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".avi", ".webm"}
+    media_dir = Path(settings.storage.media_dir)
+    if not media_dir.exists():
+        return jsonify({"files": []})
+    files = []
+    for f in sorted(media_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if not f.is_file() or f.name.startswith("."):
+            continue
+        ext = f.suffix.lower()
+        if ext not in allowed:
+            continue
+        st = f.stat()
+        files.append({
+            "filename": f.name,
+            "path": str(f),
+            "size": st.st_size,
+            "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
+            "type": "video" if ext in (".mp4", ".mov", ".avi", ".webm") else "photo",
+        })
+    return jsonify({"files": files})
+
+
+
+
 @api.route('/stories/templates', methods=['GET'])
 def list_story_templates():
     """List all story templates."""
@@ -3095,25 +3278,10 @@ def delete_story_schedule(schedule_id):
 @api.route('/stories/upload-media', methods=['POST'])
 def upload_story_media():
     """Upload a media file for story publishing (photo or video). Returns path for use in publish."""
-    from pathlib import Path
-    from config.settings import settings
-    import uuid
-    file = request.files.get('file')
-    if not file or not file.filename:
-        return jsonify({"error": "No file uploaded"}), 400
-    ext = Path(file.filename).suffix.lower()
-    if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.avi', '.webm'):
-        return jsonify({"error": "Unsupported format. Use JPG, PNG, MP4."}), 400
-    media_dir = Path(settings.storage.media_dir)
-    media_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{uuid.uuid4().hex}{ext}"
-    path = media_dir / name
-    try:
-        file.save(str(path))
-        return jsonify({"success": True, "path": str(path)})
-    except Exception as e:
-        logger.exception("upload_story_media failed")
-        return jsonify({"error": str(e)}), 500
+    rv, err = _media_upload_handler()
+    if err:
+        return err
+    return jsonify(rv)
 
 
 @api.route('/stories', methods=['GET'])
