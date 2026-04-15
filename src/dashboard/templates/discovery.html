@@ -46,6 +46,17 @@
     </div>
 </div>
 
+<!-- Source groups (filter table + stats) -->
+<div class="card mb-4" style="background:var(--card-bg);border:1px solid rgba(255,255,255,.08);">
+    <div class="card-body py-3">
+        <div class="d-flex flex-wrap align-items-center gap-2" id="discovery-source-pills-wrap">
+            <span class="text-muted small">Source group:</span>
+            <span class="text-muted small" id="discovery-sources-loading">Loading…</span>
+        </div>
+        <div class="text-muted small mt-2" id="discovery-source-detail" style="min-height:1.25rem;"></div>
+    </div>
+</div>
+
 <!-- Filters -->
 <div class="card mb-4">
     <div class="card-body">
@@ -145,6 +156,8 @@
 <script>
 let currentPage = 1;
 let sourcesChart = null;
+let selectedSourceChatId = null;
+let discoverySources = [];
 
 async function loadStats() {
     try {
@@ -195,6 +208,80 @@ function updateSourcesChart(sources) {
     });
 }
 
+async function loadDiscoverySources() {
+    const wrap = document.getElementById('discovery-source-pills-wrap');
+    const loading = document.getElementById('discovery-sources-loading');
+    try {
+        const response = await fetch('/api/discovery/sources');
+        const data = await response.json();
+        discoverySources = data.sources || [];
+        if (loading) loading.remove();
+        renderDiscoverySourcePills();
+        updateDiscoverySourceStats();
+    } catch (error) {
+        console.error('Failed to load discovery sources:', error);
+        if (loading) loading.textContent = 'Sources unavailable';
+    }
+}
+
+function renderDiscoverySourcePills() {
+    const wrap = document.getElementById('discovery-source-pills-wrap');
+    if (!wrap) return;
+
+    const mkBtn = (label, chatId, countBadge) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm mb-1';
+        b.setAttribute('data-source-chat', chatId === null ? '' : String(chatId));
+        const active = (chatId === null && selectedSourceChatId === null)
+            || (chatId !== null && selectedSourceChatId === chatId);
+        b.classList.add(active ? 'btn-primary' : 'btn-outline-secondary');
+        if (!active) {
+            b.style.borderColor = 'rgba(99, 102, 241, 0.45)';
+            b.style.color = 'var(--primary-color, #a5b4fc)';
+        }
+        b.appendChild(document.createTextNode(label + ' '));
+        if (countBadge != null) {
+            const badge = document.createElement('span');
+            badge.className = 'badge rounded-pill';
+            badge.style.background = active ? 'rgba(0,0,0,.35)' : 'rgba(99,102,241,.25)';
+            badge.textContent = countBadge;
+            b.appendChild(badge);
+        }
+        b.addEventListener('click', () => {
+            selectedSourceChatId = chatId;
+            renderDiscoverySourcePills();
+            updateDiscoverySourceStats();
+            loadUsers(1);
+        });
+        return b;
+    };
+
+    const lab = document.createElement('span');
+    lab.className = 'text-muted small';
+    lab.textContent = 'Source group:';
+    const nodes = [lab, mkBtn('All', null, null)];
+    for (const s of discoverySources) {
+        nodes.push(mkBtn(s.title, s.chat_id, String(s.available)));
+    }
+    wrap.replaceChildren(...nodes);
+}
+
+function updateDiscoverySourceStats() {
+    const el = document.getElementById('discovery-source-detail');
+    if (!el) return;
+    if (selectedSourceChatId === null) {
+        el.textContent = 'Showing users from all discovery groups.';
+        return;
+    }
+    const s = discoverySources.find(x => x.chat_id === selectedSourceChatId);
+    if (!s) {
+        el.textContent = '';
+        return;
+    }
+    el.textContent = `Total ${s.total} · ${s.available} available for mention · ${s.mentioned} already mentioned`;
+}
+
 async function loadUsers(page = 1) {
     currentPage = page;
     const mentioned = document.getElementById('filter-mentioned').value;
@@ -202,6 +289,9 @@ async function loadUsers(page = 1) {
     try {
         let url = `/api/discovery/users?page=${page}&per_page=50`;
         if (mentioned) url += `&mentioned=${mentioned}`;
+        if (selectedSourceChatId !== null) {
+            url += `&source_chat_id=${selectedSourceChatId}`;
+        }
 
         const response = await fetch(url);
         const data = await response.json();
@@ -271,7 +361,7 @@ async function startScan() {
         if (result.success) {
             alert(`Scan complete!\nChannels processed: ${result.channels_processed}\nNew users: ${result.total_new_users}`);
             loadStats();
-            loadUsers();
+            loadDiscoverySources().then(() => loadUsers());
         } else {
             alert('Scan failed: ' + (result.errors?.join(', ') || 'Unknown error'));
         }
@@ -283,7 +373,7 @@ async function startScan() {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadStats();
-    loadUsers();
+    loadDiscoverySources().then(() => loadUsers());
 });
 </script>
 {% endblock %}

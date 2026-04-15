@@ -111,7 +111,20 @@
                 <input type="number" class="form-control form-control-sm" id="sched-interval"
                        value="60" min="5" max="1440" placeholder="60">
             </div>
-
+        </div>
+        <div class="row g-3">
+            <!-- Mention source (discovered users) -->
+            <div class="col-md-4">
+                <label class="form-label fw-semibold mb-1">
+                    Mention source <span class="text-muted fw-normal small">(optional)</span>
+                </label>
+                <select class="form-select form-select-sm" id="sched-mention-source">
+                    <option value="">— All groups —</option>
+                </select>
+                <div class="text-muted small mt-1" id="sched-mention-source-count"></div>
+            </div>
+        </div>
+        <div class="row g-3">
             <!-- Media picker -->
             <div class="col-12">
                 <label class="form-label fw-semibold mb-1">Media</label>
@@ -859,6 +872,8 @@ async function scheduleRun() {
     } else if (poolVal) {
         poolId = poolVal;
     }
+    const mscSel = document.getElementById('sched-mention-source');
+    const mscVal = mscSel && mscSel.value ? parseInt(mscSel.value, 10) : null;
     const body = {
         pool_id:           poolId,
         purpose_filter:    purposeFilter,
@@ -869,6 +884,7 @@ async function scheduleRun() {
         mentions_per_story: parseInt(document.getElementById('sched-mentions').value) || 5,
         max_stories:       document.getElementById('sched-max-stories').value
                                ? parseInt(document.getElementById('sched-max-stories').value) : null,
+        mention_source_chat_id: Number.isFinite(mscVal) ? mscVal : null,
     };
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting…';
@@ -1019,6 +1035,39 @@ async function removeBlacklist(id) {
 // ── Pool management ───────────────────────────────────────────────────────
 let _openPoolId   = null;
 let _allAccounts  = [];   // populated by loadFleetStatus
+
+function _bindMentionSourceCountHint() {
+    const sel = document.getElementById('sched-mention-source');
+    const countEl = document.getElementById('sched-mention-source-count');
+    if (!sel || !countEl || sel.dataset._boundCount === '1') return;
+    sel.dataset._boundCount = '1';
+    sel.addEventListener('change', () => {
+        const opt = sel.selectedOptions[0];
+        const av = opt && opt.dataset.available ? parseInt(opt.dataset.available, 10) : NaN;
+        countEl.textContent = (sel.value && Number.isFinite(av)) ? `${av} users available` : '';
+    });
+}
+
+async function loadMentionSources() {
+    _bindMentionSourceCountHint();
+    const sel = document.getElementById('sched-mention-source');
+    if (!sel) return;
+    try {
+        const r = await fetch('/api/discovery/sources');
+        if (!r.ok) return;
+        const data = await r.json();
+        const items = data.sources || [];
+        sel.innerHTML = '<option value="">— All groups —</option>';
+        for (const s of items) {
+            const o = document.createElement('option');
+            o.value = String(s.chat_id);
+            o.dataset.available = String(s.available);
+            o.textContent = `${s.title} (${s.available} available)`;
+            sel.appendChild(o);
+        }
+        sel.dispatchEvent(new Event('change'));
+    } catch (e) {}
+}
 
 async function loadPoolsUI() {
     try {
@@ -1232,6 +1281,7 @@ function closePoolDetail() {
 document.addEventListener('DOMContentLoaded', () => {
     loadFleetStatus();
     loadPoolsUI();
+    loadMentionSources();
     loadMediaBrowser();   // pre-fetch file count for badge
     loadStories();
     loadBatchHistory();

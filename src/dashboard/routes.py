@@ -1512,6 +1512,7 @@ def list_story_runs():
                     'caption': (r.caption or '')[:60] or None,
                     'media_path': r.media_path,
                     'mentions_per_story': r.mentions_per_story,
+                    'mention_source_chat_id': getattr(r, 'mention_source_chat_id', None),
                     'status': r.status,
                     'stories_ok': r.stories_ok,
                     'stories_failed': r.stories_failed,
@@ -1539,9 +1540,13 @@ def create_story_run():
     interval = data.get('interval_minutes')
     if mode == 'continuous' and not interval:
         return jsonify({'error': 'interval_minutes required for continuous mode'}), 400
-    purpose_filter = data.get('purpose_filter') or None
-    if purpose_filter not in (None, 'autostory', 'both'):
-        purpose_filter = None  # ignore invalid values
+    raw_msc = data.get('mention_source_chat_id')
+    mention_source_chat_id = None
+    if raw_msc not in (None, '', 'null'):
+        try:
+            mention_source_chat_id = int(raw_msc)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'mention_source_chat_id must be an integer or null'}), 400
     with get_db_context() as db:
         run = StoryRun(
             pool_id=data.get('pool_id') or None,
@@ -1551,7 +1556,7 @@ def create_story_run():
             media_path=media_path,
             mentions_per_story=int(data.get('mentions_per_story', 5)),
             max_stories=int(data.get('max_stories')) if data.get('max_stories') else None,
-            purpose_filter=purpose_filter,
+            mention_source_chat_id=mention_source_chat_id,
             status='pending',
         )
         db.add(run)
@@ -1573,7 +1578,9 @@ def get_story_run(run_id):
         return jsonify({
             'run': {
                 'id': run.id, 'mode': run.mode, 'status': run.status,
-                'pool_id': run.pool_id, 'interval_minutes': run.interval_minutes,
+                'pool_id': run.pool_id,
+                'mention_source_chat_id': getattr(run, 'mention_source_chat_id', None),
+                'interval_minutes': run.interval_minutes,
                 'stories_ok': run.stories_ok, 'stories_failed': run.stories_failed,
                 'started_at': run.started_at.isoformat() if run.started_at else None,
                 'last_tick_at': run.last_tick_at.isoformat() if run.last_tick_at else None,
@@ -1724,14 +1731,47 @@ def story_account_stats():
 # ============================================
 # Discovery API
 # ============================================
+@api.route('/discovery/sources', methods=['GET'])
+def list_discovery_sources():
+    """Return distinct source chats with counts of available mention targets."""
+    from sqlalchemy import text
+
+    sql = text("""
+        SELECT source_chat_id, source_chat_title,
+               COUNT(*) AS total,
+               SUM(CASE WHEN times_mentioned=0 AND is_blocked=0 AND username IS NOT NULL THEN 1 ELSE 0 END) AS available,
+               SUM(CASE WHEN times_mentioned > 0 THEN 1 ELSE 0 END) AS mentioned
+        FROM discovered_users
+        WHERE source_chat_id IS NOT NULL
+        GROUP BY source_chat_id, source_chat_title
+        ORDER BY available DESC
+    """)
+    with get_db_context() as db:
+        rows = db.execute(sql).fetchall()
+    sources = []
+    for row in rows:
+        chat_id, title, total, available, mentioned = row[0], row[1], row[2], row[3], row[4]
+        sources.append({
+            'chat_id': chat_id,
+            'title': title or f'Chat {chat_id}',
+            'total': int(total or 0),
+            'available': int(available or 0),
+            'mentioned': int(mentioned or 0),
+        })
+    return jsonify({'sources': sources})
+
+
 @api.route('/discovery/users', methods=['GET'])
 def list_discovered_users():
     """List discovered users"""
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 50, type=int)
     mentioned = request.args.get('mentioned', None)
+    source_chat_id = request.args.get('source_chat_id', type=int)
     with get_db_context() as db:
         query = db.query(DiscoveredUser)
+        if source_chat_id is not None:
+            query = query.filter(DiscoveredUser.source_chat_id == source_chat_id)
         if mentioned == 'true':
             query = query.filter(DiscoveredUser.times_mentioned > 0)
         elif mentioned == 'false':
@@ -1749,6 +1789,7 @@ def list_discovered_users():
                     "username": u.username,
                     "first_name": u.first_name,
                     "source": u.source_chat_title,
+                    "source_chat_id": u.source_chat_id,
                     "times_mentioned": u.times_mentioned,
                     "discovered_at": u.discovered_at.isoformat(),
                 }

@@ -12,13 +12,18 @@ Key design decisions:
 - All DB mutations happen inside get_db_context so they're atomic.
 """
 import asyncio
+import os
 import sys
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 import structlog
 
-sys.path.insert(0, '/home/user/autostory')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, '..', '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from src.core.models import (
     Account, AccountStatus, DiscoveredUser,
     StoryPool, StoryPoolMember, StoryRun, StoryRunStep,
@@ -118,15 +123,21 @@ class StoryRotationEngine:
 
     # ── Mention selection ──────────────────────────────────────────────────
 
-    def _pick_mention_users(self, count: int, db) -> List[int]:
+    def _pick_mention_users(
+        self, count: int, db, source_chat_id: Optional[int] = None
+    ) -> List[int]:
         """
         FIFO: oldest-discovered, never-mentioned, not blocked, has username.
+        When source_chat_id is set, only users discovered from that Telegram group.
         """
-        users = db.query(DiscoveredUser).filter(
+        q = db.query(DiscoveredUser).filter(
             DiscoveredUser.is_blocked == False,
             DiscoveredUser.times_mentioned == 0,
             DiscoveredUser.username.isnot(None),
-        ).order_by(DiscoveredUser.discovered_at.asc()).limit(count).all()
+        )
+        if source_chat_id is not None:
+            q = q.filter(DiscoveredUser.source_chat_id == source_chat_id)
+        users = q.order_by(DiscoveredUser.discovered_at.asc()).limit(count).all()
         return [u.user_id for u in users]
 
     # ── Single rotation step ───────────────────────────────────────────────
@@ -163,6 +174,7 @@ class StoryRotationEngine:
             mode = run.mode
             interval_minutes = run.interval_minutes or 60
             max_stories = run.max_stories
+            mention_source_chat_id = getattr(run, 'mention_source_chat_id', None)
 
         if not media_path:
             await self._record_step(run_id, None, 'failed', 'no_media_path', mode, interval_minutes)
@@ -182,7 +194,9 @@ class StoryRotationEngine:
                             run2.next_tick_at = datetime.utcnow() + timedelta(minutes=interval_minutes)
                 return {'success': False, 'error': 'no_eligible_account'}
             account_id = account.id
-            mention_ids = self._pick_mention_users(mentions_per_story, db)
+            mention_ids = self._pick_mention_users(
+                mentions_per_story, db, mention_source_chat_id
+            )
 
         # ── Get or reconnect client ────────────────────────────────────────
         client_wrapper = await client_manager.get_client(account_id)
