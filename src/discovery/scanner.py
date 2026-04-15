@@ -70,33 +70,33 @@ class GroupMessageScanner:
             self._seen_users = set()
 
     async def get_active_client(self) -> Optional[TelegramClient]:
-        """Get an active Telegram client from database"""
+        """Get an active Telegram client from database, trying accounts until one works."""
         from telethon.sessions import StringSession
 
         with get_db_context() as db:
-            account = db.query(Account).filter(
+            accounts = db.query(Account).filter(
                 Account.status == AccountStatus.ACTIVE,
-                Account.session_string.isnot(None)
-            ).first()
+                Account.session_string.isnot(None),
+            ).all()
+            session_pairs = [(a.id, a.session_string) for a in accounts]
 
-            if not account:
-                return None
+        for account_id, session_string in session_pairs:
+            try:
+                client = TelegramClient(
+                    StringSession(session_string),
+                    settings.telegram.api_id,
+                    settings.telegram.api_hash,
+                )
+                await client.connect()
+                if await client.is_user_authorized():
+                    return client
+                await client.disconnect()
+            except Exception as e:
+                logger.warning("Skipping account with unusable session",
+                               account_id=account_id, error=str(e))
+                continue
 
-            session_string = account.session_string
-
-        # Create client from session
-        client = TelegramClient(
-            StringSession(session_string),
-            settings.telegram.api_id,
-            settings.telegram.api_hash
-        )
-
-        await client.connect()
-
-        if not await client.is_user_authorized():
-            return None
-
-        return client
+        return None
 
     async def scan_group_messages(
         self,
