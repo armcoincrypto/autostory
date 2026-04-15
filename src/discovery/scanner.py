@@ -71,7 +71,7 @@ class GroupMessageScanner:
 
     async def get_active_client(self) -> Optional[TelegramClient]:
         """Get an active Telegram client from database, trying accounts until one works."""
-        from telethon.sessions import StringSession
+        from telethon.sessions import StringSession, SQLiteSession
 
         with get_db_context() as db:
             accounts = db.query(Account).filter(
@@ -82,8 +82,16 @@ class GroupMessageScanner:
 
         for account_id, session_string in session_pairs:
             try:
+                # session_string stores a file path (e.g. /opt/.../account_13.session)
+                # SQLiteSession expects path without the .session extension
+                if session_string.startswith('/') or session_string.endswith('.session'):
+                    sess_path = session_string.removesuffix('.session')
+                    session = SQLiteSession(sess_path)
+                else:
+                    session = StringSession(session_string)
+
                 client = TelegramClient(
-                    StringSession(session_string),
+                    session,
                     settings.telegram.api_id,
                     settings.telegram.api_hash,
                 )
