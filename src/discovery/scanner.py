@@ -69,8 +69,11 @@ class GroupMessageScanner:
             logger.error("Failed to load existing users", error=str(e))
             self._seen_users = set()
 
-    async def get_active_client(self) -> Optional[TelegramClient]:
-        """Get an active Telegram client from database, trying accounts until one works."""
+    async def get_active_client(self, entity_hint=None) -> Optional[TelegramClient]:
+        """
+        Get an active Telegram client from database, trying accounts until one works.
+        If entity_hint is provided (username or ID), verify the account can resolve it.
+        """
         from telethon.sessions import StringSession, SQLiteSession
 
         with get_db_context() as db:
@@ -96,9 +99,18 @@ class GroupMessageScanner:
                     settings.telegram.api_hash,
                 )
                 await client.connect()
-                if await client.is_user_authorized():
-                    return client
-                await client.disconnect()
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    continue
+
+                if entity_hint is not None:
+                    try:
+                        await client.get_entity(entity_hint)
+                    except Exception:
+                        await client.disconnect()
+                        continue  # this account can't see the entity, try next
+
+                return client
             except Exception as e:
                 logger.warning("Skipping account with unusable session",
                                account_id=account_id, error=str(e))
@@ -140,14 +152,14 @@ class GroupMessageScanner:
 
         start_time = datetime.utcnow()
 
-        # Get client
-        client = await self.get_active_client()
+        # Get client — pass group_username so we skip accounts that can't see this entity
+        client = await self.get_active_client(entity_hint=group_username)
         if not client:
-            results["errors"].append("No active Telegram account. Use /login first.")
+            results["errors"].append("No active Telegram account with access to this group.")
             return results
 
         try:
-            # Get group entity
+            # Get group entity (already verified in get_active_client)
             try:
                 group = await client.get_entity(group_username)
             except Exception as e:
