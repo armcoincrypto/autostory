@@ -71,10 +71,12 @@ class StoryRotationEngine:
 
     # ── Account selection ──────────────────────────────────────────────────
 
-    def _pick_account(self, pool_id: Optional[int], db) -> Optional[Account]:
+    def _pick_account(self, pool_id: Optional[int], db,
+                      purpose_filter: Optional[str] = None) -> Optional[Account]:
         """
         Round-robin: pick the eligible account with the oldest last_active.
         Falls back to all story-ready active accounts when pool_id is None.
+        purpose_filter: 'autostory' | 'both' | None (None = exclude messaging-only)
         """
         if pool_id:
             members = db.query(StoryPoolMember).filter(
@@ -88,10 +90,23 @@ class StoryRotationEngine:
                 Account.id.in_(account_ids)
             ).order_by(Account.last_active.asc().nullsfirst()).all()
         else:
-            candidates = db.query(Account).filter(
+            from sqlalchemy import or_
+            q = db.query(Account).filter(
                 Account.status == AccountStatus.ACTIVE,
                 Account.story_precheck_status == 'allowed',
-            ).order_by(Account.last_active.asc().nullsfirst()).all()
+            )
+            if purpose_filter in ('autostory', 'both'):
+                # exact match
+                q = q.filter(Account.purpose == purpose_filter)
+            else:
+                # default: exclude messaging-only accounts
+                q = q.filter(
+                    or_(
+                        Account.purpose.in_(['autostory', 'both']),
+                        Account.purpose.is_(None),
+                    )
+                )
+            candidates = q.order_by(Account.last_active.asc().nullsfirst()).all()
 
         for acc in candidates:
             eligible, reason = self._is_eligible(acc)
@@ -141,6 +156,7 @@ class StoryRotationEngine:
                 run.started_at = datetime.utcnow()
 
             pool_id = run.pool_id
+            purpose_filter = getattr(run, 'purpose_filter', None)
             caption = run.caption
             media_path = run.media_path
             mentions_per_story = run.mentions_per_story or 5
@@ -154,7 +170,7 @@ class StoryRotationEngine:
 
         # ── Pick account ───────────────────────────────────────────────────
         with get_db_context() as db:
-            account = self._pick_account(pool_id, db)
+            account = self._pick_account(pool_id, db, purpose_filter=purpose_filter)
             if not account:
                 logger.warning('No eligible account for rotation', run_id=run_id)
                 # Reschedule but don't count as failure

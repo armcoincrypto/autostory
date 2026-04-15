@@ -1539,6 +1539,9 @@ def create_story_run():
     interval = data.get('interval_minutes')
     if mode == 'continuous' and not interval:
         return jsonify({'error': 'interval_minutes required for continuous mode'}), 400
+    purpose_filter = data.get('purpose_filter') or None
+    if purpose_filter not in (None, 'autostory', 'both'):
+        purpose_filter = None  # ignore invalid values
     with get_db_context() as db:
         run = StoryRun(
             pool_id=data.get('pool_id') or None,
@@ -1548,6 +1551,7 @@ def create_story_run():
             media_path=media_path,
             mentions_per_story=int(data.get('mentions_per_story', 5)),
             max_stories=int(data.get('max_stories')) if data.get('max_stories') else None,
+            purpose_filter=purpose_filter,
             status='pending',
         )
         db.add(run)

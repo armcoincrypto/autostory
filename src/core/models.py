@@ -317,6 +317,7 @@ class StoryRun(Base):
     media_path = Column(String(500), nullable=True)
     mentions_per_story = Column(Integer, default=5)
     max_stories = Column(Integer, nullable=True)       # None = unlimited
+    purpose_filter = Column(String(20), nullable=True) # autostory | both | None=all
 
     # State (updated by worker)
     status = Column(String(20), default="pending")     # pending|running|completed|failed|cancelled

@@ -851,8 +851,17 @@ async function scheduleRun() {
     const mode = document.getElementById('sched-mode').value;
     const interval = parseInt(document.getElementById('sched-interval').value) || 60;
     if (mode === 'continuous' && interval < 5) { alert('Interval must be at least 5 minutes.'); return; }
+    // Parse pool selector: values like "purpose:autostory" are purpose filters, not pool IDs
+    const poolVal = document.getElementById('sched-pool').value || '';
+    let poolId = null, purposeFilter = null;
+    if (poolVal.startsWith('purpose:')) {
+        purposeFilter = poolVal.replace('purpose:', '');
+    } else if (poolVal) {
+        poolId = poolVal;
+    }
     const body = {
-        pool_id:           document.getElementById('sched-pool').value || null,
+        pool_id:           poolId,
+        purpose_filter:    purposeFilter,
         mode,
         interval_minutes:  mode === 'continuous' ? interval : null,
         media_path:        mediaPath,
@@ -1025,10 +1034,20 @@ async function loadPoolsUI() {
         // also refresh the hero form dropdown (reuse loadPools logic)
         const sel = document.getElementById('sched-pool');
         if (sel) {
-            const opts = pools.map(p =>
+            const poolOpts = pools.map(p =>
                 `<option value="${p.id}">${p.name} (${p.enabled_count} accounts)</option>`
             ).join('');
-            sel.innerHTML = '<option value="">— All ready accounts —</option>' + opts;
+            const poolGroup = pools.length
+                ? `<optgroup label="Named Pools">${poolOpts}</optgroup>`
+                : '';
+            sel.innerHTML = `
+                <option value="">— All ready accounts (stories + both) —</option>
+                <optgroup label="By Purpose">
+                    <option value="purpose:autostory">Stories-only accounts</option>
+                    <option value="purpose:both">Both (stories + messaging) accounts</option>
+                </optgroup>
+                ${poolGroup}
+            `;
         }
 
         const tbody = document.getElementById('pool-list-table');
