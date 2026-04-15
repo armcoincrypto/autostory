@@ -410,11 +410,15 @@ function getAccountCategory(a) {
     const healthLabel = a.general_health_label || 'Unknown';
     const storyReady  = a.publish_story_status === 'yes';
     const storyChecked = !!a.story_precheck_checked_at;
+    const storyStale  = !!a.story_precheck_stale;
+    const healthStale = !!a.health_check_stale;
     const isAlive     = statusKey === 'active' && healthLabel === 'Alive';
 
     if (isAlive && storyReady)   return 'ready';
-    if (isAlive && !storyChecked) return 'needs_precheck';  // alive but never checked
-    if (isAlive && !storyReady)   return 'blocked';         // alive, checked, rejected
+    // Alive but needs a fresh check (never checked, or checks have expired)
+    if (isAlive && (!storyChecked || storyStale || healthStale)) return 'needs_precheck';
+    // Alive, freshly checked, but actually rejected (frozen/not_authorized)
+    if (isAlive && !storyReady)  return 'blocked';
     if (['banned', 'flood_wait'].includes(statusKey) ||
         ['Banned', 'Flood Wait', 'Frozen'].includes(healthLabel)) return 'blocked';
     return 'attention'; // inactive, auth_required, unknown
@@ -855,7 +859,10 @@ async function runFleetHealthCheck() {
     statusEl.classList.remove('d-none');
 
     try {
-        const r = await fetch('/api/accounts/healthcheck/start', { method: 'POST' });
+        const r = await fetch('/api/accounts/healthcheck/start', {
+            method: 'POST',
+            headers: {'X-Admin-Token': ADMIN_TOKEN},
+        });
         const data = await r.json();
         if (!r.ok) {
             statusEl.className = 'alert alert-danger mb-3';
@@ -870,7 +877,9 @@ async function runFleetHealthCheck() {
         const poll = async () => {
             attempts++;
             try {
-                const pr = await fetch(`/api/accounts/healthcheck/${jobId}`);
+                const pr = await fetch(`/api/accounts/healthcheck/${jobId}`, {
+                    headers: {'X-Admin-Token': ADMIN_TOKEN},
+                });
                 const pd = await pr.json();
                 const done = pd.status === 'done' || pd.status === 'complete' || pd.status === 'completed' || pd.done;
                 const pct = pd.progress_pct ?? (pd.checked && pd.total ? Math.round(pd.checked / pd.total * 100) : null);

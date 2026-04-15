@@ -2,19 +2,13 @@
 Dashboard Routes - API and Web endpoints
 """
 import asyncio
-import hmac
 import json
-import threading
 import os
-import random
 import sys
-import time
 import urllib.error
 import urllib.request
 from functools import wraps
-from datetime import datetime
-from types import SimpleNamespace
-from typing import Any, List, Optional
+from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request, render_template, send_from_directory
 from flask_login import login_required, current_user
@@ -25,203 +19,190 @@ _project_root = os.path.abspath(os.path.join(_here, "..", ".."))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 from config.settings import settings
-from src.core.models import (
-    Account,
-    Story,
-    DiscoveredUser,
-    Campaign,
-    Task,
-    AccountStatus,
-    StoryTemplate,
-    MentionBlacklist,
-    UploadedMentionSource,
-    UploadedMentionEntry,
-    StorySchedule,
-    StoryRun,
-    StoryPool,
-)
-from src.core.database import get_db_context, run_with_sqlite_lock_retry
+from src.core.models import Account, Story, DiscoveredUser, Campaign, Task, AccountStatus
+from src.core.database import get_db_context
 
 logger = structlog.get_logger(__name__)
 
 
-def _dt_iso_optional(val: Any) -> Optional[str]:
-    """
-    API timestamp field: accept datetime/date from ORM or ISO strings from SQLite/text columns.
-    None / empty string -> None.
-    """
-    if val is None:
-        return None
-    if isinstance(val, str):
-        s = val.strip()
-        return s if s else None
-    iso = getattr(val, "isoformat", None)
-    if callable(iso):
+# ============================================
+# Health check helpers
+# ============================================
+
+def _is_health_stale(health_checked_at, max_hours: int = 24) -> bool:
+    """Return True if the last health check is older than max_hours or was never run."""
+    if health_checked_at is None:
+        return True
+    if isinstance(health_checked_at, str):
         try:
-            return iso()
-        except (TypeError, ValueError):
-            pass
-    s = str(val).strip()
-    return s if s else None
+            health_checked_at = datetime.fromisoformat(health_checked_at.replace("Z", "+00:00"))
+        except Exception:
+            return True
+    try:
+        return (datetime.utcnow() - health_checked_at.replace(tzinfo=None)) > timedelta(hours=max_hours)
+    except Exception:
+        return True
 
 
-# Fleet background healthcheck: one asyncio.run per chunk (each run gets a fresh event loop). No global fleet cap.
-HEALTHCHECK_BG_CHUNK_SIZE = int(os.environ.get("HEALTHCHECK_BG_CHUNK_SIZE", "30"))
-HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC = float(os.environ.get("HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC", "900"))
-_HEALTHCHECK_REMAINING_IDS_CAP = int(os.environ.get("HEALTHCHECK_BG_MAX_REMAINING_IDS_STORED", "2000"))
-
-HEALTHCHECK_RESPONSE_NOTE = (
-    "General health only: connect/auth/get_me. Story readiness shown separately from DB snapshot."
-)
-
-
-def _sync_healthcheck_timeout_sec(num_accounts: int) -> float:
-    """Wall-clock budget for synchronous health endpoints (small batches only)."""
-    explicit = os.environ.get("HEALTHCHECK_SYNC_TIMEOUT_SEC")
-    if explicit is not None and str(explicit).strip() != "":
-        return float(explicit)
-    n = max(1, min(int(num_accounts), 15))
-    return min(900.0, 90.0 + n * 55.0)
-
-
-def _healthcheck_status_counts(results: list) -> dict:
-    counts: dict[str, int] = {}
-    for row in results or []:
-        if not isinstance(row, dict):
-            continue
-        s = str(row.get("status") or "unknown").strip()
-        counts[s] = counts.get(s, 0) + 1
-    return counts
-
-
-def _story_db_snapshot_from_account(acc: Account) -> dict:
+def _general_health_fields_for_api(account) -> dict:
     """
-    Read-only story snapshot: same DB-backed semantics as /api/accounts (story_ui_status, story_reason,
-    story_available_label via get_story_availability; safety reason via get_story_safety_decision).
-    Does not call Telegram or mutate story state.
+    Derive general_health_label and general_health_reason from DB status + Telegram health_status.
+
+    Priority:
+      1. DB status drives label for banned/flood_wait/auth_required/inactive — those are
+         operator-visible facts regardless of what Telegram last reported.
+      2. For active accounts, Telegram health_status drives the label.
+      3. Fallback to Unknown when no health check has run yet.
     """
-    from src.core.session_paths import get_story_availability
-    from src.core.safety_policy import get_story_safety_decision
+    st = getattr(account, "status", None)
+    st = st.value if hasattr(st, "value") else (st or "")
+    hs_raw = getattr(account, "health_status", None) or ""
+    hs = hs_raw.strip().lower() if hs_raw else ""
+    reason_s = (getattr(account, "health_reason", None) or "").strip()
 
-    sa = get_story_availability(acc)
-    dec = get_story_safety_decision(acc)
-    ui = str(sa.get("story_ui_status") or "")
-    code = str(dec.reason_code or "")
-    pre_stale = bool(sa.get("story_precheck_stale"))
-    blocked = getattr(acc, "story_blocked_until", None)
-    blocked_iso = _dt_iso_optional(blocked)
-    reason_text = (str(sa.get("story_reason") or "").strip() or str(dec.human_reason or "").strip() or "")[:500]
+    # --- DB status takes priority for broken/disabled accounts ---
+    if st == "banned":
+        return {
+            "general_health_label": "Banned",
+            "general_health_reason": "Account is permanently banned by Telegram.",
+        }
+    if st == "flood_wait":
+        return {
+            "general_health_label": "Flood Wait",
+            "general_health_reason": "Account is rate-limited by Telegram. Wait for cooldown.",
+        }
+    if st == "auth_required":
+        return {
+            "general_health_label": "Inactive / auth required",
+            "general_health_reason": "Session expired or revoked — re-login required (status=auth_required).",
+        }
+    if st == "inactive":
+        return {
+            "general_health_label": "Inactive / auth required",
+            "general_health_reason": "Account is disabled in Autostory (status=inactive). Enable it or re-login to activate.",
+        }
 
-    if ui == "ready":
-        state = "ready"
-    elif ui == "frozen" or code == "story_frozen":
-        state = "frozen"
-    elif ui in ("telegram_denied", "blocked") or code in ("story_telegram_denied", "story_blocked"):
-        state = "review"
-    elif ui == "rate_limited" or code == "story_rate_limited":
-        state = "rate_limited"
-    elif ui == "warmup_hold":
-        state = "warmup_hold"
-    elif ui == "needs_precheck" or pre_stale:
-        state = "needs_precheck"
-    else:
-        state = "review"
-
+    # --- Account is active — use Telegram health_status ---
+    if hs == "auth_required":
+        return {
+            "general_health_label": "Inactive / auth required",
+            "general_health_reason": "Session expired or revoked — re-login required (Telegram auth_required).",
+        }
+    if hs in ("deleted", "banned"):
+        return {
+            "general_health_label": "Banned",
+            "general_health_reason": f"Telegram health check reports account is {hs}.",
+        }
+    if hs == "frozen":
+        return {
+            "general_health_label": "Frozen",
+            "general_health_reason": reason_s or "General healthcheck: limited or frozen at Telegram.",
+        }
+    if hs == "restricted":
+        return {
+            "general_health_label": "Frozen",
+            "general_health_reason": reason_s or "General healthcheck: restricted.",
+        }
+    if hs == "alive":
+        return {
+            "general_health_label": "Alive",
+            "general_health_reason": reason_s or "Last general healthcheck: alive.",
+        }
+    if hs == "flood_wait":
+        return {
+            "general_health_label": "Flood Wait",
+            "general_health_reason": reason_s or "General healthcheck: flood wait (session may still work).",
+        }
+    if not hs:
+        return {
+            "general_health_label": "Unknown",
+            "general_health_reason": "No general healthcheck yet; run sync or fleet check.",
+        }
     return {
-        "state": state,
-        "label": sa.get("story_available_label"),
-        "reason": reason_text,
-        "blocked_until": blocked_iso,
-        "precheck_stale": pre_stale,
-        "safety_reason": code or None,
+        "general_health_label": "Unknown",
+        "general_health_reason": f"General health status: {hs_raw}.",
     }
 
 
-def _enrich_health_results_with_db_story_state(results: list) -> None:
-    """
-    For each general-health result row, attach story_from_db (read-only DB snapshot; no story health calls).
-    """
-    if not results:
-        return
-    ids: List[int] = []
-    for row in results:
-        if not isinstance(row, dict):
-            continue
-        aid = row.get("account_id")
-        if aid is not None:
-            try:
-                ids.append(int(aid))
-            except (TypeError, ValueError):
-                continue
-    if not ids:
-        return
-
-    with get_db_context() as db:
-        accounts = db.query(Account).filter(Account.id.in_(ids)).all()
-        by_id = {a.id: a for a in accounts}
-    for row in results:
-        if not isinstance(row, dict):
-            continue
-        aid = row.get("account_id")
+def _is_precheck_stale(story_precheck_checked_at, ttl_minutes: int = None) -> bool:
+    """Return True if the story precheck result has expired or was never run."""
+    if story_precheck_checked_at is None:
+        return True
+    if isinstance(story_precheck_checked_at, str):
         try:
-            aid_i = int(aid) if aid is not None else None
-        except (TypeError, ValueError):
-            aid_i = None
-        acc = by_id.get(aid_i) if aid_i is not None else None
-        if not acc:
-            row["story_from_db"] = None
-            continue
-        row["story_from_db"] = _story_db_snapshot_from_account(acc)
-
-
-def _admin_token_configured() -> str | None:
-    """Read admin token from env (primary) or settings. Ensures runtime value."""
-    tok = (os.environ.get("DASHBOARD_ADMIN_TOKEN") or "").strip() or None
-    if tok:
-        return tok
-    tok = (getattr(settings.dashboard, "admin_token", None) or "").strip() or None
-    return tok
-
-
-def _is_production_env() -> bool:
-    """Treat as production unless explicitly development. Safe default for auth."""
-    env_val = (getattr(settings, "environment", None) or "").strip().lower()
-    flask_env = (os.environ.get("FLASK_ENV") or "").strip().lower()
-    return env_val != "development" and flask_env != "development"
-
-
-def _admin_api_allowed() -> bool:
-    """
-    Admin-only API gate. FAIL CLOSED: require valid token or session unless
-    DASHBOARD_ALLOW_INSECURE_ADMIN_API=true AND explicitly in development.
-    """
-    cfg = _admin_token_configured()
-    allow_insecure = getattr(settings.dashboard, "allow_insecure_admin_api", False) or (
-        os.environ.get("DASHBOARD_ALLOW_INSECURE_ADMIN_API", "").lower() in ("true", "1", "yes")
-    )
-    is_production = _is_production_env()
-
-    # Explicit dev bypass (must be opt-in, NEVER in production)
-    if allow_insecure and not is_production:
+            story_precheck_checked_at = datetime.fromisoformat(
+                story_precheck_checked_at.replace("Z", "+00:00")
+            )
+        except Exception:
+            return True
+    if ttl_minutes is None:
+        try:
+            ttl_minutes = settings.warmup.precheck_ttl_post_minutes
+        except Exception:
+            ttl_minutes = 1440
+    try:
+        return (datetime.utcnow() - story_precheck_checked_at.replace(tzinfo=None)) > timedelta(minutes=ttl_minutes)
+    except Exception:
         return True
 
-    # No token configured: in production always deny. In dev, allow only if insecure bypass set.
-    if not cfg:
-        if is_production:
-            return False
-        return allow_insecure
 
-    # Token configured: require valid token (constant-time) or logged-in admin
-    token = (request.headers.get("X-Admin-Token") or "").strip() or None
-    if token and cfg:
-        expected = cfg.encode("utf-8", errors="replace")
-        received = token.encode("utf-8", errors="replace")
-        if len(expected) == len(received) and hmac.compare_digest(expected, received):
-            return True
+def _derive_publish_story_fields(account) -> dict:
+    """
+    Compute publish_story_status, publish_story_reason, and story_precheck_stale
+    from account fields.  Returns a dict ready to merge into an API response.
+    """
     try:
-        return bool(getattr(current_user, "is_authenticated", False) and getattr(current_user, "is_admin", False))
+        ttl_minutes = settings.warmup.precheck_ttl_post_minutes
     except Exception:
-        return False
+        ttl_minutes = 1440
+
+    hs = (getattr(account, "health_status", None) or "").strip().lower()
+    ps = (getattr(account, "story_precheck_status", None) or "").strip().lower()
+    hc_at = getattr(account, "health_checked_at", None)
+    pc_at = getattr(account, "story_precheck_checked_at", None)
+
+    health_stale = _is_health_stale(hc_at)
+    precheck_stale = _is_precheck_stale(pc_at, ttl_minutes)
+
+    if health_stale:
+        return {
+            "story_precheck_status": ps or None,
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": precheck_stale,
+            "publish_story_status": "no",
+            "publish_story_reason": "Health check not run yet. Run fleet health check first.",
+        }
+    if hs != "alive":
+        return {
+            "story_precheck_status": ps or None,
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": precheck_stale,
+            "publish_story_status": "no",
+            "publish_story_reason": f"Account health is '{hs}', not alive.",
+        }
+    if precheck_stale:
+        return {
+            "story_precheck_status": ps or None,
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": True,
+            "publish_story_status": "no",
+            "publish_story_reason": "Precheck expired. Run story precheck first.",
+        }
+    if ps == "allowed":
+        return {
+            "story_precheck_status": "allowed",
+            "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+            "story_precheck_stale": False,
+            "publish_story_status": "yes",
+            "publish_story_reason": "Account is healthy and story-enabled.",
+        }
+    return {
+        "story_precheck_status": ps or None,
+        "story_precheck_checked_at": pc_at.isoformat() if pc_at and not isinstance(pc_at, str) else pc_at,
+        "story_precheck_stale": precheck_stale,
+        "publish_story_status": "no",
+        "publish_story_reason": f"Story precheck result: {ps or 'not run'}.",
+    }
 
 
 def _proxy_api_to_server():
@@ -235,11 +216,9 @@ def _proxy_api_to_server():
     if "/get-login-code" in path or "/qr-start" in path or "/qr-check" in path:
         return None
     if path.startswith("/api/accounts") and request.method == "GET":
-        # Keep local: list, single-account, session-audit; proxy /dialogs to server
+        # Keep accounts list and single-account GET local; proxy /dialogs to server (has Telegram clients)
         if "/dialogs" in path:
             pass  # proxy dialogs so server fetches from Telegram
-        elif "/session-audit" in path:
-            return None  # session-audit must run locally (checks disk)
         else:
             return None
     proxy_url = proxy_url.rstrip("/")
@@ -247,27 +226,13 @@ def _proxy_api_to_server():
     try:
         body = request.get_data() or None
         headers = {}
-        _adm = (request.headers.get("X-Admin-Token") or "").strip()
-        if _adm:
-            headers["X-Admin-Token"] = _adm
         if body and request.content_type:
             headers["Content-Type"] = request.content_type
         elif body:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=body, headers=headers, method=request.method)
         with urllib.request.urlopen(req, timeout=125) as r:
-            raw = r.read().decode()
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                # Remote returned HTML or non-JSON (e.g. error page)
-                resp = jsonify({
-                    "success": False,
-                    "error": "Proxy target returned non-JSON response (e.g. HTML error page). Check backend and proxy URL."
-                })
-                resp.status_code = 502
-                return resp
-            resp = jsonify(data)
+            resp = jsonify(json.loads(r.read().decode()))
             resp.status_code = r.status
             return resp
     except urllib.error.HTTPError as e:
@@ -285,48 +250,13 @@ def _proxy_api_to_server():
 
 
 def run_async(coro):
-    """Run async function in sync context; cancel stray tasks before loop close."""
+    """Run async function in sync context"""
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
     finally:
-        try:
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            for t in pending:
-                t.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        except Exception:
-            logger.debug("asyncio_loop_cleanup_skipped", exc_info=True)
-        finally:
-            loop.close()
+        loop.close()
 
-
-def run_async_with_timeout(coro, timeout_sec: float):
-    """Run async function in sync context with timeout; cancel stray tasks before loop close (Telethon hygiene)."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(asyncio.wait_for(coro, timeout=timeout_sec))
-    finally:
-        try:
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            for t in pending:
-                t.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        except Exception:
-            logger.debug("asyncio_loop_cleanup_skipped", exc_info=True)
-        finally:
-            loop.close()
-
-
-def admin_api_required(fn):
-    @wraps(fn)
-    def _wrapped(*args, **kwargs):
-        if not _admin_api_allowed():
-            return jsonify({"success": False, "error": "Admin only"}), 403
-        return fn(*args, **kwargs)
-    return _wrapped
 
 # ============================================
 # API Blueprint
@@ -340,16 +270,6 @@ def maybe_proxy_api():
     rv = _proxy_api_to_server()
     if rv is not None:
         return rv
-
-
-@api.before_request
-def require_admin_api():
-    """Fail-closed: require admin token or session for all /api/* except /api/health."""
-    if request.endpoint == "api.health_check":
-        return None  # Allow /api/health without auth
-    if not _admin_api_allowed():
-        return jsonify({"success": False, "error": "Admin only"}), 403
-    return None
 
 
 @api.route('/health', methods=['GET'])
@@ -390,701 +310,111 @@ def get_stats():
 # ============================================
 # Accounts API
 # ============================================
-def _identity_verify_suggested(account: Any, _canonical_exists: set[int] | None = None) -> bool:
-    """
-    Operator hint only (never auto-action): provable session/row tension.
-    True when canonical session file exists AND either:
-    - Last health is auth_required/error/deleted/banned (file present but live path not OK), or
-    - Health says alive but user_id was never stored (inconsistent with a successful identity sync).
-
-    NOT flagged: alive + user_id set + username null (valid accounts without a public @username).
-    """
-    from src.core.session_paths import account_has_canonical_session
-
-    if not account_has_canonical_session(account, _canonical_exists=_canonical_exists):
-        return False
-
-    hs = getattr(account, "health_status", None) or ""
-    hs = str(hs).strip()
-    uid = getattr(account, "user_id", None)
-
-    bad_health_with_file = frozenset({"auth_required", "error", "deleted", "banned"})
-    if hs in bad_health_with_file:
-        return True
-
-    if hs == "alive" and uid is None:
-        return True
-
-    return False
-
-
-def _identity_fields_for_api(account: Any, canonical_exists: set[int] | None = None) -> dict:
-    """Read-only identity audit for operators: DB columns from last check + fallback hint if never audited."""
-    st = getattr(account, "identity_audit_status", None)
-    reason = getattr(account, "identity_audit_reason", None)
-    at = getattr(account, "identity_audit_at", None)
-    if st:
-        suggested = st in ("metadata_stale", "identity_mismatch", "session_invalid")
-    else:
-        suggested = _identity_verify_suggested(account, canonical_exists)
-    return {
-        "identity_status": st,
-        "identity_reason": reason,
-        "identity_checked_at": _dt_iso_optional(at),
-        "identity_verify_suggested": suggested,
-    }
-
-
-def _story_precheck_queue_detail(account: Any, story_ui_status: str | None) -> str | None:
-    """
-    When story_ui_status is needs_precheck, distinguish never-run vs post-TTL stale for operators.
-    story_safety_reason may still be story_precheck_failed in both cases — this field disambiguates.
-    """
-    if (story_ui_status or "") != "needs_precheck":
-        return None
-    if getattr(account, "story_precheck_checked_at", None) is None:
-        return "precheck_never_run"
-    return "precheck_post_ttl_expired"
-
-
-def _general_health_fields_for_api(account: Any) -> dict[str, Any]:
-    """
-    Single operator-facing general-health summary for the accounts table (Telegram session / account record).
-    Derived read-only from account.status and last general healthcheck fields only — never from story precheck
-    or story_ui_status. Labels: Alive | Inactive / auth required | Frozen | Unknown.
-    """
-    st_raw = getattr(account, "status", None)
-    st = (
-        getattr(st_raw, "value", str(st_raw)) if st_raw is not None else "inactive"
-    )
-    st = (st or "inactive").strip().lower()
-    hs_raw = getattr(account, "health_status", None)
-    hs = (str(hs_raw).strip().lower() if hs_raw is not None and str(hs_raw).strip() else "")
-    reason = getattr(account, "health_reason", None)
-    reason_s = str(reason).strip() if reason is not None and str(reason).strip() else None
-
-    if st != "active":
-        return {
-            "general_health_label": "Inactive / auth required",
-            "general_health_reason": reason_s or "Account is not active in Autostory (re-login or enable).",
-        }
-    if hs == "auth_required":
-        return {
-            "general_health_label": "Inactive / auth required",
-            "general_health_reason": reason_s or "Telegram reports auth required for this session.",
-        }
-    if hs == "frozen":
-        return {
-            "general_health_label": "Frozen",
-            "general_health_reason": reason_s or "General healthcheck: limited or frozen at Telegram.",
-        }
-    if hs == "restricted":
-        return {
-            "general_health_label": "Frozen",
-            "general_health_reason": reason_s or "General healthcheck: restricted.",
-        }
-    if hs == "alive":
-        return {
-            "general_health_label": "Alive",
-            "general_health_reason": reason_s or "Last general healthcheck: alive.",
-        }
-    if hs in ("deleted", "banned"):
-        return {
-            "general_health_label": "Inactive / auth required",
-            "general_health_reason": reason_s or f"General health: {hs_raw}.",
-        }
-    if hs == "flood_wait":
-        return {
-            "general_health_label": "Unknown",
-            "general_health_reason": reason_s or "General healthcheck: flood wait (session may still work).",
-        }
-    if not hs:
-        return {
-            "general_health_label": "Unknown",
-            "general_health_reason": reason_s or "No general healthcheck yet; run sync or fleet check.",
-        }
-    return {
-        "general_health_label": "Unknown",
-        "general_health_reason": reason_s or f"General health status: {hs_raw}.",
-    }
-
-
-def _apply_general_health_to_result_row(row: dict[str, Any]) -> None:
-    """
-    Every /api/accounts row must expose non-null string general_health_label and general_health_reason.
-    Derived only from this row's status + health_status + health_reason (same rules as ORM path).
-    """
-    proxy = SimpleNamespace(
-        status=row.get("status"),
-        health_status=row.get("health_status"),
-        health_reason=row.get("health_reason"),
-    )
-    gh = _general_health_fields_for_api(proxy)
-    lbl = gh.get("general_health_label")
-    reason = gh.get("general_health_reason")
-    if not isinstance(lbl, str) or not lbl.strip():
-        lbl = "Unknown"
-    if reason is None or not str(reason).strip():
-        reason = "General health detail not available; run sync or fleet healthcheck."
-    row["general_health_label"] = lbl.strip()
-    row["general_health_reason"] = str(reason).strip()
-
-
 @api.route('/accounts', methods=['GET'])
 def list_accounts():
-    """List all accounts. Pure DB read only (no Telegram). Supports ?purpose=messaging|autostory and ?limit=500.
-    By default returns a plain array (backward compatible). Use ?summary=1 to get { accounts, summary }.
-    has_session = True only when canonical session file (or session_path file) exists; do not trust session_string alone.
-    Returns: story_status, story_status_reason, story_status_checked_at, story_blocked_until, health_status, session_path,
-    plus story_ui_status, story_available_label, story_reason, is_story_ready from get_story_availability,
-    and can_publish_story_now / publish_story_* from get_story_safety_decision with requested_action story_publish.
-    general_health_label / general_health_reason: canonical general-health row summary (not story layer)."""
-    from src.core.session_paths import (
-        account_has_canonical_session,
-        get_existing_canonical_account_ids,
-        get_session_readiness,
-        get_story_availability,
-    )
-    limit = min(500, max(1, request.args.get("limit", 100, type=int)))
-    want_summary = request.args.get("summary", "").strip() in ("1", "true", "yes")
-    try:
-        canonical_exists = get_existing_canonical_account_ids()
-        with get_db_context() as db:
+    """List all accounts. Supports ?purpose=messaging|autostory to filter."""
+    with get_db_context() as db:
+        try:
+            accounts = db.query(Account).all()
+        except Exception as e:
+            logger.warning("Accounts ORM query failed, falling back to raw SQL", error=str(e))
+            from sqlalchemy import text
+            # Minimal columns only — avoids breakage if newer columns are absent
             try:
-                q = db.query(Account).order_by(Account.id).limit(limit)
-                accounts = q.all()
-            except Exception as e:
-                logger.warning("Accounts query failed (missing column?), falling back", error=str(e))
-                from sqlalchemy import text
                 rows = db.execute(text(
-                    "SELECT id, phone_number, username, first_name, status, last_active, stories_today FROM accounts LIMIT :n"
-                ), {"n": limit}).fetchall()
-                result = []
-                purpose_filter = request.args.get("purpose")
-                for r in rows:
-                    p = "both"
-                    if purpose_filter == "messaging" and p == "autostory":
-                        continue
-                    if purpose_filter == "autostory" and p == "messaging":
-                        continue
-                    result.append({
-                        "id": r.id,
-                        "phone_number": r.phone_number,
-                        "username": r.username,
-                        "first_name": r.first_name,
-                        "status": getattr(r.status, "value", r.status) if getattr(r, "status", None) is not None else "inactive",
-                        "purpose": "both",
-                        "last_active": _dt_iso_optional(getattr(r, "last_active", None)),
-                        "stories_today": getattr(r, "stories_today", 0) or 0,
-                        "has_session": False,
-                        "session_readiness": "needs_reimport",
-                        "health_status": None,
-                        "health_reason": None,
-                        "health_checked_at": None,
-                        "_accounts_list_minimal_row": True,
-                    })
-                for row in result:
-                    _apply_general_health_to_result_row(row)
-                    if row.pop("_accounts_list_minimal_row", False):
-                        row["general_health_reason"] = (
-                            "Partial account row (schema fallback); full health fields unavailable."
-                        )
-                summary = {"total": len(result), "active": 0, "auth_required": 0, "flood_wait": 0, "frozen": 0, "banned": 0, "other": 0, "canonical_session_ready": 0, "missing_canonical_session": len(result)}
-                if want_summary:
-                    return jsonify({"accounts": result, "summary": summary})
-                return jsonify(result)
-            purpose_filter = request.args.get("purpose")
+                    "SELECT id, phone_number, username, first_name, status, last_active,"
+                    " stories_today, health_status, health_reason, health_checked_at,"
+                    " purpose FROM accounts"
+                )).fetchall()
+            except Exception:
+                rows = db.execute(text(
+                    "SELECT id, phone_number, username, first_name, status, last_active,"
+                    " stories_today, health_status, health_reason, health_checked_at"
+                    " FROM accounts"
+                )).fetchall()
+            def _dt_str(v):
+                """Return ISO string from a datetime or an already-string SQLite value."""
+                if v is None:
+                    return None
+                return v.isoformat() if hasattr(v, 'isoformat') else str(v)
+
             result = []
-            for a in accounts:
-                try:
-                    p = getattr(a, "purpose", None) or "both"
-                except Exception:
-                    p = "both"
-                if purpose_filter == "messaging" and p == "autostory":
-                    continue
-                if purpose_filter == "autostory" and p == "messaging":
-                    continue
-                session_readiness = get_session_readiness(a, _canonical_exists=canonical_exists)
-                story_avail = get_story_availability(a, _canonical_exists=canonical_exists)
-                try:
-                    from src.core.warmup import format_warmup_for_ui
-                    warmup_info = format_warmup_for_ui(a)
-                except Exception:
-                    warmup_info = {}
-                result.append({
+            for r in rows:
+                st = getattr(r, "status", None)
+                st = getattr(st, "value", st) if st is not None else "inactive"
+                hc_at = getattr(r, "health_checked_at", None)
+                entry = {
+                    "id": r.id,
+                    "phone_number": r.phone_number,
+                    "username": getattr(r, "username", None),
+                    "first_name": getattr(r, "first_name", None),
+                    "status": st,
+                    "purpose": getattr(r, "purpose", None) or "both",
+                    "last_active": _dt_str(getattr(r, "last_active", None)),
+                    "stories_today": getattr(r, "stories_today", None) or 0,
+                    "health_status": getattr(r, "health_status", None),
+                    "health_checked_at": _dt_str(hc_at),
+                    "health_check_stale": _is_health_stale(hc_at),
+                }
+                # Derive health label/reason using a minimal object shim
+                class _Shim:
+                    pass
+                shim = _Shim()
+                shim.status = type("S", (), {"value": st})()
+                shim.health_status = getattr(r, "health_status", None)
+                shim.health_reason = getattr(r, "health_reason", None)
+                shim.story_precheck_status = getattr(r, "story_precheck_status", None)
+                shim.story_precheck_checked_at = getattr(r, "story_precheck_checked_at", None)
+                entry.update(_general_health_fields_for_api(shim))
+                entry.update(_derive_publish_story_fields(shim))
+                result.append(entry)
+            return jsonify(result)
+        purpose_filter = request.args.get("purpose")  # autostory, messaging
+        result = []
+        for a in accounts:
+            try:
+                p = getattr(a, "purpose", None) or "both"
+            except Exception:
+                p = "both"
+            if purpose_filter == "messaging" and p == "autostory":
+                continue
+            if purpose_filter == "autostory" and p == "messaging":
+                continue
+            try:
+                st = a.status
+                status_val = st.value if hasattr(st, "value") else (str(st) if st else "inactive")
+                hc_at = getattr(a, "health_checked_at", None)
+                entry = {
                     "id": a.id,
                     "phone_number": a.phone_number,
-                    "username": a.username,
-                    "first_name": a.first_name,
-                    "status": getattr(a.status, "value", str(a.status)) if a.status is not None else "inactive",
+                    "username": getattr(a, "username", None),
+                    "first_name": getattr(a, "first_name", None),
+                    "status": status_val,
                     "purpose": p,
-                    "last_active": _dt_iso_optional(getattr(a, "last_active", None)),
-                    "stories_today": a.stories_today if a.stories_today is not None else 0,
-                    "has_session": account_has_canonical_session(a, _canonical_exists=canonical_exists),
-                    "session_readiness": session_readiness,
-                    "session_path": getattr(a, "session_path", None),
+                    "last_active": a.last_active.isoformat() if a.last_active else None,
+                    "stories_today": getattr(a, "stories_today", 0) or 0,
                     "health_status": getattr(a, "health_status", None),
-                    "health_reason": getattr(a, "health_reason", None),
-                    "health_checked_at": _dt_iso_optional(getattr(a, "health_checked_at", None)),
-                    "story_status": getattr(a, "story_status", None),
-                    "story_status_reason": getattr(a, "story_status_reason", None),
-                    "story_status_checked_at": _dt_iso_optional(getattr(a, "story_status_checked_at", None)),
-                    "story_blocked_until": _dt_iso_optional(getattr(a, "story_blocked_until", None)),
-                    "story_ui_status": story_avail["story_ui_status"],
-                    "story_available_label": story_avail["story_available_label"],
-                    "story_reason": story_avail["story_reason"],
-                    "is_story_ready": story_avail["is_story_ready"],
-                    "story_precheck_stale": story_avail.get("story_precheck_stale", False),
-                    "story_precheck_queue_detail": _story_precheck_queue_detail(a, story_avail.get("story_ui_status")),
-                    "imported_at": _dt_iso_optional(getattr(a, "imported_at", None)),
-                    "last_story_attempt_at": _dt_iso_optional(getattr(a, "last_story_attempt_at", None)),
-                    "successful_story_count": int(getattr(a, "successful_story_count", None) or 0),
-                    "warmup_status": (warmup_info.get("warmup_status") if warmup_info else None) or getattr(a, "warmup_status", None),
-                    "warmup_label": warmup_info.get("warmup_label"),
-                    "warmup_block_reason": warmup_info.get("warmup_block_reason"),
-                    "story_precheck_status": getattr(a, "story_precheck_status", None),
-                    "story_precheck_reason": getattr(a, "story_precheck_reason", None),
-                    "profile_capability_status": getattr(a, "profile_capability_status", None),
-                    "profile_capability_reason": getattr(a, "profile_capability_reason", None),
-                    **_identity_fields_for_api(a, canonical_exists),
-                })
-                try:
-                    from src.core.safety_policy import get_story_safety_decision, get_account_risk_level
-                    decision = get_story_safety_decision(
-                        a, requested_action="story_publish", _canonical_exists=canonical_exists
-                    )
-                    result[-1]["risk_level"] = get_account_risk_level(a)
-                    result[-1]["story_safety_allowed"] = decision.allowed
-                    result[-1]["story_safety_reason"] = decision.reason_code
-                    result[-1]["story_safety_human_reason"] = decision.human_reason
-                    result[-1]["operator_action"] = decision.operator_action or None
-                    result[-1]["manual_review_required"] = bool(getattr(a, "manual_review_required", False))
-                    allowed = bool(decision.allowed)
-                    result[-1]["can_publish_story_now"] = allowed
-                    result[-1]["publish_story_status"] = "yes" if allowed else "no"
-                    result[-1]["publish_story_reason"] = decision.human_reason or ""
-                    result[-1]["publish_story_next_allowed_at"] = _dt_iso_optional(decision.next_allowed_at)
-                    oa = (decision.operator_action or "").strip()
-                    result[-1]["publish_story_operator_action"] = oa if oa else None
-                    result[-1]["publish_story_reason_code"] = decision.reason_code or None
-                except Exception:
-                    result[-1]["risk_level"] = None
-                    result[-1]["story_safety_allowed"] = None
-                    result[-1]["story_safety_reason"] = None
-                    result[-1]["story_safety_human_reason"] = None
-                    result[-1]["operator_action"] = None
-                    result[-1]["manual_review_required"] = False
-                    result[-1]["can_publish_story_now"] = False
-                    result[-1]["publish_story_status"] = "no"
-                    result[-1]["publish_story_reason"] = None
-                    result[-1]["publish_story_next_allowed_at"] = None
-                    result[-1]["publish_story_operator_action"] = None
-                    result[-1]["publish_story_reason_code"] = None
-            for row in result:
-                _apply_general_health_to_result_row(row)
-            if want_summary:
-                summary = _accounts_summary_from_result(result)
-                return jsonify({"accounts": result, "summary": summary})
-            return jsonify(result)
-    except Exception as e:
-        logger.exception("list_accounts failed")
-        return jsonify({"error": "Failed to load accounts", "detail": str(e)}), 500
-
-
-@api.route('/accounts/session-audit', methods=['GET'])
-def session_audit():
-    """
-    Audit canonical session files vs DB. Classifies every account into:
-    session_ready, missing_canonical_session, needs_reimport, auth_required,
-    frozen_story, story_rate_limited, restricted, other.
-    """
-    from datetime import datetime
-    from sqlalchemy import text
-    from src.core.session_paths import get_canonical_session_path, get_sessions_dir, classify_account_readiness, recommended_action
-
-    def _dict_row(r):
-        return {
-            "id": r[0],
-            "phone_number": r[1],
-            "status": r[2],
-            "health_status": r[3],
-            "session_path": r[4],
-            "story_status": r[5],
-            "story_blocked_until": r[6],
-            "story_status_reason": r[7] if len(r) > 7 else None,
-        }
-
-    try:
-        with get_db_context() as db:
-            rows = db.execute(text("""
-                SELECT id, phone_number, status, health_status, session_path, story_status, story_blocked_until, story_status_reason
-                FROM accounts
-                ORDER BY id
-            """)).fetchall()
-        sessions_dir = get_sessions_dir()
-        by_classification = {}
-        details = []
-        for r in rows:
-            a = _dict_row(r)
-            aid = a["id"]
-            canonical = get_canonical_session_path(aid)
-            exists = canonical.is_file()
-            # Build minimal account-like object for classify
-            class _Acc:
-                pass
-            acc = _Acc()
-            acc.id = aid
-            acc.session_path = a.get("session_path")
-            acc.health_status = a.get("health_status")
-            acc.status = type("S", (), {"value": a.get("status")})() if a.get("status") else None
-            acc.story_status = a.get("story_status")
-            acc.story_blocked_until = a.get("story_blocked_until")
-            cl = classify_account_readiness(acc)
-            act = recommended_action(cl)
-            by_classification[cl] = by_classification.get(cl, 0) + 1
-            details.append({
-                "id": aid,
-                "phone_number": a.get("phone_number") or a.get("phone"),
-                "health_status": a.get("health_status"),
-                "session_path": a.get("session_path"),
-                "canonical_exists": exists,
-                "story_status": a.get("story_status"),
-                "story_blocked_until": str(a.get("story_blocked_until")) if a.get("story_blocked_until") else None,
-                "classification": cl,
-                "action": act,
-            })
-        return jsonify({
-            "sessions_dir": str(sessions_dir),
-            "total_audited": len(rows),
-            "by_classification": by_classification,
-            "details": details,
-        })
-    except Exception as e:
-        logger.exception("session_audit failed")
-        return jsonify({"error": str(e)}), 500
-
-
-async def _story_precheck_one_account(account_id: int) -> dict:
-    """
-    Run full story precheck flow for one account in a single event loop.
-    Acquire client, run CanSendStoryRequest, persist result, disconnect.
-    Prevents "event loop must not change after connection" by keeping
-    get_client + precheck + disconnect in one async function.
-    """
-    from src.clients.manager import client_manager
-    from src.stories.precheck import run_story_precheck, persist_precheck_result
-
-    wrapper, err = await client_manager.get_fresh_client_for_story_publish(account_id)
-    if err or not wrapper:
-        return {
-            "account_id": account_id,
-            "status": "failed_check",
-            "reason": err or "no_client",
-            "retry_after_seconds": None,
-            "checked_at": None,
-        }
-    try:
-        precheck = await run_story_precheck(wrapper.client, account_id)
-        persist_precheck_result(
-            account_id,
-            precheck["status"],
-            precheck.get("reason", ""),
-            precheck.get("retry_after_seconds"),
-        )
-        return {
-            "account_id": account_id,
-            "status": precheck["status"],
-            "reason": precheck.get("reason", ""),
-            "retry_after_seconds": precheck.get("retry_after_seconds"),
-            "checked_at": precheck.get("checked_at"),
-        }
-    finally:
-        # Pooled clients stay connected; ephemeral file-backed clients must disconnect.
-        if getattr(wrapper, "_precheck_disconnect_after", False):
-            try:
-                await wrapper.disconnect()
+                    "health_checked_at": hc_at.isoformat() if hc_at else None,
+                    "health_check_stale": _is_health_stale(hc_at),
+                    **_general_health_fields_for_api(a),
+                    **_derive_publish_story_fields(a),
+                }
+                result.append(entry)
             except Exception as e:
-                logger.debug("story_precheck disconnect", account_id=account_id, error=str(e))
-
-
-@api.route('/accounts/story-precheck', methods=['POST'])
-@admin_api_required
-def story_precheck_audit():
-    """
-    Run CanSendStoryRequest for account(s) to verify story eligibility before publishing.
-    Body: { "account_ids": [1,2,3], "canary_batch_ok": false } - canary_batch_ok=true required for >1 account.
-    Does NOT send any story; only checks Telegram API.
-    Whole flow (get client, precheck, disconnect) runs in one event loop per account.
-    """
-    from src.core.session_paths import account_has_canonical_session
-    from src.core.risk_events import record_risk_event, count_events_last_hour, EVENT_PRECHECK_RUN
-
-    data = request.get_json() or {}
-    account_ids = data.get("account_ids")
-    canary_batch_ok = data.get("canary_batch_ok") in (True, "true", "1", "yes")
-    canary_size = int(getattr(settings.warmup, "canary_default_batch_size", 1) or 1)
-    require_canary = bool(getattr(settings.warmup, "canary_batch_ok_required", True))
-    max_prechecks = int(getattr(settings.warmup, "max_prechecks_per_hour", 20) or 20)
-
-    recent_prechecks = count_events_last_hour(EVENT_PRECHECK_RUN)
-    remaining_capacity = max(0, max_prechecks - recent_prechecks)
-
-    def _precheck_reject(*, status_code: int, error: str, eligible_count: int = 0, skipped_no_session: int = 0):
-        return jsonify({
-            "success": False,
-            "error": error,
-            "recent_count": recent_prechecks,
-            "max_per_hour": max_prechecks,
-            "remaining_capacity": remaining_capacity,
-            "processed_count": 0,
-            "skipped_count": skipped_no_session,
-            "eligible_account_count": eligible_count,
-            "nothing_processed": True,
-        }), status_code
-
-    if recent_prechecks >= max_prechecks:
-        return _precheck_reject(
-            status_code=429,
-            error=f"Max prechecks per hour reached: {recent_prechecks}. Limit {max_prechecks}. Retry later.",
-        )
-
-    with get_db_context() as db:
-        if account_ids and isinstance(account_ids, list):
-            account_ids = [int(x) for x in account_ids if isinstance(x, (int, str)) and str(x).isdigit()]
-        if account_ids:
-            accounts_queried = db.query(Account).filter(Account.id.in_(account_ids)).all()
-        else:
-            accounts_queried = db.query(Account).all()
-
-    accounts_eligible = [a for a in accounts_queried if account_has_canonical_session(a)]
-    skipped_no_session_count = len(accounts_queried) - len(accounts_eligible)
-
-    if require_canary and not canary_batch_ok and len(accounts_eligible) > canary_size:
-        return _precheck_reject(
-            status_code=400,
-            error=f"Canary mode: max {canary_size} account(s) unless canary_batch_ok=true. Use canary_batch_ok to run more.",
-            eligible_count=len(accounts_eligible),
-            skipped_no_session=skipped_no_session_count,
-        )
-
-    if len(accounts_eligible) + recent_prechecks > max_prechecks:
-        return _precheck_reject(
-            status_code=429,
-            error=(
-                f"Would exceed precheck cap: {len(accounts_eligible)} + {recent_prechecks} > {max_prechecks}. "
-                "Reduce accounts or wait."
-            ),
-            eligible_count=len(accounts_eligible),
-            skipped_no_session=skipped_no_session_count,
-        )
-
-    results = []
-    for a in accounts_eligible:
-        try:
-            r = run_async_with_timeout(
-                _story_precheck_one_account(a.id),
-                timeout_sec=60.0,
-            )
-            results.append(r)
-            record_risk_event(a.id, EVENT_PRECHECK_RUN, "audit")
-        except Exception as e:
-            logger.warning("story_precheck account %s failed", a.id, error=str(e))
-            results.append({
-                "account_id": a.id,
-                "status": "failed_check",
-                "reason": str(e)[:255],
-                "retry_after_seconds": None,
-                "checked_at": None,
-            })
-    return jsonify({
-        "success": True,
-        "processed_count": len(results),
-        "skipped_count": skipped_no_session_count,
-        "skipped_no_session_count": skipped_no_session_count,
-        "eligible_account_count": len(accounts_eligible),
-        "nothing_processed": len(results) == 0,
-        "recent_count": recent_prechecks,
-        "max_per_hour": max_prechecks,
-        "remaining_capacity": remaining_capacity,
-        "results": results,
-    })
-
-
-@api.route('/accounts/story-precheck-candidates', methods=['GET'])
-@admin_api_required
-def story_precheck_candidates():
-    """
-    Operator helper: rebuild a precheck queue from live API/DB (sorted unique IDs only).
-    Includes accounts with story_ui_status=needs_precheck, canonical session, status=active.
-    Use POST /accounts/story-precheck; only advance/remove local queue items when response success and processed_count > 0.
-    Query: limit (max 500), purpose (messaging|autostory) same semantics as GET /api/accounts.
-    """
-    from src.core.session_paths import (
-        account_has_canonical_session,
-        get_existing_canonical_account_ids,
-        get_story_availability,
-    )
-
-    limit = min(500, max(1, request.args.get("limit", 500, type=int)))
-    purpose_filter = request.args.get("purpose")
-    canonical_exists = get_existing_canonical_account_ids()
-    matched: list[int] = []
-    with get_db_context() as db:
-        accounts = db.query(Account).order_by(Account.id).all()
-    for a in accounts:
-        try:
-            p = getattr(a, "purpose", None) or "both"
-        except Exception:
-            p = "both"
-        if purpose_filter == "messaging" and p == "autostory":
-            continue
-        if purpose_filter == "autostory" and p == "messaging":
-            continue
-        st_val = getattr(a.status, "value", str(a.status or "")) or ""
-        if st_val != "active":
-            continue
-        if not account_has_canonical_session(a, _canonical_exists=canonical_exists):
-            continue
-        story_avail = get_story_availability(a, _canonical_exists=canonical_exists)
-        if story_avail.get("story_ui_status") != "needs_precheck":
-            continue
-        matched.append(a.id)
-    matched = sorted(set(matched))
-    truncated = len(matched) > limit
-    out = matched[:limit]
-    return jsonify({
-        "success": True,
-        "account_ids": out,
-        "count": len(out),
-        "matched_total": len(matched),
-        "limit": limit,
-        "truncated": truncated,
-        "nothing_to_run": len(out) == 0,
-    })
-
-
-def _accounts_summary_from_result(result: list) -> dict:
-    """
-    Build summary from pre-computed result rows (avoids re-calling get_story_availability,
-    get_session_readiness, format_warmup_for_ui per account).
-    """
-    summary = {
-        "total": len(result),
-        "active": 0,
-        "auth_required": 0,
-        "flood_wait": 0,
-        "frozen": 0,
-        "banned": 0,
-        "other": 0,
-        "story_available": 0,
-        "story_ok": 0,
-        "story_frozen": 0,
-        "story_rate_limited": 0,
-        "canonical_session_ready": 0,
-        "missing_canonical_session": 0,
-        "general_healthy": 0,
-        "warmup_pending": 0,
-    }
-    for r in result:
-        hs = r.get("health_status") or ""
-        st = r.get("status") or "inactive"
-        if hs == "alive":
-            summary["general_healthy"] += 1
-        if hs == "alive" or st == "active":
-            summary["active"] += 1
-        elif hs == "frozen" or st == "flood_wait":
-            summary["frozen"] += 1
-        elif hs == "auth_required" or st == "auth_required":
-            summary["auth_required"] += 1
-        elif hs == "banned" or st == "banned":
-            summary["banned"] += 1
-        else:
-            summary["other"] += 1
-        story_ui = r.get("story_ui_status") or ""
-        if story_ui == "ready":
-            summary["story_ok"] += 1
-        elif story_ui in ("frozen", "restricted", "telegram_denied", "blocked"):
-            summary["story_frozen"] += 1
-        elif story_ui == "rate_limited":
-            summary["story_rate_limited"] += 1
-        if r.get("is_story_ready"):
-            summary["story_available"] += 1
-        sr = r.get("session_readiness") or ""
-        if sr == "canonical_ok":
-            summary["canonical_session_ready"] += 1
-        elif sr in ("missing_canonical", "needs_reimport"):
-            summary["missing_canonical_session"] += 1
-        ws = r.get("warmup_status") or ""
-        block = r.get("warmup_block_reason") or ""
-        if ws in ("new", "warming") and block:
-            summary["warmup_pending"] += 1
-    return summary
-
-
-def _accounts_summary(accounts: list) -> dict:
-    """
-    Build counts summary using get_story_availability for story-ready/rate-limited/frozen.
-    Used by session_audit and other callers; list_accounts uses _accounts_summary_from_result.
-    - general_healthy: health_status=alive (Telegram API responds)
-    - canonical_session_ready: canonical session file exists
-    - story_available: is_story_ready (session + active + health + story ok + not blocked + warmup)
-    - warmup_pending: new/warming; blocked from story posting
-    """
-    from src.core.session_paths import get_session_readiness, get_story_availability
-    from src.core.warmup import format_warmup_for_ui
-    summary = {
-        "total": len(accounts), "active": 0, "auth_required": 0, "flood_wait": 0, "frozen": 0,
-        "banned": 0, "other": 0, "story_available": 0, "story_ok": 0, "story_frozen": 0,
-        "story_rate_limited": 0, "canonical_session_ready": 0, "missing_canonical_session": 0,
-        "general_healthy": 0, "warmup_pending": 0,
-    }
-    for a in accounts:
-        st = (getattr(a, "status", None) or "").value if hasattr(getattr(a, "status", None), "value") else str(getattr(a, "status", "") or "")
-        hs = getattr(a, "health_status", None) or ""
-        if hs == "alive":
-            summary["general_healthy"] += 1
-        if hs == "alive" or st == "active":
-            summary["active"] += 1
-        elif hs == "frozen" or st == "flood_wait":
-            summary["frozen"] += 1
-        elif hs == "auth_required" or st == "auth_required":
-            summary["auth_required"] += 1
-        elif hs == "banned" or st == "banned":
-            summary["banned"] += 1
-        else:
-            summary["other"] += 1
-        story_avail = get_story_availability(a)
-        if story_avail["story_ui_status"] == "ready":
-            summary["story_ok"] += 1
-        elif story_avail["story_ui_status"] in ("frozen", "restricted", "telegram_denied", "blocked"):
-            summary["story_frozen"] += 1
-        elif story_avail["story_ui_status"] == "rate_limited":
-            summary["story_rate_limited"] += 1
-        if story_avail["is_story_ready"]:
-            summary["story_available"] += 1
-        sr = get_session_readiness(a)
-        if sr == "canonical_ok":
-            summary["canonical_session_ready"] += 1
-        elif sr in ("missing_canonical", "needs_reimport"):
-            summary["missing_canonical_session"] += 1
-        w = format_warmup_for_ui(a)
-        if w.get("warmup_status") in ("new", "warming") and w.get("is_warmup_blocked"):
-            summary["warmup_pending"] += 1
-    return summary
+                logger.warning("Skipping account in list due to error",
+                               account_id=getattr(a, "id", "?"), error=str(e))
+        return jsonify(result)
 
 
 @api.route('/accounts/<int:account_id>', methods=['GET'])
 def get_account(account_id):
-    """Get account details including story availability from get_story_availability."""
-    from src.core.session_paths import account_has_canonical_session, get_story_availability
+    """Get account details"""
     with get_db_context() as db:
         account = db.query(Account).filter(Account.id == account_id).first()
         if not account:
             return jsonify({"error": "Account not found"}), 404
-        story_avail = get_story_availability(account)
-        from src.core.safety_policy import get_story_safety_decision, get_account_risk_level
-        decision = get_story_safety_decision(account)
-        risk_level = get_account_risk_level(account)
+
+        health_checked_at = getattr(account, "health_checked_at", None)
         return jsonify({
             "id": account.id,
             "phone_number": account.phone_number,
@@ -1092,664 +422,37 @@ def get_account(account_id):
             "username": account.username,
             "first_name": account.first_name,
             "last_name": account.last_name,
-            "status": getattr(account.status, "value", str(account.status)) if account.status is not None else "inactive",
+            "status": account.status.value,
             "purpose": getattr(account, "purpose", None) or "both",
-            "last_active": _dt_iso_optional(getattr(account, "last_active", None)),
+            "last_active": account.last_active.isoformat() if account.last_active else None,
             "last_error": account.last_error,
             "stories_today": account.stories_today,
             "actions_today": account.actions_today,
-            "created_at": _dt_iso_optional(getattr(account, "created_at", None)),
-            "has_session": account_has_canonical_session(account),
-            "session_path": getattr(account, "session_path", None),
+            "created_at": account.created_at.isoformat(),
+            # Health fields
             "health_status": getattr(account, "health_status", None),
             "health_reason": getattr(account, "health_reason", None),
-            "health_checked_at": _dt_iso_optional(getattr(account, "health_checked_at", None)),
-            "story_status": getattr(account, "story_status", None),
-            "story_status_reason": getattr(account, "story_status_reason", None),
-            "story_status_checked_at": _dt_iso_optional(getattr(account, "story_status_checked_at", None)),
-            "story_blocked_until": _dt_iso_optional(getattr(account, "story_blocked_until", None)),
-            "story_ui_status": story_avail["story_ui_status"],
-            "story_available_label": story_avail["story_available_label"],
-            "story_reason": story_avail["story_reason"],
-            "is_story_ready": story_avail["is_story_ready"],
-            "story_precheck_stale": story_avail.get("story_precheck_stale", False),
-            "story_precheck_queue_detail": _story_precheck_queue_detail(account, story_avail.get("story_ui_status")),
-            "risk_level": risk_level,
-            "story_safety": {
-                "allowed": decision.allowed,
-                "reason_code": decision.reason_code,
-                "human_reason": decision.human_reason,
-                "operator_action": decision.operator_action,
-                "next_allowed_at": _dt_iso_optional(decision.next_allowed_at),
-            },
-            "profile_capability_status": getattr(account, "profile_capability_status", None),
-            "profile_capability_reason": getattr(account, "profile_capability_reason", None),
-            **_identity_fields_for_api(account, None),
+            "health_checked_at": health_checked_at.isoformat() if health_checked_at else None,
+            "health_check_stale": _is_health_stale(health_checked_at),
+            **_general_health_fields_for_api(account),
+            **_derive_publish_story_fields(account),
         })
-
-
-@api.route('/accounts/<int:account_id>/story-eligibility', methods=['GET'])
-def account_story_eligibility(account_id):
-    """Debug/dry-run: return full safety decision for why account is or isn't story-eligible."""
-    with get_db_context() as db:
-        account = db.query(Account).filter(Account.id == account_id).first()
-        if not account:
-            return jsonify({"error": "Account not found"}), 404
-        from src.core.safety_policy import get_story_safety_decision, get_account_risk_level
-        decision = get_story_safety_decision(account)
-        risk_level = get_account_risk_level(account)
-        return jsonify({
-            "account_id": account.id,
-            "phone": account.phone_number,
-            "risk_level": risk_level,
-            "decision": {
-                "allowed": decision.allowed,
-                "reason_code": decision.reason_code,
-                "human_reason": decision.human_reason,
-                "operator_action": decision.operator_action,
-                "next_allowed_at": _dt_iso_optional(decision.next_allowed_at),
-                "precheck_overrode_stale": decision.precheck_overrode_stale,
-            },
-        })
-
-
-@api.route('/accounts/check', methods=['POST'])
-@admin_api_required
-def check_accounts():
-    """General health check only: connect, is_user_authorized, get_me. Does NOT verify story publishing. Returns alive/deleted/... + session_valid. Body: update_status, account_ids[], verbose."""
-    from src.clients.manager import client_manager
-    data = request.get_json() or {}
-    update_status = data.get('update_status', False)
-    account_ids = data.get('account_ids')  # optional list of ints
-    verbose = data.get('verbose', False)
-    n_for_timeout = len(account_ids) if isinstance(account_ids, list) and account_ids else 5
-    sync_to = _sync_healthcheck_timeout_sec(n_for_timeout)
-    try:
-        results = run_async_with_timeout(
-            client_manager.check_accounts_health(
-                update_status=update_status,
-                account_ids=account_ids,
-                verbose=verbose,
-                persist=True,
-            ),
-            timeout_sec=sync_to,
-        )
-        _enrich_health_results_with_db_story_state(results)
-        return jsonify({
-            "success": True,
-            "results": results,
-            "timeout_sec": sync_to,
-            "healthcheck_note": HEALTHCHECK_RESPONSE_NOTE,
-        })
-    except asyncio.TimeoutError:
-        return jsonify({
-            "success": False,
-            "error": (
-                f"Health check timed out after {int(sync_to)}s. "
-                "Try fewer accounts or use POST /api/accounts/healthcheck/start for fleet runs."
-            ),
-            "timeout_sec": sync_to,
-        }), 504
-    except Exception as e:
-        logger.exception("accounts/check failed")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@api.route('/accounts/healthcheck', methods=['POST'])
-@admin_api_required
-def accounts_healthcheck():
-    """Admin-only; throttled. Same as /accounts/check: general health only (connect, auth, get_me). Does NOT test story publishing.
-    Requires account_ids. Cap: 10 accounts per sync request (use fleet background for larger runs)."""
-    from src.clients.manager import client_manager
-    from src.core.models import HealthcheckRun
-
-    data = request.get_json() or {}
-    update_status = bool(data.get("update_status", False))
-    account_ids = data.get("account_ids")
-    verbose = bool(data.get("verbose", False))
-
-    # Require explicit account_ids to prevent unbounded runs (Cloudflare 524)
-    if account_ids is None or (isinstance(account_ids, list) and len(account_ids) == 0):
-        return jsonify({
-            "success": False,
-            "error": "account_ids required for sync healthcheck; use limited selection or background job",
-        }), 400
-    # Cap sync to max 10 accounts to stay within proxy timeout
-    _ids = [int(x) for x in account_ids if isinstance(x, (int, str)) and str(x).isdigit()][:10]
-    if not _ids:
-        return jsonify({
-            "success": False,
-            "error": "account_ids must contain valid integer IDs",
-        }), 400
-    account_ids = _ids
-
-    now = datetime.utcnow()
-    with get_db_context() as db:
-        last = db.query(HealthcheckRun).order_by(HealthcheckRun.started_at.desc()).first()
-        if last and last.started_at and (now - last.started_at).total_seconds() < 60:
-            retry_after = int(60 - (now - last.started_at).total_seconds())
-            return jsonify({
-                "success": False,
-                "error": f"Throttled: healthcheck was started recently. Retry in ~{retry_after}s.",
-                "retry_after_sec": max(1, retry_after),
-            }), 429
-        run = HealthcheckRun(started_at=now, status="running", requested_by="dashboard")
-        db.add(run)
-        db.flush()
-        run_id = run.id
-
-    out_meta = {}
-    sync_to = _sync_healthcheck_timeout_sec(len(account_ids))
-    try:
-        results = run_async_with_timeout(
-            client_manager.check_accounts_health(
-                update_status=update_status,
-                account_ids=account_ids,
-                verbose=verbose,
-                persist=True,
-                out_meta=out_meta,
-            ),
-            timeout_sec=sync_to,
-        )
-        _enrich_health_results_with_db_story_state(results)
-        with get_db_context() as db:
-            r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-            if r:
-                r.finished_at = datetime.utcnow()
-                r.status = "success"
-                r.summary = f"checked={len(results)}"
-        return jsonify({
-            "success": True,
-            "results": results,
-            "run_id": run_id,
-            "timeout_sec": sync_to,
-            "healthcheck_note": HEALTHCHECK_RESPONSE_NOTE,
-            **out_meta,
-        })
-    except asyncio.TimeoutError:
-        with get_db_context() as db:
-            r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-            if r:
-                r.finished_at = datetime.utcnow()
-                r.status = "timeout"
-                r.error_message = f"Sync healthcheck timed out after {int(sync_to)}s (limit for this endpoint)."
-        return jsonify({
-            "success": False,
-            "error": (
-                f"Healthcheck timed out after {int(sync_to)}s. "
-                "Use POST /api/accounts/healthcheck/start for large or slow fleet checks."
-            ),
-            "run_id": run_id,
-            "timeout_sec": sync_to,
-        }), 504
-    except Exception as e:
-        with get_db_context() as db:
-            r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-            if r:
-                r.finished_at = datetime.utcnow()
-                r.status = "error"
-                r.summary = str(e)[:500]
-        logger.exception("accounts/healthcheck failed")
-        return jsonify({"success": False, "error": str(e), "run_id": run_id}), 500
-
-
-def _healthcheck_remaining_ids(all_ids: List[int], results: list) -> List[int]:
-    done = {
-        x.get("account_id")
-        for x in (results or [])
-        if isinstance(x, dict) and x.get("account_id") is not None
-    }
-    return [i for i in all_ids if i not in done]
-
-
-def _run_healthcheck_background(
-    run_id: int,
-    account_ids,
-    update_status: bool,
-    verbose: bool,
-    continued_from: Optional[int] = None,
-):
-    """
-    Background thread: chunked fleet healthcheck. Each chunk runs in its own asyncio event loop
-    (via run_async_with_timeout) to match Telethon/rate-limiter loop binding.
-
-    Healthcheck semantics unchanged: connect / is_user_authorized / get_me only (no story publish).
-    """
-    from src.clients.manager import client_manager
-    from src.core.models import HealthcheckRun
-
-    try:
-        all_ids = client_manager.healthcheck_eligible_account_ids(account_ids_filter=account_ids)
-    except Exception as e:
-        logger.exception("healthcheck_eligible_account_ids failed", run_id=run_id)
-
-        def _fail_start():
-            with get_db_context() as db:
-                r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-                if r:
-                    r.finished_at = datetime.utcnow()
-                    r.status = "error"
-                    r.error_message = str(e)[:500]
-
-        run_with_sqlite_lock_retry(_fail_start, operation="healthcheck_job_error", run_id=run_id)
-        return
-
-    grand_total = len(all_ids)
-    chunk_size = max(1, HEALTHCHECK_BG_CHUNK_SIZE)
-    chunks_est = (grand_total + chunk_size - 1) // chunk_size if grand_total else 0
-
-    scope_note = {
-        "healthcheck_scope": "general_telegram_only",
-        "healthcheck_description": "connect, is_user_authorized, get_me only; does not test story posting",
-        "chunk_size": chunk_size,
-        "chunk_timeout_sec": HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC,
-        "chunks_estimated": chunks_est,
-        "continued_from_job_id": continued_from,
-    }
-
-    def _init_progress():
-        with get_db_context() as db:
-            r0 = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-            if r0:
-                rem_cap = _healthcheck_remaining_ids(all_ids, [])
-                r0.progress = {
-                    "checked": 0,
-                    "total": grand_total,
-                    "remaining": grand_total,
-                    "remaining_account_ids": rem_cap[:_HEALTHCHECK_REMAINING_IDS_CAP],
-                    "remaining_ids_truncated": grand_total > _HEALTHCHECK_REMAINING_IDS_CAP,
-                    "partial": grand_total > 0,
-                    **scope_note,
-                }
-                r0.results = []
-
-    run_with_sqlite_lock_retry(_init_progress, operation="healthcheck_init_progress", run_id=run_id)
-
-    if grand_total == 0:
-
-        def _empty_done():
-            with get_db_context() as db:
-                r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-                if r:
-                    r.finished_at = datetime.utcnow()
-                    r.status = "success"
-                    r.summary = "no_eligible_session_accounts"
-                    r.error_message = None
-                    r.progress = {
-                        "checked": 0,
-                        "total": 0,
-                        "remaining": 0,
-                        "remaining_account_ids": [],
-                        "partial": False,
-                        "status_counts": {},
-                        **scope_note,
-                    }
-
-        run_with_sqlite_lock_retry(_empty_done, operation="healthcheck_job_empty", run_id=run_id)
-        logger.info(
-            "healthcheck_job_summary",
-            run_id=run_id,
-            status="success",
-            checked=0,
-            total=0,
-            remaining=0,
-            message="no_eligible_session_accounts",
-        )
-        return
-
-    for chunk_idx, start in enumerate(range(0, grand_total, chunk_size)):
-        chunk = all_ids[start : start + chunk_size]
-
-        def _load_base():
-            with get_db_context() as db:
-                row = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-                return len(row.results or []) if row else 0
-
-        base_before = run_with_sqlite_lock_retry(_load_base, operation="healthcheck_chunk_read_base", run_id=run_id)
-
-        logger.info(
-            "healthcheck_chunk_start",
-            run_id=run_id,
-            chunk_index=chunk_idx + 1,
-            chunks_estimated=chunks_est,
-            chunk_len=len(chunk),
-            grand_total=grand_total,
-            checked_before_chunk=base_before,
-            continued_from_job_id=continued_from,
-        )
-
-        def _cb(local_checked: int, _chunk_total: int, result: dict):
-            def _write():
-                with get_db_context() as db:
-                    row = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-                    if row:
-                        cur = list(row.results or [])
-                        cur.append(result)
-                        row.results = cur
-                        g = base_before + local_checked
-                        rem = _healthcheck_remaining_ids(all_ids, cur)
-                        row.progress = {
-                            "checked": g,
-                            "total": grand_total,
-                            "remaining": len(rem),
-                            "remaining_account_ids": rem[:_HEALTHCHECK_REMAINING_IDS_CAP],
-                            "remaining_ids_truncated": len(rem) > _HEALTHCHECK_REMAINING_IDS_CAP,
-                            "partial": g < grand_total,
-                            "chunk_index": chunk_idx + 1,
-                            "chunks_estimated": chunks_est,
-                            "status_counts": _healthcheck_status_counts(cur),
-                            **scope_note,
-                        }
-
-            run_with_sqlite_lock_retry(
-                _write,
-                operation="healthcheck_progress",
-                run_id=run_id,
-                chunk_index=chunk_idx + 1,
-                account_id=result.get("account_id"),
-            )
-
-        t0 = time.monotonic()
-        try:
-            chunk_results = run_async_with_timeout(
-                client_manager.check_accounts_health(
-                    update_status=update_status,
-                    account_ids=chunk,
-                    verbose=verbose,
-                    persist=True,
-                    out_meta=None,
-                    progress_callback=_cb,
-                ),
-                timeout_sec=HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            elapsed = time.monotonic() - t0
-
-            def _timeout_finalize():
-                with get_db_context() as db:
-                    r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-                    if r:
-                        cur_results = list(r.results or [])
-                        done_set = {
-                            x.get("account_id")
-                            for x in cur_results
-                            if isinstance(x, dict) and x.get("account_id") is not None
-                        }
-                        rem = [i for i in all_ids if i not in done_set]
-                        r.finished_at = datetime.utcnow()
-                        r.status = "timeout"
-                        r.error_message = (
-                            f"Chunk {chunk_idx + 1}/{chunks_est} timed out after {int(HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC)}s "
-                            f"(partial fleet run). Checked {len(done_set)} / {grand_total} accounts; {len(rem)} remaining. "
-                            f"POST /api/accounts/healthcheck/start with body {{\"continue_job_id\": {run_id}}} to continue."
-                        )
-                        r.summary = f"partial_timeout checked={len(done_set)} total={grand_total} remaining={len(rem)}"
-                        r.progress = {
-                            "checked": len(done_set),
-                            "total": grand_total,
-                            "remaining": len(rem),
-                            "remaining_account_ids": rem[:_HEALTHCHECK_REMAINING_IDS_CAP],
-                            "remaining_ids_truncated": len(rem) > _HEALTHCHECK_REMAINING_IDS_CAP,
-                            "partial": True,
-                            "chunk_timed_out": True,
-                            "timed_out_chunk_index": chunk_idx + 1,
-                            "chunk_timeout_sec": HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC,
-                            "status_counts": _healthcheck_status_counts(cur_results),
-                            **scope_note,
-                        }
-                        return len(done_set), len(rem)
-                return 0, 0
-
-            checked_n, rem_n = run_with_sqlite_lock_retry(
-                _timeout_finalize, operation="healthcheck_chunk_timeout_persist", run_id=run_id
-            )
-            logger.warning(
-                "healthcheck_chunk_timeout",
-                run_id=run_id,
-                chunk_index=chunk_idx + 1,
-                chunks_estimated=chunks_est,
-                chunk_len=len(chunk),
-                timeout_sec=HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC,
-                elapsed_sec=round(elapsed, 2),
-                checked=checked_n,
-                total=grand_total,
-                remaining=rem_n,
-            )
-            logger.info(
-                "healthcheck_job_summary",
-                run_id=run_id,
-                status="timeout_partial",
-                checked=checked_n,
-                total=grand_total,
-                remaining=rem_n,
-                timed_out_chunk_index=chunk_idx + 1,
-            )
-            return
-        except Exception as e:
-            logger.exception("healthcheck background chunk failed", run_id=run_id, chunk_index=chunk_idx)
-
-            def _err_mark():
-                with get_db_context() as db:
-                    r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-                    if r:
-                        r.finished_at = datetime.utcnow()
-                        r.status = "error"
-                        r.error_message = str(e)[:500]
-
-            run_with_sqlite_lock_retry(_err_mark, operation="healthcheck_chunk_error_persist", run_id=run_id)
-            return
-
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "healthcheck_chunk_done",
-            run_id=run_id,
-            chunk_index=chunk_idx + 1,
-            chunks_estimated=chunks_est,
-            chunk_len=len(chunk_results),
-            elapsed_sec=round(elapsed, 2),
-        )
-
-    def _finalize_ok():
-        with get_db_context() as db:
-            r = db.query(HealthcheckRun).filter(HealthcheckRun.id == run_id).first()
-            if r:
-                final = list(r.results or [])
-                r.finished_at = datetime.utcnow()
-                r.status = "success"
-                r.summary = f"checked={len(final)} total={grand_total}"
-                r.error_message = None
-                r.progress = {
-                    "checked": len(final),
-                    "total": grand_total,
-                    "remaining": 0,
-                    "remaining_account_ids": [],
-                    "partial": False,
-                    "status_counts": _healthcheck_status_counts(final),
-                    **scope_note,
-                }
-                return len(final)
-        return 0
-
-    n_done = run_with_sqlite_lock_retry(_finalize_ok, operation="healthcheck_job_finalize", run_id=run_id)
-    logger.info(
-        "healthcheck_job_summary",
-        run_id=run_id,
-        status="success",
-        checked=n_done,
-        total=grand_total,
-        remaining=0,
-        chunks_estimated=chunks_est,
-    )
-
-
-@api.route('/accounts/healthcheck/start', methods=['POST'])
-@admin_api_required
-def healthcheck_start():
-    """Start background fleet healthcheck. Chunked; poll GET /api/accounts/healthcheck/<job_id>.
-    Optional body.continue_job_id: resume from a timed-out/partial job's remaining_account_ids."""
-    from src.core.models import HealthcheckRun
-    import threading
-
-    data = request.get_json() or {}
-    update_status = bool(data.get("update_status", False))
-    account_ids = data.get("account_ids")
-    verbose = bool(data.get("verbose", False))
-    continue_from: Optional[int] = None
-
-    raw_continue = data.get("continue_job_id")
-    if raw_continue is not None and str(raw_continue).strip() != "":
-        try:
-            continue_from = int(raw_continue)
-        except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "continue_job_id must be an integer"}), 400
-        with get_db_context() as db:
-            prev = db.query(HealthcheckRun).filter(HealthcheckRun.id == continue_from).first()
-            if not prev:
-                return jsonify({"success": False, "error": f"continue_job_id {continue_from} not found"}), 404
-            rem = (prev.progress or {}).get("remaining_account_ids") or []
-            if not rem:
-                return jsonify({
-                    "success": False,
-                    "error": "That job has no remaining_account_ids left; start a fresh fleet check.",
-                }), 400
-            account_ids = [int(x) for x in rem]
-    else:
-        # account_ids: None/omit = all eligible; non-empty list = those IDs only
-        if account_ids is not None and isinstance(account_ids, list):
-            account_ids = [int(x) for x in account_ids if isinstance(x, (int, str)) and str(x).isdigit()]
-            if not account_ids:
-                return jsonify({"success": False, "error": "account_ids must contain valid integer IDs"}), 400
-
-    now = datetime.utcnow()
-    with get_db_context() as db:
-        last = db.query(HealthcheckRun).order_by(HealthcheckRun.started_at.desc()).first()
-        if last and last.started_at and (now - last.started_at).total_seconds() < 60:
-            retry_after = int(60 - (now - last.started_at).total_seconds())
-            return jsonify({
-                "success": False,
-                "error": f"Throttled: healthcheck was started recently. Retry in ~{retry_after}s.",
-                "retry_after_sec": max(1, retry_after),
-            }), 429
-        run = HealthcheckRun(
-            started_at=now, status="running", requested_by="dashboard",
-            results=[], progress={"checked": 0, "total": 0},
-        )
-        db.add(run)
-        db.flush()
-        run_id = run.id
-        db.commit()
-
-    thread = threading.Thread(
-        target=_run_healthcheck_background,
-        args=(run_id, account_ids, update_status, verbose, continue_from),
-        daemon=True,
-    )
-    thread.start()
-
-    if continue_from is not None:
-        logger.info(
-            "healthcheck_continue_start",
-            continued_from_job_id=continue_from,
-            new_job_id=run_id,
-            resume_account_count=len(account_ids) if account_ids else 0,
-        )
-    else:
-        logger.info(
-            "healthcheck_start",
-            job_id=run_id,
-            chunk_size=HEALTHCHECK_BG_CHUNK_SIZE,
-            chunk_timeout_sec=HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC,
-            explicit_filter=account_ids is not None,
-        )
-
-    return jsonify({
-        "success": True,
-        "job_id": run_id,
-        "chunk_size": HEALTHCHECK_BG_CHUNK_SIZE,
-        "chunk_timeout_sec": HEALTHCHECK_BG_CHUNK_TIMEOUT_SEC,
-        "continued_from_job_id": continue_from,
-        "message": (
-            "General healthcheck job started (connect/auth/get_me only — not story readiness). "
-            "Poll GET /api/accounts/healthcheck/" + str(run_id)
-        ),
-    }), 201
-
-
-@api.route('/accounts/healthcheck/<int:job_id>', methods=['GET'])
-@admin_api_required
-def healthcheck_status(job_id):
-    """Get healthcheck job status: totals, partial flag, remaining IDs, status_counts (for curl/UI)."""
-    from src.core.models import HealthcheckRun
-
-    with get_db_context() as db:
-        r = db.query(HealthcheckRun).filter(HealthcheckRun.id == job_id).first()
-        if not r:
-            return jsonify({"success": False, "error": "Job not found"}), 404
-
-        prog = dict(r.progress or {})
-        results = list(r.results or [])
-        checked = prog.get("checked", len(results))
-        total = prog.get("total", checked)
-        remaining = prog.get("remaining", max(0, int(total) - int(checked)))
-        partial = bool(prog.get("partial")) or r.status == "timeout"
-        can_continue = partial and remaining > 0 and bool(prog.get("remaining_account_ids"))
-        remaining_ids_truncated = bool(prog.get("remaining_ids_truncated"))
-
-        out = {
-            "success": True,
-            "job_id": job_id,
-            "status": r.status,
-            "summary": r.summary,
-            "partial": partial,
-            "can_continue": can_continue,
-            "remaining_ids_truncated": remaining_ids_truncated,
-            "healthcheck_scope": prog.get("healthcheck_scope", "general_telegram_only"),
-            "checked": checked,
-            "total": total,
-            "remaining": remaining,
-            "chunk_size": prog.get("chunk_size"),
-            "chunk_index": prog.get("chunk_index"),
-            "chunks_estimated": prog.get("chunks_estimated"),
-            "chunk_timed_out": bool(prog.get("chunk_timed_out", False)),
-            "timed_out_chunk_index": prog.get("timed_out_chunk_index"),
-            "chunk_timeout_sec": prog.get("chunk_timeout_sec"),
-            "status_counts": prog.get("status_counts") or _healthcheck_status_counts(results),
-            "progress": prog,
-            "results": results,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-        }
-        if r.finished_at:
-            out["finished_at"] = r.finished_at.isoformat()
-        else:
-            out["finished_at"] = None
-        out["error_message"] = r.error_message
-        _enrich_health_results_with_db_story_state(results)
-        out["healthcheck_note"] = HEALTHCHECK_RESPONSE_NOTE
-        if can_continue:
-            hint = (
-                f'POST /api/accounts/healthcheck/start with JSON body {{"continue_job_id": {job_id}}} '
-                "to check the remaining accounts."
-            )
-            if remaining_ids_truncated:
-                hint += (
-                    " Note: `remaining_account_ids` in progress may be capped; `remaining` count is still exact."
-                )
-            out["continue_hint"] = hint
-        elif partial and remaining > 0:
-            out["continue_hint"] = (
-                "Partial results with accounts still unchecked, but this job has no continuation ID list. "
-                "Start a fresh fleet run via POST /api/accounts/healthcheck/start or inspect HealthcheckRun.progress in the DB."
-            )
-        if "continue_hint" not in out:
-            out["continue_hint"] = None
-
-        return jsonify(out)
 
 
 @api.route('/accounts/<int:account_id>/status', methods=['PUT'])
 def update_account_status(account_id):
-    """Update account status"""
-    data = request.get_json()
+    """Update account status.
+
+    Allowed transitions:
+      active     -> inactive   (operator disable)
+      inactive   -> active     (operator re-enable)
+      any status -> inactive   (parking is always safe)
+
+    Blocked:
+      banned        -> active  (Telegram-side ban; re-login required)
+      auth_required -> active  (session expired; re-login required)
+    """
+    data = request.get_json() or {}
     new_status = data.get('status')
 
     if new_status not in [s.value for s in AccountStatus]:
@@ -1760,7 +463,20 @@ def update_account_status(account_id):
         if not account:
             return jsonify({"error": "Account not found"}), 404
 
+        current = account.status.value
+        # Block promoting a broken account to active without fixing the underlying problem
+        PROTECTED = {"banned", "auth_required"}
+        if new_status == "active" and current in PROTECTED:
+            return jsonify({
+                "error": (
+                    f"Cannot set status to active: account is currently '{current}'. "
+                    "Re-login or fix the session first."
+                ),
+                "current_status": current,
+            }), 409
+
         account.status = AccountStatus(new_status)
+        account.updated_at = datetime.utcnow()
         return jsonify({"success": True, "status": account.status.value})
 
 
@@ -1779,8 +495,7 @@ def account_dialogs(account_id):
 
 @api.route('/accounts/<int:account_id>', methods=['PATCH'])
 def update_account(account_id):
-    """Update account fields (purpose, manual_review_required). manual_review clearing requires reason and is audited."""
-    from src.core.risk_events import record_risk_event, EVENT_MANUAL_REVIEW_CLEARED
+    """Update account fields (e.g. purpose)"""
     data = request.get_json() or {}
     with get_db_context() as db:
         account = db.query(Account).filter(Account.id == account_id).first()
@@ -1788,395 +503,423 @@ def update_account(account_id):
             return jsonify({"error": "Account not found"}), 404
         if "purpose" in data and data["purpose"] in ("autostory", "messaging", "both"):
             account.purpose = data["purpose"]
-        if "manual_review_required" in data and data["manual_review_required"] is False:
-            if getattr(account, "manual_review_required", False):
-                reason = (data.get("manual_review_clear_reason") or "").strip() or "operator_cleared"
-                account.manual_review_required = False
-                account.manual_review_reason = None
-                record_risk_event(account_id, EVENT_MANUAL_REVIEW_CLEARED, reason)
         return jsonify({"success": True})
 
 
-@api.route('/accounts/<int:account_id>/set-username', methods=['POST'])
-def set_account_username(account_id):
-    """Set Telegram username for an account (without @)."""
-    from src.clients.manager import client_manager
-    data = request.get_json() or {}
-    username = data.get("username")
-    if not username or not str(username).strip():
-        return jsonify({"error": "username required"}), 400
-    result = run_async(client_manager.set_account_username(account_id, str(username).strip()))
-    if result.get("success"):
-        return jsonify(result)
-    return jsonify(result), 400
+# ============================================
+# Fleet health check
+# ============================================
+import threading as _threading
+import uuid as _uuid
+
+_healthcheck_jobs: dict = {}  # job_id -> {"status": "running"|"done", "total": int, "checked": int, "results": list}
+_healthcheck_lock = _threading.Lock()
 
 
-@api.route('/accounts/<int:account_id>/set-profile-photo', methods=['POST'])
-def set_account_profile_photo(account_id):
-    """Set profile photo for an account. Expects multipart form with 'photo' file."""
-    from src.clients.manager import client_manager
-    import tempfile
-    import os
-    if "photo" not in request.files:
-        return jsonify({"error": "photo file required"}), 400
-    f = request.files["photo"]
-    if not f.filename:
-        return jsonify({"error": "photo file required"}), 400
-    ext = os.path.splitext(f.filename)[1] or ".jpg"
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    try:
-        f.save(tmp.name)
-        result = run_async(client_manager.set_account_profile_photo(account_id, tmp.name))
-        if result.get("success"):
-            return jsonify(result)
-        return jsonify(result), 400
-    finally:
+def _admin_token_required():
+    """Return error response if admin token is missing/wrong, else None."""
+    token = os.environ.get("DASHBOARD_ADMIN_TOKEN", "")
+    if token:
+        provided = request.headers.get("X-Admin-Token") or request.args.get("admin_token", "")
+        if provided != token:
+            return jsonify({"error": "Unauthorized"}), 403
+    return None
+
+
+def _run_fleet_health_check_bg(job_id: str, account_ids: list) -> None:
+    """Background thread: check each account's Telegram health and write to DB."""
+    import asyncio as _asyncio
+
+    async def _check_one(account_id: int) -> dict:
+        """Connect account briefly and determine health status."""
+        from src.clients.manager import TelegramClient, StringSession
         try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
+            from telethon.errors import (
+                AuthKeyUnregisteredError, UserDeactivatedBanError,
+                UserDeactivatedError, FloodWaitError, PhoneNumberBannedError,
+            )
+        except ImportError:
+            AuthKeyUnregisteredError = Exception
+            UserDeactivatedBanError = Exception
+            UserDeactivatedError = Exception
+            FloodWaitError = Exception
+            PhoneNumberBannedError = Exception
 
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return {"account_id": account_id, "status": "error", "reason": "not found"}
+            session_val = account.session_string or ""
+            phone = account.phone_number
+            proxy = account.proxy_config if account.proxy_config else None
 
-@api.route('/accounts/bulk-set-username/preview', methods=['POST'])
-@admin_api_required
-def bulk_set_username_preview():
-    """Preview bulk username change: eligible accounts and skipped reasons. Uses same eligibility as actual run."""
-    from src.core.profile_action_policy import get_profile_action_eligible_accounts
-    data = request.get_json() or {}
-    prefix = (data.get("username_prefix") or data.get("prefix") or "").strip().replace("@", "").strip()
-    if not prefix or len(prefix) < 2:
-        return jsonify({"error": "username_prefix required"}), 400
-    allow_override = bool(data.get("allow_warming_override", False))
-    override_reason = (data.get("override_reason") or "").strip()
-    if allow_override and len(override_reason) < 5:
-        return jsonify({"error": "override_reason required (min 5 chars) when allow_warming_override=true"}), 400
-    eligible, skipped = get_profile_action_eligible_accounts(
-        action_type="bulk_username",
-        allow_warming_override=allow_override,
-        override_reason=override_reason if allow_override else None,
-    )
-    max_batch = getattr(settings.warmup, "max_bulk_username_batch", 5) or 5
-    batch_capped = len(eligible) > max_batch
-    would_run = eligible[:max_batch]
-    return jsonify({
-        "eligible_count": len(eligible),
-        "would_run_count": len(would_run),
-        "would_run_ids": [a.id for a in would_run],
-        "skipped": skipped,
-        "batch_capped": batch_capped,
-        "max_batch": max_batch,
-    })
+        # Determine session — could be a Telethon string or a file path
+        import re as _re
+        if session_val and len(session_val) >= 90 and _re.match(r"^1[A-Za-z0-9+/=_-]+$", session_val.strip()):
+            session = StringSession(session_val.strip())
+        elif session_val and (session_val.startswith("/") or session_val.startswith(".")):
+            # File path — use SQLite session file
+            session = session_val.rstrip(".session") if session_val.endswith(".session") else session_val
+        else:
+            # No usable session
+            _save_health_result(account_id, "auth_required", "No session data — re-login required.")
+            return {"account_id": account_id, "status": "auth_required", "reason": "No session"}
 
-
-@api.route('/accounts/bulk-set-username', methods=['POST'])
-@admin_api_required
-def bulk_set_username():
-    """Set Telegram username for accounts. Enforces eligibility (session, cooldown, warming, manual_review). Body: username_prefix, allow_warming_override?, override_reason?"""
-    import time
-    import random
-    from src.clients.manager import client_manager
-    from src.core.profile_action_policy import get_profile_action_eligible_accounts
-    from src.core.warmup import get_safe_jitter_sec
-    from src.core.risk_events import record_risk_event, count_events_last_hour, count_bulk_profile_actions_last_hour, EVENT_USERNAME_CHANGED, EVENT_PROFILE_ACTION_OVERRIDE
-    data = request.get_json() or {}
-    # Combined bulk profile actions cap (username + photo)
-    max_combined = int(getattr(settings.warmup, "max_bulk_profile_actions_per_hour", 8) or 8)
-    combined_recent = count_bulk_profile_actions_last_hour()
-    if combined_recent >= max_combined:
-        return jsonify({
-            "error": f"Bulk profile actions cap reached: {combined_recent} in last hour. Max {max_combined}. Retry later.",
-            "recent_count": combined_recent,
-            "max_per_hour": max_combined,
-        }), 429
-    prefix = (data.get("username_prefix") or data.get("prefix") or "").strip().replace("@", "").strip()
-    if not prefix or len(prefix) < 2:
-        return jsonify({"error": "username_prefix required (e.g. mybrand -> mybrand_1, mybrand_2, ...)"}), 400
-    allow_override = bool(data.get("allow_warming_override", False))
-    override_reason = (data.get("override_reason") or "").strip()
-    if allow_override and len(override_reason) < 5:
-        return jsonify({"error": "override_reason required (min 5 chars) when allow_warming_override=true"}), 400
-    max_per_hour = getattr(settings.warmup, "max_username_changes_per_hour", 5) or 5
-    max_batch = getattr(settings.warmup, "max_bulk_username_batch", 5) or 5
-    recent = count_events_last_hour(EVENT_USERNAME_CHANGED)
-    if recent >= max_per_hour:
-        return jsonify({
-            "error": f"Hourly cap reached: {recent} username changes in last hour. Max {max_per_hour}. Retry later.",
-            "recent_count": recent,
-            "max_per_hour": max_per_hour,
-        }), 429
-    eligible, skipped = get_profile_action_eligible_accounts(
-        action_type="bulk_username",
-        allow_warming_override=allow_override,
-        override_reason=override_reason if allow_override else None,
-    )
-    if not eligible:
-        return jsonify({
-            "error": "No eligible accounts",
-            "skipped": skipped,
-        }), 400
-    batch_capped = len(eligible) > max_batch
-    accounts = eligible[:max_batch]
-    jmin, jmax = get_safe_jitter_sec()
-    results = []
-    for i, acc in enumerate(accounts):
-        if i > 0:
-            time.sleep(random.uniform(jmin, jmax))
-        suffix = str(i + 1)
-        max_prefix_len = 32 - len(suffix) - 1
-        p = prefix[:max_prefix_len] if len(prefix) > max_prefix_len else prefix
-        username = f"{p}_{suffix}"
-        if len(username) < 5:
-            username = (prefix + suffix)[:32]
-        r = run_async(client_manager.set_account_username(acc.id, username))
-        ok_ = r.get("success")
-        results.append({"account_id": acc.id, "username": username, "success": ok_, "error": r.get("error")})
-        if ok_:
-            record_risk_event(acc.id, EVENT_USERNAME_CHANGED, f"bulk:{username}")
-            if getattr(acc, "_profile_override_used", False):
-                record_risk_event(acc.id, EVENT_PROFILE_ACTION_OVERRIDE, f"bulk_username:{override_reason[:200]}")
-    ok = sum(1 for x in results if x["success"])
-    return jsonify({
-        "success": True,
-        "updated": ok,
-        "total": len(results),
-        "results": results,
-        "batch_capped": batch_capped,
-        "skipped_count": len(skipped),
-        "skipped_sample": skipped[:10],
-    })
-
-
-@api.route('/accounts/bulk-set-profile-photo/preview', methods=['POST'])
-@admin_api_required
-def bulk_set_profile_photo_preview():
-    """Preview bulk profile photo change: eligible accounts and skipped reasons. Uses same eligibility as actual run."""
-    from src.core.profile_action_policy import get_profile_action_eligible_accounts
-    data = request.get_json() or {}
-    allow_override = bool(data.get("allow_warming_override", False))
-    override_reason = (data.get("override_reason") or "").strip()
-    if allow_override and len(override_reason) < 5:
-        return jsonify({"error": "override_reason required (min 5 chars) when allow_warming_override=true"}), 400
-    eligible, skipped = get_profile_action_eligible_accounts(
-        action_type="bulk_photo",
-        allow_warming_override=allow_override,
-        override_reason=override_reason if allow_override else None,
-    )
-    max_batch = getattr(settings.warmup, "max_bulk_photo_batch", 3) or 3
-    batch_capped = len(eligible) > max_batch
-    would_run = eligible[:max_batch]
-    return jsonify({
-        "eligible_count": len(eligible),
-        "would_run_count": len(would_run),
-        "would_run_ids": [a.id for a in would_run],
-        "skipped": skipped,
-        "batch_capped": batch_capped,
-        "max_batch": max_batch,
-    })
-
-
-@api.route('/accounts/bulk-set-profile-photo', methods=['POST'])
-@admin_api_required
-def bulk_set_profile_photo():
-    """Set profile photo for eligible accounts. Uses profile_action_policy (session, cooldown, warming, manual_review)."""
-    import tempfile
-    import os
-    import time
-    import random
-    from src.clients.manager import client_manager
-    from src.core.profile_action_policy import get_profile_action_eligible_accounts
-    from src.core.warmup import get_safe_jitter_sec
-    from src.core.risk_events import record_risk_event, count_events_last_hour, count_bulk_profile_actions_last_hour, EVENT_PROFILE_PHOTO_CHANGED, EVENT_PROFILE_ACTION_OVERRIDE
-    data = request.form.to_dict() if request.form else {}
-    # Combined bulk profile actions cap (username + photo)
-    max_combined = int(getattr(settings.warmup, "max_bulk_profile_actions_per_hour", 8) or 8)
-    combined_recent = count_bulk_profile_actions_last_hour()
-    if combined_recent >= max_combined:
-        return jsonify({
-            "error": f"Bulk profile actions cap reached: {combined_recent} in last hour. Max {max_combined}. Retry later.",
-            "recent_count": combined_recent,
-            "max_per_hour": max_combined,
-        }), 429
-    allow_override = bool(data.get("allow_warming_override") in ("true", "1", "yes"))
-    override_reason = (data.get("override_reason") or "").strip()
-    if allow_override and len(override_reason) < 5:
-        return jsonify({"error": "override_reason required (min 5 chars) when allow_warming_override=true"}), 400
-    if "photo" not in request.files:
-        return jsonify({"error": "photo file required"}), 400
-    f = request.files["photo"]
-    if not f.filename:
-        return jsonify({"error": "photo file required"}), 400
-    max_per_hour = getattr(settings.warmup, "max_profile_photo_changes_per_hour", 3) or 3
-    max_batch = getattr(settings.warmup, "max_bulk_photo_batch", 3) or 3
-    recent = count_events_last_hour(EVENT_PROFILE_PHOTO_CHANGED)
-    if recent >= max_per_hour:
-        return jsonify({
-            "error": f"Hourly cap reached: {recent} profile photo changes in last hour. Max {max_per_hour}. Retry later.",
-            "recent_count": recent,
-            "max_per_hour": max_per_hour,
-        }), 429
-    eligible, skipped = get_profile_action_eligible_accounts(
-        action_type="bulk_photo",
-        allow_warming_override=allow_override,
-        override_reason=override_reason if allow_override else None,
-    )
-    if not eligible:
-        return jsonify({
-            "error": "No eligible accounts",
-            "skipped": skipped,
-        }), 400
-    batch_capped = len(eligible) > max_batch
-    accounts = eligible[:max_batch]
-    ext = os.path.splitext(f.filename)[1] or ".jpg"
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    try:
-        f.save(tmp.name)
-        jmin, jmax = get_safe_jitter_sec()
-        results = []
-        for i, acc in enumerate(accounts):
-            if i > 0:
-                time.sleep(random.uniform(jmin, jmax))
-            r = run_async(client_manager.set_account_profile_photo(acc.id, tmp.name))
-            ok_ = r.get("success")
-            results.append({"account_id": acc.id, "success": ok_, "error": r.get("error")})
-            if ok_:
-                record_risk_event(acc.id, EVENT_PROFILE_PHOTO_CHANGED, "bulk")
-                if getattr(acc, "_profile_override_used", False):
-                    record_risk_event(acc.id, EVENT_PROFILE_ACTION_OVERRIDE, f"bulk_photo:{override_reason[:200]}")
-        ok = sum(1 for x in results if x["success"])
-        return jsonify({
-            "success": True,
-            "updated": ok,
-            "total": len(results),
-            "results": results,
-            "batch_capped": batch_capped,
-            "skipped_count": len(skipped),
-            "skipped_sample": skipped[:10],
-        })
-    finally:
         try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
+            client = TelegramClient(
+                session,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+                proxy=proxy,
+                connection_retries=1,
+                timeout=15,
+            )
+            await client.connect()
+            authorized = await client.is_user_authorized()
+            if not authorized:
+                await client.disconnect()
+                _save_health_result(account_id, "auth_required", "Session not authorized — re-login required.")
+                return {"account_id": account_id, "status": "auth_required"}
+            me = await client.get_me()
+            await client.disconnect()
+            if me is None:
+                _save_health_result(account_id, "auth_required", "Could not get account info.")
+                return {"account_id": account_id, "status": "auth_required"}
+            reason = f"Alive: {me.first_name or ''} (@{me.username or phone})"
+            _save_health_result(account_id, "alive", reason)
+            return {"account_id": account_id, "status": "alive", "reason": reason}
+        except AuthKeyUnregisteredError:
+            _save_health_result(account_id, "auth_required", "Auth key unregistered — session revoked.")
+            return {"account_id": account_id, "status": "auth_required"}
+        except (UserDeactivatedBanError, UserDeactivatedError, PhoneNumberBannedError):
+            _save_health_result(account_id, "banned", "Account deactivated or banned by Telegram.")
+            return {"account_id": account_id, "status": "banned"}
+        except FloodWaitError as e:
+            _save_health_result(account_id, "flood_wait", f"Flood wait: {e.seconds}s")
+            return {"account_id": account_id, "status": "flood_wait"}
+        except Exception as exc:
+            err = str(exc)
+            status = "frozen"
+            if "frozen" in err.lower():
+                status = "frozen"
+            elif "restricted" in err.lower():
+                status = "restricted"
+            elif "deactivat" in err.lower() or "banned" in err.lower():
+                status = "banned"
+            elif "auth" in err.lower() or "session" in err.lower():
+                status = "auth_required"
+            _save_health_result(account_id, status, err[:200])
+            return {"account_id": account_id, "status": status, "error": err[:200]}
 
-
-def _purge_account_dependencies(db, account_id: int) -> None:
-    """
-    Delete or unlink all DB rows referencing accounts.id before removing the account.
-    Covers scheduler (bindings, jobs, deliveries, templates, profiles, rules), stories, tasks,
-    QR tokens, and risk-event log. Required when SQLite foreign_keys are ON or for FK hygiene.
-    """
-    from sqlalchemy import text
-
-    from src.core.models import QrLoginToken, Story, Task
-    from src.core.scheduler_models import (
-        AccountTargetBinding,
-        MessageDelivery,
-        MessageTemplate,
-        ScheduledJob,
-        ScheduleProfile,
-        ScheduleRule,
-    )
-
-    db.query(MessageDelivery).filter(MessageDelivery.account_id == account_id).delete(synchronize_session=False)
-    db.query(ScheduledJob).filter(ScheduledJob.account_id == account_id).delete(synchronize_session=False)
-    db.query(ScheduleRule).filter(ScheduleRule.account_id == account_id).delete(synchronize_session=False)
-    db.query(ScheduleProfile).filter(ScheduleProfile.account_id == account_id).delete(synchronize_session=False)
-
-    bind_ids = [
-        row[0]
-        for row in db.query(AccountTargetBinding.id).filter(AccountTargetBinding.account_id == account_id).all()
-    ]
-    if bind_ids:
-        db.query(MessageTemplate).filter(MessageTemplate.binding_id.in_(bind_ids)).delete(synchronize_session=False)
-    db.query(AccountTargetBinding).filter(AccountTargetBinding.account_id == account_id).delete(synchronize_session=False)
-    db.query(MessageTemplate).filter(MessageTemplate.account_id == account_id).delete(synchronize_session=False)
-
-    db.query(Story).filter(Story.account_id == account_id).delete(synchronize_session=False)
-    db.query(Task).filter(Task.account_id == account_id).update({"account_id": None}, synchronize_session=False)
-    db.query(QrLoginToken).filter(QrLoginToken.account_id == account_id).delete(synchronize_session=False)
-
-    try:
-        db.execute(text("DELETE FROM account_risk_events WHERE account_id = :aid"), {"aid": account_id})
-    except Exception:
-        pass
-
-
-@api.route('/accounts/bulk-delete', methods=['POST'])
-@admin_api_required
-def bulk_delete_accounts():
-    """Delete multiple accounts by id. Body: { account_ids: [1,2,3] }. Removes DB row and canonical session file for each."""
-    from src.clients.manager import client_manager
-    from src.core.session_paths import get_canonical_session_path
-
-    data = request.get_json() or {}
-    account_ids = data.get("account_ids")
-    if not account_ids or not isinstance(account_ids, list):
-        return jsonify({"error": "account_ids array required"}), 400
-    account_ids = [int(x) for x in account_ids if isinstance(x, (int, str)) and str(x).isdigit()]
-    if not account_ids:
-        return jsonify({"error": "No valid account ids"}), 400
-
-    deleted = []
-    errors = []
-    for account_id in account_ids:
+    def _save_health_result(account_id: int, status: str, reason: str) -> None:
         try:
             with get_db_context() as db:
                 account = db.query(Account).filter(Account.id == account_id).first()
-                if not account:
-                    errors.append({"id": account_id, "error": "Not found"})
-                    continue
-                phone = account.phone_number
-                _purge_account_dependencies(db, account_id)
-                db.delete(account)
-                db.commit()
-            try:
-                run_async(client_manager.remove_account(account_id))
-            except Exception as e:
-                logger.warning("remove_account after bulk delete", account_id=account_id, error=str(e))
-            try:
-                path = get_canonical_session_path(account_id)
-                if path.is_file():
-                    path.unlink()
-                    logger.info("Removed canonical session file", account_id=account_id, path=str(path))
-            except Exception as e:
-                logger.warning("Could not remove session file", account_id=account_id, error=str(e))
-            deleted.append({"id": account_id, "phone": phone})
+                if account:
+                    account.health_status = status
+                    account.health_reason = reason
+                    account.health_checked_at = datetime.utcnow()
         except Exception as e:
-            errors.append({"id": account_id, "error": str(e)})
+            logger.warning("Failed to save health result", account_id=account_id, error=str(e))
+
+    async def _run_all():
+        results = []
+        for i, aid in enumerate(account_ids):
+            result = await _check_one(aid)
+            results.append(result)
+            with _healthcheck_lock:
+                if job_id in _healthcheck_jobs:
+                    _healthcheck_jobs[job_id]["checked"] = i + 1
+                    _healthcheck_jobs[job_id]["results"] = results
+            await _asyncio.sleep(0.5)  # small delay between checks
+        with _healthcheck_lock:
+            if job_id in _healthcheck_jobs:
+                _healthcheck_jobs[job_id]["status"] = "done"
+                _healthcheck_jobs[job_id]["results"] = results
+
+    loop = _asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run_all())
+    except Exception as e:
+        logger.error("Fleet health check background job failed", job_id=job_id, error=str(e))
+        with _healthcheck_lock:
+            if job_id in _healthcheck_jobs:
+                _healthcheck_jobs[job_id]["status"] = "done"
+                _healthcheck_jobs[job_id]["error"] = str(e)
+    finally:
+        loop.close()
+
+
+@api.route('/accounts/healthcheck/start', methods=['POST'])
+def start_fleet_healthcheck():
+    """Start a fleet health check for all active accounts."""
+    err = _admin_token_required()
+    if err:
+        return err
+
+    with get_db_context() as db:
+        accounts = db.query(Account).filter(
+            Account.status.in_([AccountStatus.ACTIVE])
+        ).all()
+        account_ids = [a.id for a in accounts]
+
+    if not account_ids:
+        return jsonify({"error": "No active accounts to check"}), 400
+
+    job_id = str(_uuid.uuid4())
+    with _healthcheck_lock:
+        _healthcheck_jobs[job_id] = {
+            "status": "running",
+            "total": len(account_ids),
+            "checked": 0,
+            "results": [],
+        }
+
+    t = _threading.Thread(
+        target=_run_fleet_health_check_bg,
+        args=(job_id, account_ids),
+        daemon=True,
+    )
+    t.start()
+    logger.info("Fleet health check started", job_id=job_id, total=len(account_ids))
+    return jsonify({"job_id": job_id, "total": len(account_ids), "status": "running"})
+
+
+@api.route('/accounts/healthcheck/<job_id>', methods=['GET'])
+def poll_fleet_healthcheck(job_id):
+    """Poll fleet health check job status."""
+    with _healthcheck_lock:
+        job = _healthcheck_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
     return jsonify({
-        "success": True,
-        "deleted": deleted,
-        "errors": errors,
-        "message": f"Deleted {len(deleted)} account(s)" + (f"; {len(errors)} error(s)" if errors else ""),
+        "job_id": job_id,
+        "status": job["status"],
+        "total": job["total"],
+        "checked": job["checked"],
+        "results": job.get("results", []),
+        "error": job.get("error"),
     })
 
 
-@api.route('/accounts/<int:account_id>', methods=['DELETE'])
-def delete_account(account_id):
-    """Permanently remove account from DB and from client manager. Removes canonical session file if present."""
-    from src.clients.manager import client_manager
-    from src.core.session_paths import get_canonical_session_path
+# ============================================
+# Story precheck
+# ============================================
+_precheck_hour_counts: dict = {}  # hour_key -> int
+_precheck_lock = _threading.Lock()
+
+
+def _precheck_rate_ok(n: int = 1) -> bool:
+    """Return True if we have capacity to run n more prechecks this hour."""
+    try:
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+    except Exception:
+        max_per_hour = 20
+    hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+    with _precheck_lock:
+        current = _precheck_hour_counts.get(hour_key, 0)
+        return (current + n) <= max_per_hour
+
+
+def _precheck_consume(n: int = 1) -> int:
+    """Consume n precheck slots this hour; return remaining capacity."""
+    try:
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+    except Exception:
+        max_per_hour = 20
+    hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+    with _precheck_lock:
+        current = _precheck_hour_counts.get(hour_key, 0)
+        _precheck_hour_counts[hour_key] = current + n
+        return max(0, max_per_hour - (current + n))
+
+
+@api.route('/accounts/story-precheck-candidates', methods=['GET'])
+def story_precheck_candidates():
+    """Return accounts that need a story precheck (no precheck yet or precheck expired)."""
+    try:
+        ttl = settings.warmup.precheck_ttl_post_minutes
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+    except Exception:
+        ttl = 1440
+        max_per_hour = 20
+
+    cutoff = datetime.utcnow() - timedelta(minutes=ttl)
     with get_db_context() as db:
-        account = db.query(Account).filter(Account.id == account_id).first()
-        if not account:
-            return jsonify({"error": "Account not found"}), 404
-        phone = account.phone_number
-        _purge_account_dependencies(db, account_id)
-        db.delete(account)
-        db.commit()
+        accounts = db.query(Account).filter(
+            Account.status == AccountStatus.ACTIVE
+        ).all()
+        candidates = [
+            a for a in accounts
+            if (
+                getattr(a, "story_precheck_checked_at", None) is None
+                or getattr(a, "story_precheck_checked_at") < cutoff
+            )
+        ]
+
+    hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+    with _precheck_lock:
+        used = _precheck_hour_counts.get(hour_key, 0)
+    remaining = max(0, max_per_hour - used)
+
+    return jsonify({
+        "candidates": [{"id": a.id, "phone_number": a.phone_number} for a in candidates],
+        "total": len(candidates),
+        "remaining_capacity": remaining,
+    })
+
+
+@api.route('/accounts/story-precheck', methods=['POST'])
+def run_story_precheck():
+    """
+    Run CanSendStoryRequest for each requested account and persist the result.
+
+    Body: { "account_ids": [1, 2, ...], "canary_batch_ok": true }
+    """
+    data = request.get_json() or {}
+    canary_ok = data.get("canary_batch_ok", False)
     try:
-        run_async(client_manager.remove_account(account_id))
-    except Exception as e:
-        logger.warning("remove_account after delete", account_id=account_id, error=str(e))
-    # Remove canonical session file if it exists
+        canary_required = settings.warmup.canary_batch_ok_required
+        max_per_hour = settings.warmup.max_prechecks_per_hour
+        ttl = settings.warmup.precheck_ttl_post_minutes
+    except Exception:
+        canary_required = True
+        max_per_hour = 20
+        ttl = 1440
+
+    if canary_required and not canary_ok:
+        return jsonify({"error": "canary_batch_ok=true required"}), 400
+
+    account_ids = data.get("account_ids") or []
+    if not account_ids:
+        return jsonify({"error": "account_ids required"}), 400
+
+    if not _precheck_rate_ok(len(account_ids)):
+        hour_key = datetime.utcnow().strftime("%Y-%m-%dT%H")
+        with _precheck_lock:
+            used = _precheck_hour_counts.get(hour_key, 0)
+        remaining = max(0, max_per_hour - used)
+        return jsonify({
+            "error": f"Rate limit: only {remaining} precheck(s) remaining this hour",
+            "remaining_capacity": remaining,
+            "processed": 0,
+        }), 429
+
+    async def _check_precheck(account_id: int) -> dict:
+        """Run CanSendStoryRequest for one account."""
+        from src.clients.manager import TelegramClient, StringSession
+        try:
+            from telethon.tl.functions.stories import CanSendStoryRequest
+        except ImportError:
+            CanSendStoryRequest = None
+        try:
+            from telethon.errors import (
+                AuthKeyUnregisteredError, UserDeactivatedBanError,
+                UserDeactivatedError, FloodWaitError,
+            )
+        except ImportError:
+            AuthKeyUnregisteredError = Exception
+            UserDeactivatedBanError = Exception
+            UserDeactivatedError = Exception
+            FloodWaitError = Exception
+
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return {"account_id": account_id, "status": "error", "reason": "not found"}
+            session_val = account.session_string or ""
+            proxy = account.proxy_config if account.proxy_config else None
+
+        import re as _re
+        if session_val and len(session_val) >= 90 and _re.match(r"^1[A-Za-z0-9+/=_-]+$", session_val.strip()):
+            session = StringSession(session_val.strip())
+        elif session_val and (session_val.startswith("/") or session_val.startswith(".")):
+            session = session_val.rstrip(".session") if session_val.endswith(".session") else session_val
+        else:
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": "no session"}
+
+        try:
+            client = TelegramClient(
+                session,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+                proxy=proxy,
+                connection_retries=1,
+                timeout=15,
+            )
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                _save_precheck_result(account_id, "not_authorized", ttl)
+                return {"account_id": account_id, "status": "not_authorized"}
+
+            if CanSendStoryRequest is not None:
+                try:
+                    result = await client(CanSendStoryRequest(peer="me"))
+                    # result is True or raises an error
+                    status = "allowed"
+                    reason = "CanSendStory: allowed"
+                except Exception as e:
+                    err = str(e).lower()
+                    if "flood" in err:
+                        status = "frozen"
+                        reason = str(e)
+                    elif "frozen" in err or "restricted" in err:
+                        status = "frozen"
+                        reason = str(e)
+                    else:
+                        status = "not_authorized"
+                        reason = str(e)
+            else:
+                # Fallback: if we can GetMe, treat as allowed
+                me = await client.get_me()
+                status = "allowed" if me else "not_authorized"
+                reason = "CanSendStoryRequest not available; assumed allowed" if me else "No account info"
+
+            await client.disconnect()
+            _save_precheck_result(account_id, status, ttl)
+            return {"account_id": account_id, "status": status, "reason": reason}
+        except AuthKeyUnregisteredError:
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": "auth key unregistered"}
+        except (UserDeactivatedBanError, UserDeactivatedError):
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": "account banned/deactivated"}
+        except FloodWaitError as e:
+            _save_precheck_result(account_id, "frozen", ttl)
+            return {"account_id": account_id, "status": "frozen", "reason": f"flood wait {e.seconds}s"}
+        except Exception as exc:
+            _save_precheck_result(account_id, "not_authorized", ttl)
+            return {"account_id": account_id, "status": "not_authorized", "reason": str(exc)[:200]}
+
+    def _save_precheck_result(account_id: int, status: str, ttl_ignored: int) -> None:
+        try:
+            with get_db_context() as db:
+                account = db.query(Account).filter(Account.id == account_id).first()
+                if account:
+                    account.story_precheck_status = status
+                    account.story_precheck_checked_at = datetime.utcnow()
+        except Exception as e:
+            logger.warning("Failed to save precheck result", account_id=account_id, error=str(e))
+
+    remaining = _precheck_consume(len(account_ids))
+    results = []
+    loop = asyncio.new_event_loop()
     try:
-        path = get_canonical_session_path(account_id)
-        if path.is_file():
-            path.unlink()
-            logger.info("Removed canonical session file", account_id=account_id, path=str(path))
-    except Exception as e:
-        logger.warning("Could not remove session file", account_id=account_id, error=str(e))
-    return jsonify({"success": True, "message": f"Account {account_id} ({phone}) deleted"})
+        for aid in account_ids:
+            result = loop.run_until_complete(_check_precheck(aid))
+            results.append(result)
+    finally:
+        loop.close()
+
+    allowed = [r for r in results if r.get("status") == "allowed"]
+    return jsonify({
+        "processed": len(results),
+        "allowed": len(allowed),
+        "results": results,
+        "remaining_capacity": remaining,
+    })
 
 
 @api.route('/accounts/auth/start', methods=['POST'])
@@ -2208,13 +951,6 @@ def complete_auth():
         session_string=data.get('session_string'),
         password=data.get('password')
     ))
-    if result.get("success") and result.get("account_id"):
-        try:
-            from src.scheduler.provisioning import ensure_scheduler_defaults
-            with get_db_context() as db:
-                ensure_scheduler_defaults(result["account_id"], db)
-        except Exception as e:
-            logger.warning("provisioning after complete_auth failed: %s", e)
     return jsonify(result)
 
 
@@ -2247,105 +983,26 @@ def import_session():
     if not session_string:
         return jsonify({"error": "session_string required"}), 400
     try:
-        result = run_async(client_manager.import_session_string(session_string, import_source="paste"))
+        result = run_async(client_manager.import_session_string(session_string))
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-    if result.get("success") and result.get("account_id"):
-        try:
-            from src.scheduler.provisioning import ensure_scheduler_defaults
-            with get_db_context() as db:
-                ensure_scheduler_defaults(result["account_id"], db)
-        except Exception as e:
-            logger.warning("provisioning after import_session failed: %s", e)
     if result.get("success"):
         return jsonify(result)
     return jsonify(result), 400
 
 
-@api.route('/accounts/inspect-tdata', methods=['POST'])
-def inspect_tdata():
-    """
-    Inspect a tdata zip without importing. Returns what we would discover:
-    zip structure (folders / inner zips), candidate count and sources, failed_tdata (conversion errors).
-    Use this to verify your zip has the expected folders and see which ones fail conversion.
-    """
-    import tempfile
-    import shutil
-    from pathlib import Path
-    from src.core.tdata_convert import find_tdata_root, find_all_session_strings_in_extracted, tdata_to_session_string
-    from src.core.tdata_import import safe_extract_zip, discover_candidates
-
-    file = request.files.get("file")
-    passcode = (request.form.get("passcode") or "").strip() or None
-    if not file or not file.filename:
-        return jsonify({"success": False, "error": "No file uploaded."}), 400
-    if not file.filename.lower().endswith(".zip"):
-        return jsonify({"success": False, "error": "File must be a .zip archive."}), 400
-    file.seek(0, 2)
-    size = file.tell()
-    file.seek(0)
-    if size > 50 * 1024 * 1024:
-        return jsonify({"success": False, "error": "Zip file too large (max 50 MB)."}), 400
-
-    tmpdir = None
-    try:
-        tmpdir = tempfile.mkdtemp(prefix="autostory_inspect_")
-        zip_path = Path(tmpdir) / "upload.zip"
-        file.save(str(zip_path))
-        _, _, extract_err = safe_extract_zip(zip_path, Path(tmpdir))
-        if extract_err:
-            return jsonify({"success": False, "error": f"Extract failed: {extract_err}"}), 400
-
-        def sync_tdata_to_session(path: str, pwd: Optional[str]):
-            return run_async(tdata_to_session_string(path, passcode=pwd))
-
-        candidates, debug = discover_candidates(
-            Path(tmpdir),
-            passcode,
-            sync_tdata_to_session,
-            find_tdata_root,
-            find_all_session_strings_in_extracted,
-        )
-
-        out = {
-            "success": True,
-            "message": "Inspect only (no accounts imported).",
-            "candidate_count": len(candidates),
-            "candidates": [{"index": c.get("index"), "source": c.get("source")} for c in candidates],
-        }
-        if debug.get("top_level_folders") is not None:
-            out["zip_folders"] = debug["top_level_folders"]
-            out["zip_folder_count"] = len(debug["top_level_folders"])
-        if debug.get("inner_zip_count") is not None:
-            out["zip_folder_count"] = debug["inner_zip_count"]
-            out["zip_folder_names"] = debug.get("inner_zip_names", [])
-        if debug.get("failed_tdata"):
-            out["failed_tdata"] = [{"source": f.get("source"), "error": f.get("error")} for f in debug["failed_tdata"]]
-        if debug.get("first_folder_contents") is not None:
-            out["first_folder_contents"] = debug["first_folder_contents"]
-            out["first_folder_name"] = (debug.get("top_level_folders") or ["?"])[0]
-        return jsonify(out)
-    finally:
-        if tmpdir:
-            try:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-            except Exception:
-                pass
-
-
 @api.route('/accounts/import-tdata', methods=['POST'])
 def import_tdata():
     """
-    Import account(s) by uploading a zip of tdata folder(s).
-    Uses safe extraction (zip-slip protection, size limits), discovers all candidates,
-    imports each with per-account error handling, and returns a detailed report.
+    Import account by uploading a zip of the tdata folder.
+    Server extracts, finds tdata, converts to session, and adds the account.
     """
     import tempfile
+    import zipfile
     import shutil
     from pathlib import Path
     from src.clients.manager import client_manager
-    from src.core.tdata_convert import find_tdata_root, find_all_session_strings_in_extracted, tdata_to_session_string
-    from src.core.tdata_import import safe_extract_zip, discover_candidates
+    from src.core.tdata_convert import find_tdata_root, find_session_string_in_extracted, find_all_session_strings_in_extracted, tdata_to_session_string
 
     file = request.files.get("file")
     passcode = (request.form.get("passcode") or "").strip() or None
@@ -2355,15 +1012,8 @@ def import_tdata():
         clean = re.sub(r"\s+", "", passcode)
         if len(clean) >= 90 and re.match(r"^1[A-Za-z0-9+/=]+$", clean):
             try:
-                result = run_async(client_manager.import_session_string(clean, import_source="paste"))
+                result = run_async(client_manager.import_session_string(clean))
                 if result.get("success"):
-                    if result.get("account_id"):
-                        try:
-                            from src.scheduler.provisioning import ensure_scheduler_defaults
-                            with get_db_context() as db:
-                                ensure_scheduler_defaults(result["account_id"], db)
-                        except Exception as e:
-                            logger.warning("provisioning after import_tdata (paste) failed: %s", e)
                     return jsonify(result)
                 return jsonify(result), 400
             except Exception as e:
@@ -2381,211 +1031,113 @@ def import_tdata():
 
     tmpdir = None
     try:
-        tmpdir = tempfile.mkdtemp(prefix="autostory_tdata_")
+        tmpdir = tempfile.mkdtemp(prefix="tdata_upload_")
         zip_path = Path(tmpdir) / "upload.zip"
         file.save(str(zip_path))
 
-        # Single extraction pass for main zip (safe, with limits)
-        _, _, extract_err = safe_extract_zip(zip_path, Path(tmpdir))
-        if extract_err:
-            return jsonify({"success": False, "error": f"Extract failed: {extract_err}"}), 400
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmpdir)
 
-        def sync_tdata_to_session(path: str, pwd: Optional[str]):
-            return run_async(tdata_to_session_string(path, passcode=pwd))
+        def try_find_tdata(base: Path):
+            from src.core.tdata_convert import find_tdata_root
+            return find_tdata_root(base)
 
-        # Discovers candidates: each top-level folder (e.g. 14237076181) is a base; tdata is detected by dir name (no map.json required). Restart app after code changes.
-        candidates, debug = discover_candidates(
-            Path(tmpdir),
-            passcode,
-            sync_tdata_to_session,
-            find_tdata_root,
-            find_all_session_strings_in_extracted,
-        )
-
-        logger.info("import_tdata: discovered %d candidate(s)", len(candidates))
-
-        if not candidates:
-            failed = debug.get("failed_tdata") or []
-            if failed:
-                # TDATA was found but conversion failed for all; never say "No tdata folder"
-                lines = ["TDATA found but conversion failed for all accounts:"]
-                for item in failed:
-                    lines.append("  %s: TDATA found at %s but conversion failed: %s" % (
-                        item.get("source", "?"),
-                        item.get("tdata_path", "?"),
-                        item.get("error", "Unknown error"),
-                    ))
-                return jsonify({
-                    "success": False,
-                    "error": "\n".join(lines),
-                    "failed_tdata": failed,
-                }), 400
-            hint = ""
+        # Extract all nested zips so we can find .session files in each (e.g. 50-us-27.02.zip with 50 account zips inside)
+        nested_idx = 0
+        for item in sorted(Path(tmpdir).rglob("*.zip")):
+            if not item.is_file() or item.samefile(zip_path):
+                continue
+            nested = Path(tmpdir) / f"nested_{nested_idx}"
+            nested_idx += 1
+            nested.mkdir(parents=True, exist_ok=True)
             try:
-                find_tdata_root(Path(tmpdir))
-            except ValueError as e:
-                hint = " " + str(e)
-            if debug.get("first_folder_contents") is not None:
-                first_name = (debug.get("top_level_folders") or ["?"])[0]
-                hint += " First folder (%s) contents: %s." % (first_name, debug["first_folder_contents"])
-            return jsonify({
-                "success": False,
-                "error": (
-                    "No tdata folder (with map.json) and no session string or .session file found in the zip."
-                    + hint + " "
-                    "You can paste a session string in the 'Session string' box above. "
-                    "To get a string from .session files, run: python scripts/session_to_string.py /path/to/session"
-                ),
-            }), 400
+                with zipfile.ZipFile(item, "r") as zf:
+                    zf.extractall(nested)
+            except zipfile.BadZipFile:
+                continue
+        if nested_idx:
+            logger.info("import_tdata: extracted %d nested zip(s)", nested_idx)
 
+        try:
+            tdata_root = try_find_tdata(Path(tmpdir))
+        except ValueError:
+            tdata_root = None
+        if tdata_root is None:
+            for d in Path(tmpdir).iterdir():
+                if d.is_dir() and d.name.startswith("nested_"):
+                    try:
+                        tdata_root = try_find_tdata(d)
+                        break
+                    except ValueError:
+                        continue
+
+        # Get session(s): from tdata (single) or from session strings / .session files in the zip (many)
+        session_strings: list[str] = []
+        if tdata_root is not None:
+            session_strings = [run_async(tdata_to_session_string(str(tdata_root), passcode=passcode))]
+        if not session_strings:
+            bases = [Path(tmpdir)] + sorted(d for d in Path(tmpdir).iterdir() if d.is_dir() and d.name.startswith("nested_"))
+            for base in bases:
+                found = find_all_session_strings_in_extracted(base)
+                logger.info("import_tdata: scan base=%s found=%d session string(s)", base.name, len(found))
+                session_strings.extend(found)
+            # Deduplicate while preserving order
+            seen = set()
+            unique = []
+            for s in session_strings:
+                s = (s or "").strip()
+                if s and len(s) >= 90 and s not in seen:
+                    seen.add(s)
+                    unique.append(s)
+            session_strings = unique
+            if not session_strings:
+                raise ValueError(
+                    "No tdata folder (with map.json) and no session string or .session file found in the zip. "
+                    "You can paste a session string in the 'Session string' box above and click 'Import from pasted string'. "
+                    "To get a string from .session files on your computer, run: python scripts/session_to_string.py /path/to/session"
+                )
+        logger.info("import_tdata: found %d session(s) to import", len(session_strings))
+
+        # Import each account
         imported = 0
         updated = 0
-        results: list[dict] = []
-        for c in candidates:
-            idx = c.get("index", len(results) + 1)
-            source = c.get("source", "?")
-            session_string = c.get("session_string", "")
-            ts = datetime.utcnow().isoformat() + "Z"
-            try:
-                result = run_async(client_manager.import_session_string(session_string, import_source="tdata_zip"))
-                if result.get("success"):
-                    aid = result.get("account_id")
-                    if aid:
-                        try:
-                            from src.scheduler.provisioning import ensure_scheduler_defaults
-                            with get_db_context() as db:
-                                ensure_scheduler_defaults(aid, db)
-                        except Exception as prov_e:
-                            logger.warning("provisioning after import_tdata [%s] failed: %s", source, prov_e)
-                    if "Session updated" in (result.get("message") or ""):
-                        updated += 1
-                        results.append({
-                            "index": idx,
-                            "source": source,
-                            "status": "ok",
-                            "message": "updated",
-                            "account_id": result.get("account_id"),
-                            "user_id": result.get("user_id"),
-                            "phone_number": result.get("phone_number"),
-                            "username": result.get("username"),
-                            "first_name": result.get("first_name"),
-                            "last_name": result.get("last_name"),
-                            "timestamp": ts,
-                            "session_file_saved": result.get("session_file_saved", True),
-                            "session_file_path": result.get("session_file_path"),
-                        })
-                    else:
-                        imported += 1
-                        results.append({
-                            "index": idx,
-                            "source": source,
-                            "status": "ok",
-                            "message": "imported",
-                            "account_id": result.get("account_id"),
-                            "user_id": result.get("user_id"),
-                            "phone_number": result.get("phone_number"),
-                            "username": result.get("username"),
-                            "first_name": result.get("first_name"),
-                            "last_name": result.get("last_name"),
-                            "timestamp": ts,
-                            "session_file_saved": result.get("session_file_saved", True),
-                            "session_file_path": result.get("session_file_path"),
-                        })
+        errors: list[dict] = []
+        last_result = None
+        for i, session_string in enumerate(session_strings):
+            result = run_async(client_manager.import_session_string(session_string))
+            last_result = result
+            if result.get("success"):
+                if "Session updated" in (result.get("message") or ""):
+                    updated += 1
                 else:
-                    err_msg = result.get("error", "Unknown error")
-                    results.append({
-                        "index": idx,
-                        "source": source,
-                        "status": "failed",
-                        "error_type": "import_failed",
-                        "error": err_msg,
-                        "timestamp": ts,
-                    })
-                    logger.warning("import_tdata: [%s] failed: %s", source, err_msg)
-            except Exception as e:
-                err_msg = str(e)
-                error_type = type(e).__name__
-                results.append({
-                    "index": idx,
-                    "source": source,
-                    "status": "failed",
-                    "error_type": error_type,
-                    "error": err_msg,
-                    "timestamp": ts,
-                })
-                logger.warning("import_tdata: [%s] exception: %s", source, err_msg, exc_info=True)
+                    imported += 1
+            else:
+                errors.append({"index": i + 1, "error": result.get("error", "Unknown error")})
 
-        failed = sum(1 for r in results if r.get("status") == "failed")
-        session_file_failures = sum(1 for r in results if r.get("status") == "ok" and r.get("session_file_saved") is False)
-        logger.info("import_tdata: imported=%d updated=%d failed=%d session_file_failures=%d total=%d",
-                    imported, updated, failed, session_file_failures, len(candidates))
+        logger.info("import_tdata: imported=%d updated=%d failed=%d total=%d", imported, updated, len(errors), len(session_strings))
 
-        # Single account: preserve previous API shape for backward compatibility
-        if len(candidates) == 1:
-            r = results[0]
-            if r.get("status") == "ok":
-                return jsonify({
-                    "success": True,
-                    "message": r.get("message", "imported"),
-                    "account_id": r.get("account_id"),
-                    "user_id": r.get("user_id"),
-                    "phone_number": r.get("phone_number"),
-                    "username": r.get("username"),
-                    "first_name": r.get("first_name"),
-                    "last_name": r.get("last_name"),
-                    "total_discovered": 1,
-                    "results": results,
-                    "session_file_saved": r.get("session_file_saved", True),
-                    "session_file_path": r.get("session_file_path"),
-                })
-            return jsonify({
-                "success": False,
-                "error": r.get("error", "Import failed"),
-                "total_discovered": 1,
-                "results": results,
-            }), 400
+        if len(session_strings) == 1:
+            if last_result and last_result.get("success"):
+                return jsonify(last_result)
+            return jsonify(last_result or {"success": False, "error": "Import failed"}), 400
 
-        # Multiple accounts: summary + full per-account report
+        # Multiple accounts: return summary
         msg_parts = []
         if imported:
             msg_parts.append(f"{imported} imported")
         if updated:
             msg_parts.append(f"{updated} updated")
-        if failed:
-            msg_parts.append(f"{failed} failed")
-        if session_file_failures:
-            msg_parts.append(f"{session_file_failures} session file(s) not saved (check server logs)")
-        sessions_dir_hint = None
-        if session_file_failures:
-            try:
-                from src.core.session_paths import get_sessions_dir
-                sessions_dir_hint = str(get_sessions_dir())
-            except Exception:
-                pass
-        # Include discovery info so user can see what was in the zip and what failed conversion
-        out = {
+        if errors:
+            msg_parts.append(f"{len(errors)} failed")
+        return jsonify({
             "success": True,
             "message": "; ".join(msg_parts) if msg_parts else "Done",
             "imported": imported,
             "updated": updated,
-            "failed": failed,
-            "session_file_failures": session_file_failures,
-            "sessions_dir": sessions_dir_hint,
-            "total": len(candidates),
-            "total_discovered": len(candidates),
-            "results": results,
-            "errors": [{"index": r["index"], "error": r.get("error")} for r in results if r.get("status") == "failed"][:50],
-        }
-        # So user can see: how many folders in zip, which ones failed tdata conversion (session invalid/expired)
-        if debug.get("top_level_folders") is not None:
-            out["zip_folders"] = debug["top_level_folders"]
-            out["zip_folder_count"] = len(debug["top_level_folders"])
-        if debug.get("inner_zip_count") is not None:
-            out["zip_folder_count"] = debug["inner_zip_count"]
-            out["zip_folder_names"] = debug.get("inner_zip_names", [])[:30]
-        if debug.get("failed_tdata"):
-            out["failed_tdata"] = [{"source": f.get("source"), "error": f.get("error")} for f in debug["failed_tdata"]]
-        return jsonify(out)
+            "failed": len(errors),
+            "total": len(session_strings),
+            "errors": errors[:20],
+        })
     except ValueError as e:
         return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
@@ -2620,669 +1172,87 @@ def get_login_code(account_id):
 
 
 # ============================================
-# Stories API
+# Media Upload API
 # ============================================
-@api.route('/stories/mention-sources', methods=['GET'])
-def stories_mention_sources():
-    """Return discovery sources (with user counts) and uploaded mention sources.
-    Includes both rows with source_chat_username set and rows with only source_chat_id/source_chat_title (legacy)."""
-    from sqlalchemy import func
-    with get_db_context() as db:
-        # Sources that have source_chat_username (e.g. from scanner with @group)
-        rows = db.query(
-            DiscoveredUser.source_chat_username,
-            DiscoveredUser.source_chat_title,
-            func.count(DiscoveredUser.id).label("count"),
-        ).filter(
-            DiscoveredUser.source_chat_username.isnot(None)
-        ).group_by(
-            DiscoveredUser.source_chat_username,
-            DiscoveredUser.source_chat_title,
-        ).order_by(
-            func.count(DiscoveredUser.id).desc()
-        ).all()
-        discovery_sources = [
-            {"id": r[0], "username": r[0], "title": r[1] or r[0], "count": r[2]}
-            for r in rows
-        ]
-        # Legacy: users with source_chat_id/title but no username (e.g. older scans)
-        rows_legacy = db.query(
-            DiscoveredUser.source_chat_id,
-            DiscoveredUser.source_chat_title,
-            func.count(DiscoveredUser.id).label("count"),
-        ).filter(
-            DiscoveredUser.source_chat_username.is_(None),
-            DiscoveredUser.source_chat_id.isnot(None),
-        ).group_by(
-            DiscoveredUser.source_chat_id,
-            DiscoveredUser.source_chat_title,
-        ).order_by(
-            func.count(DiscoveredUser.id).desc()
-        ).limit(50).all()
-        for r in rows_legacy:
-            sid = "id:" + str(r[0])
-            title = (r[1] or "Group " + str(r[0])).strip()
-            discovery_sources.append({"id": sid, "username": sid, "title": title, "count": r[2]})
-        total = db.query(DiscoveredUser).count()
-        uploaded = db.query(UploadedMentionSource).order_by(UploadedMentionSource.created_at.desc()).all()
-        entry_counts = dict(db.query(UploadedMentionEntry.source_id, func.count(UploadedMentionEntry.id)).group_by(UploadedMentionEntry.source_id).all())
-        uploaded_list = [{"id": u.id, "name": u.name, "count": entry_counts.get(u.id, 0)} for u in uploaded]
-    return jsonify({
-        "discovery_sources": discovery_sources,
-        "discovered_total": total,
-        "uploaded_sources": uploaded_list,
-    })
+
+_ALLOWED_MEDIA = {'.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov'}
 
 
-def _make_json_serializable(obj):
-    """Convert datetime and other non-JSON types to serializable form."""
-    if obj is None:
-        return None
-    if hasattr(obj, "isoformat"):
-        return obj.isoformat()
-    if isinstance(obj, dict):
-        return {k: _make_json_serializable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_make_json_serializable(v) for v in obj]
-    return obj
-
-
-@api.route('/stories/eligible-accounts', methods=['GET'])
-def stories_eligible_accounts():
-    """Return list of story-eligible accounts and exclusion reasons summary. Always returns valid JSON."""
-    try:
-        from src.stories.batch_helpers import get_story_eligible_accounts_for_batch
-        eligible, skipped = get_story_eligible_accounts_for_batch(
-            only_alive=True,
-            skip_flood_wait=True,
-            purpose_filter="both",
-            daily_cap_per_account=None,
-            max_accounts=100,
-            requested_account_ids=None,
-        )
-        # Sanitize eligible: datetime objects cause JSON serialization to fail
-        eligible_clean = [_make_json_serializable(e) for e in eligible]
-
-        # Build exclusion_reasons summary
-        exclusion_reasons = {}
-        for s in skipped:
-            r = (s.get("reason") or "other").split("=")[0]
-            if r and r != "purpose":
-                exclusion_reasons[r] = exclusion_reasons.get(r, 0) + 1
-        reason_labels = {
-            "no_session": "reimport needed",
-            "auth_required": "auth required",
-            "story_rate_limited": "rate limited",
-            "story_frozen": "frozen",
-            "story_restricted": "restricted",
-            "story_telegram_denied": "telegram denied",
-            "story_blocked": "blocked",
-            "story_cooldown": "cooldown",
-            "story_precheck_failed": "precheck",
-            "warmup_pending": "warmup",
-            "manual_review_required": "manual review",
-            "risk_level_blocked": "risk",
-            "daily_cap": "daily cap reached",
-        }
-        exclusion_summary = [
-            {"reason": reason_labels.get(k, k), "count": v}
-            for k, v in sorted(exclusion_reasons.items(), key=lambda x: -x[1])
-        ]
-        return jsonify({
-            "accounts": eligible_clean,
-            "exclusion_reasons": exclusion_summary,
-        })
-    except Exception as e:
-        logger.exception("stories_eligible_accounts failed")
-        return jsonify({
-            "accounts": [],
-            "exclusion_reasons": [],
-            "error": "Failed to load eligible accounts",
-            "detail": str(e),
-        }), 500
-
-
-@api.route('/stories/preview-batch', methods=['POST'])
-def preview_batch():
-    """Preview batch: eligible accounts, skipped, mention pool size, sample mentions, warnings."""
-    from src.stories.batch_helpers import get_story_eligible_accounts_for_batch, get_mention_pool, get_mention_pool_from_sources, apply_pool_behavior
-    data = request.get_json() or {}
-    max_stories = data.get('max_stories')
-    if max_stories is not None:
-        max_stories = int(max_stories)
-    mentions_per_story = int(data.get('mentions_per_story') or 5)
-    source_type = data.get('source_type') or 'discovery'
-    source_id = data.get('source_id') or None
-    source_sources = data.get('source_sources')
-    if source_sources and not isinstance(source_sources, list):
-        source_sources = None
-    if source_sources:
-        source_sources = [x for x in source_sources if isinstance(x, dict)]
-    avoid_reuse_days = data.get('avoid_reuse_days')
-    if avoid_reuse_days is not None:
-        avoid_reuse_days = int(avoid_reuse_days)
-    pool_behavior = data.get('pool_behavior') or 'stop_batch'
-    only_alive = data.get('only_alive', True)
-    skip_flood_wait = data.get('skip_flood_wait', True)
-    purpose_filter = data.get('purpose_filter') or 'both'
-    daily_cap = data.get('daily_cap_per_account')
-    if daily_cap is not None:
-        daily_cap = int(daily_cap)
-    max_accounts = data.get('max_accounts')
-    if max_accounts is not None:
-        max_accounts = int(max_accounts)
-    # Enforce config cap for preview consistency with run_batch
-    try:
-        cfg_max = getattr(settings.warmup, "max_accounts_per_story_batch", 10) or 10
-        if max_accounts is None:
-            max_accounts = cfg_max
-        else:
-            max_accounts = min(max_accounts, cfg_max)
-        # Canary mode: default batch size 1; require canary_batch_ok for more (mirror run_batch)
-        canary_batch_ok = data.get("canary_batch_ok") in (True, "true", "1", "yes")
-        canary_size = int(getattr(settings.warmup, "canary_default_batch_size", 1) or 1)
-        require_canary = bool(getattr(settings.warmup, "canary_batch_ok_required", True))
-        if require_canary and not canary_batch_ok:
-            max_accounts = min(max_accounts, canary_size)
-    except Exception:
-        if max_accounts is None:
-            max_accounts = 10
-    min_accounts = int(data.get('min_accounts') or 0)
-
-    eligible, skipped = get_story_eligible_accounts_for_batch(
-        only_alive=only_alive,
-        skip_flood_wait=skip_flood_wait,
-        purpose_filter=purpose_filter,
-        daily_cap_per_account=daily_cap,
-        max_accounts=max_accounts,
-        requested_account_ids=None,
-    )
-    requested_account_ids = data.get('account_ids')
-    if requested_account_ids is not None and not isinstance(requested_account_ids, list):
-        requested_account_ids = [int(requested_account_ids)] if requested_account_ids else []
-    if requested_account_ids:
-        requested_account_ids = [int(x) for x in requested_account_ids if x is not None]
-    if requested_account_ids:
-        eligible_ids = {e["id"] for e in eligible}
-        selected_ids = [x for x in requested_account_ids if x in eligible_ids]
-        eligible = [e for e in eligible if e["id"] in selected_ids]
-    if max_stories is None or max_stories <= 0:
-        max_stories = len(eligible)
-    limit_pool = max_stories * mentions_per_story * 2
-    if source_sources:
-        pool, total_available = get_mention_pool_from_sources(
-            source_sources,
-            limit=limit_pool,
-            avoid_reuse_days=avoid_reuse_days,
-        )
-    else:
-        pool, total_available = get_mention_pool(
-            source_type=source_type,
-            source_id=source_id,
-            limit=limit_pool,
-            avoid_reuse_days=avoid_reuse_days,
-        )
-    pool, total_available, pool_warnings = apply_pool_behavior(
-        pool, total_available, max_stories, mentions_per_story,
-        pool_behavior, source_type, source_id, avoid_reuse_days,
-    )
-    pool_user_ids = [p["user_id"] for p in pool]
-    sample = pool[:min(10, len(pool))]
-    estimated_stories = min(max_stories, len(eligible), (len(pool_user_ids) // mentions_per_story) if mentions_per_story else max_stories)
-    warnings = list(pool_warnings)
-    if len(eligible) < min_accounts and min_accounts > 0:
-        warnings.append(f"Eligible accounts ({len(eligible)}) below minimum ({min_accounts})")
-    if total_available < mentions_per_story * max_stories and pool_behavior != "stop_batch":
-        warnings.append(f"Mention pool ({total_available}) may be small for {max_stories} stories × {mentions_per_story} mentions")
-    if not pool_user_ids and estimated_stories > 0 and pool_behavior == "stop_batch":
-        warnings.append("No mention pool: add users or change pool behavior")
-    return jsonify({
-        "eligible_accounts": eligible,
-        "skipped_accounts": skipped,
-        "mention_pool_size": len(pool_user_ids),
-        "mention_pool_total_available": total_available,
-        "sample_mentions": sample,
-        "estimated_stories": estimated_stories,
-        "warnings": warnings,
-    })
-
-
-@api.route('/stories/batch-history', methods=['GET'])
-def stories_batch_history():
-    """Last N batch runs for analytics."""
-    from src.core.models import StoryBatchRun
-    limit = min(50, max(1, request.args.get('limit', 20, type=int)))
-    with get_db_context() as db:
-        runs = db.query(StoryBatchRun).order_by(StoryBatchRun.started_at.desc()).limit(limit).all()
-        return jsonify({
-            "runs": [
-                {
-                    "id": r.id,
-                    "started_at": r.started_at.isoformat() if r.started_at else None,
-                    "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-                    "config": r.config,
-                    "total_attempted": r.total_attempted or 0,
-                    "successful": r.successful or 0,
-                    "failed": r.failed or 0,
-                    "skipped_count": r.skipped_count or 0,
-                    "errors_json": r.errors_json,
-                    "mention_pool_size": r.mention_pool_size,
-                }
-                for r in runs
-            ]
-        })
-
-
-def _media_upload_handler():
-    """Save uploaded file to settings.storage.media_dir; return (dict, None) or (None, (response, status))."""
+@api.route('/media/upload', methods=['POST'])
+def upload_media():
+    """Upload a media file for story publishing."""
+    import time
     from pathlib import Path
-    import uuid
+    from werkzeug.utils import secure_filename
 
-    file = request.files.get("file")
-    if not file or not file.filename:
-        return None, (jsonify({"error": "No file uploaded"}), 400)
-    ext = Path(file.filename).suffix.lower()
-    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".avi", ".webm"):
-        return None, (jsonify({"error": "Unsupported format. Use JPG, PNG, MP4."}), 400)
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    ext = Path(f.filename).suffix.lower()
+    if ext not in _ALLOWED_MEDIA:
+        return jsonify({'error': f'Type {ext} not allowed. Use: jpg, png, webp, mp4, mov'}), 400
+
     media_dir = Path(settings.storage.media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{uuid.uuid4().hex}{ext}"
-    path = media_dir / name
-    try:
-        file.save(str(path))
-    except Exception as e:
-        logger.exception("media upload failed")
-        return None, (jsonify({"error": str(e)}), 500)
-    st = path.stat()
-    is_video = ext in (".mp4", ".mov", ".avi", ".webm")
-    return {
-        "success": True,
-        "path": str(path),
-        "filename": name,
-        "size": st.st_size,
-        "type": "video" if is_video else "photo",
-    }, None
+
+    base = secure_filename(f.filename)
+    dest = media_dir / base
+    if dest.exists():
+        base = f"{Path(base).stem}_{int(time.time())}{ext}"
+        dest = media_dir / base
+
+    f.save(str(dest))
+    return jsonify({
+        'success': True,
+        'filename': base,
+        'path': str(dest),
+        'size': dest.stat().st_size,
+        'type': 'video' if ext in {'.mp4', '.mov'} else 'photo',
+    })
 
 
-@api.route("/stories/runs", methods=["GET"])
-def list_story_runs():
-    """List story rotation runs."""
-    page = request.args.get("page", 1, type=int)
-    per_page = min(100, max(1, request.args.get("per_page", 20, type=int)))
-    with get_db_context() as db:
-        q = db.query(StoryRun).order_by(StoryRun.created_at.desc())
-        total = q.count()
-        runs = q.offset((page - 1) * per_page).limit(per_page).all()
-        pool_ids = {r.pool_id for r in runs if r.pool_id}
-        pool_names = {}
-        if pool_ids:
-            for pl in db.query(StoryPool).filter(StoryPool.id.in_(pool_ids)).all():
-                pool_names[pl.id] = pl.name
-        return jsonify({
-            "total": total,
-            "page": page,
-            "runs": [
-                {
-                    "id": r.id,
-                    "pool_id": r.pool_id,
-                    "pool_name": pool_names.get(r.pool_id, "—"),
-                    "mode": r.mode,
-                    "interval_minutes": r.interval_minutes,
-                    "caption": (r.caption or "")[:60] or None,
-                    "media_path": r.media_path,
-                    "mentions_per_story": r.mentions_per_story,
-                    "status": r.status,
-                    "stories_ok": r.stories_ok,
-                    "stories_failed": r.stories_failed,
-                    "started_at": r.started_at.isoformat() if r.started_at else None,
-                    "last_tick_at": r.last_tick_at.isoformat() if r.last_tick_at else None,
-                    "next_tick_at": r.next_tick_at.isoformat() if r.next_tick_at else None,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                }
-                for r in runs
-            ],
-        })
-
-
-@api.route("/stories/runs", methods=["POST"])
-def create_story_run():
-    """Create a pending StoryRun for the rotation worker."""
-    data = request.get_json() or {}
-    media_path = (data.get("media_path") or "").strip()
-    if not media_path:
-        return jsonify({"error": "media_path required"}), 400
-    mode = data.get("mode") or "once"
-    if mode not in ("once", "continuous"):
-        return jsonify({"error": "mode must be 'once' or 'continuous'"}), 400
-    raw_pool = data.get("pool_id", None)
-    if raw_pool in (None, "", "0", 0):
-        pool_id = None
-    else:
-        try:
-            pool_id = int(raw_pool)
-        except (TypeError, ValueError):
-            return jsonify({"error": "pool_id must be an integer"}), 400
-    interval = data.get("interval_minutes")
-    if mode == "continuous":
-        try:
-            interval = int(interval) if interval not in (None, "") else None
-        except (TypeError, ValueError):
-            return jsonify({"error": "interval_minutes must be an integer"}), 400
-        if not interval or interval < 1:
-            return jsonify({"error": "interval_minutes required for continuous mode"}), 400
-    else:
-        interval = None
-    try:
-        mentions = int(data.get("mentions_per_story", 5) or 5)
-    except (TypeError, ValueError):
-        return jsonify({"error": "mentions_per_story must be an integer"}), 400
-    raw_max = data.get("max_stories", None)
-    if raw_max in (None, "", "null"):
-        max_stories = None
-    else:
-        try:
-            max_stories = int(raw_max)
-        except (TypeError, ValueError):
-            return jsonify({"error": "max_stories must be an integer"}), 400
-    caption = data.get("caption")
-    if caption is not None and not isinstance(caption, str):
-        caption = str(caption)
-    with get_db_context() as db:
-        run = StoryRun(
-            pool_id=pool_id,
-            mode=mode,
-            interval_minutes=interval,
-            caption=caption,
-            media_path=media_path,
-            mentions_per_story=mentions,
-            max_stories=max_stories,
-            status="pending",
-        )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        return jsonify({"success": True, "run_id": run.id, "status": "pending"})
-
-
-@api.route("/media/upload", methods=["POST"])
-def upload_media():
-    """Dashboard alias: POST /api/media/upload."""
-    rv, err = _media_upload_handler()
-    if err:
-        return err
-    return jsonify(rv)
-
-
-@api.route("/media/files", methods=["GET"])
+@api.route('/media/files', methods=['GET'])
 def list_media_files():
-    """List media files for the browser (GET /api/media/files)."""
+    """List uploaded media files."""
     from pathlib import Path
 
-    allowed = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".avi", ".webm"}
     media_dir = Path(settings.storage.media_dir)
     if not media_dir.exists():
-        return jsonify({"files": []})
+        return jsonify({'files': []})
+
     files = []
     for f in sorted(media_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
-        if not f.is_file() or f.name.startswith("."):
-            continue
-        ext = f.suffix.lower()
-        if ext not in allowed:
-            continue
-        st = f.stat()
-        files.append({
-            "filename": f.name,
-            "path": str(f),
-            "size": st.st_size,
-            "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
-            "type": "video" if ext in (".mp4", ".mov", ".avi", ".webm") else "photo",
-        })
-    return jsonify({"files": files})
+        if f.suffix.lower() in _ALLOWED_MEDIA and f.is_file() and f.name != '.gitkeep':
+            files.append({
+                'filename': f.name,
+                'path': str(f),
+                'size': f.stat().st_size,
+                'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                'type': 'video' if f.suffix.lower() in {'.mp4', '.mov'} else 'photo',
+            })
+    return jsonify({'files': files})
 
 
-
-
-@api.route('/stories/templates', methods=['GET'])
-def list_story_templates():
-    """List all story templates."""
-    with get_db_context() as db:
-        templates = db.query(StoryTemplate).order_by(StoryTemplate.updated_at.desc()).all()
-        return jsonify([
-            {
-                "id": t.id,
-                "name": t.name,
-                "caption": t.caption,
-                "mentions_per_story": t.mentions_per_story,
-                "max_stories": t.max_stories,
-                "mention_source_type": t.mention_source_type,
-                "mention_source_id": t.mention_source_id,
-                "avoid_reuse_days": t.avoid_reuse_days,
-                "pool_behavior": t.pool_behavior,
-                "only_alive": t.only_alive,
-                "skip_flood_wait": t.skip_flood_wait,
-                "purpose_filter": t.purpose_filter,
-                "max_accounts": t.max_accounts,
-                "daily_cap_per_account": t.daily_cap_per_account,
-                "unique_mentions_across_batch": t.unique_mentions_across_batch,
-                "created_at": t.created_at.isoformat() if t.created_at else None,
-                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
-            }
-            for t in templates
-        ])
-
-
-@api.route('/stories/templates', methods=['POST'])
-def create_story_template():
-    """Create a story template from JSON body."""
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "name is required"}), 400
-    with get_db_context() as db:
-        t = StoryTemplate(
-            name=name,
-            caption=data.get("caption"),
-            mentions_per_story=int(data.get("mentions_per_story") or 5),
-            max_stories=int(data.get("max_stories") or 10),
-            mention_source_type=data.get("mention_source_type") or "discovery",
-            mention_source_id=data.get("mention_source_id"),
-            avoid_reuse_days=int(data.get("avoid_reuse_days") or 0),
-            pool_behavior=data.get("pool_behavior") or "stop_batch",
-            only_alive=data.get("only_alive", True),
-            skip_flood_wait=data.get("skip_flood_wait", True),
-            purpose_filter=data.get("purpose_filter") or "both",
-            max_accounts=int(data["max_accounts"]) if data.get("max_accounts") not in (None, "") else None,
-            daily_cap_per_account=int(data["daily_cap_per_account"]) if data.get("daily_cap_per_account") not in (None, "") else None,
-            unique_mentions_across_batch=data.get("unique_mentions_across_batch", True),
-        )
-        db.add(t)
-        db.flush()
-        return jsonify({"id": t.id, "name": t.name})
-
-
-@api.route('/stories/templates/<int:template_id>', methods=['DELETE'])
-def delete_story_template(template_id):
-    """Delete a story template."""
-    with get_db_context() as db:
-        t = db.query(StoryTemplate).filter(StoryTemplate.id == template_id).first()
-        if not t:
-            return jsonify({"error": "Not found"}), 404
-        db.delete(t)
-        return jsonify({"success": True})
-
-
-@api.route('/stories/blacklist', methods=['GET'])
-def list_mention_blacklist():
-    """List blacklisted users."""
-    with get_db_context() as db:
-        rows = db.query(MentionBlacklist).order_by(MentionBlacklist.created_at.desc()).all()
-        return jsonify([
-            {"id": r.id, "user_id": r.user_id, "username": r.username, "reason": r.reason, "created_at": r.created_at.isoformat() if r.created_at else None}
-            for r in rows
-        ])
-
-
-@api.route('/stories/blacklist', methods=['POST'])
-def add_mention_blacklist():
-    """Add user to blacklist. Body: user_id (optional), username (optional), reason."""
-    data = request.get_json() or {}
-    user_id = data.get("user_id")
-    username = (data.get("username") or "").strip().lstrip("@") or None
-    if not user_id and not username:
-        return jsonify({"error": "user_id or username required"}), 400
-    if user_id is not None:
-        user_id = int(user_id)
-    with get_db_context() as db:
-        existing = db.query(MentionBlacklist).filter(
-            (MentionBlacklist.user_id == user_id) if user_id else (MentionBlacklist.username == username)
-        ).first()
-        if existing:
-            return jsonify({"error": "Already blacklisted", "id": existing.id}), 400
-        r = MentionBlacklist(user_id=user_id, username=username, reason=(data.get("reason") or "").strip() or None)
-        db.add(r)
-        db.flush()
-        return jsonify({"id": r.id})
-
-
-@api.route('/stories/blacklist/<int:entry_id>', methods=['DELETE'])
-def delete_mention_blacklist(entry_id):
-    """Remove user from blacklist."""
-    with get_db_context() as db:
-        r = db.query(MentionBlacklist).filter(MentionBlacklist.id == entry_id).first()
-        if not r:
-            return jsonify({"error": "Not found"}), 404
-        db.delete(r)
-        return jsonify({"success": True})
-
-
-@api.route('/stories/mention-sources/upload', methods=['POST'])
-def upload_mention_source():
-    """Upload a .txt file with usernames or user IDs (one per line). Creates a new uploaded mention source."""
+@api.route('/media/file/<path:filename>', methods=['GET'])
+def serve_media_file(filename):
+    """Serve an uploaded media file (used for preview thumbnails)."""
     from pathlib import Path
-    file = request.files.get("file")
-    if not file or not file.filename:
-        return jsonify({"error": "No file uploaded"}), 400
-    if not file.filename.lower().endswith(".txt"):
-        return jsonify({"error": "Only .txt files allowed"}), 400
-    name = (request.form.get("name") or Path(file.filename).stem or "Uploaded list").strip()[:255]
-    lines = [line.strip() for line in file.stream.read().decode("utf-8", errors="ignore").splitlines() if line.strip()]
-    with get_db_context() as db:
-        source = UploadedMentionSource(name=name)
-        db.add(source)
-        db.flush()
-        for line in lines:
-            line = line.strip().lstrip("@")
-            if not line:
-                continue
-            user_id = None
-            username = None
-            if line.isdigit():
-                user_id = int(line)
-            else:
-                username = line
-            db.add(UploadedMentionEntry(source_id=source.id, user_id=user_id, username=username))
-        return jsonify({"id": source.id, "name": source.name, "count": len(lines)})
+    from flask import send_from_directory
+
+    media_dir = Path(settings.storage.media_dir).resolve()
+    # Security: only serve files directly inside media_dir (no path traversal)
+    target = (media_dir / filename).resolve()
+    if not str(target).startswith(str(media_dir)):
+        return jsonify({'error': 'Forbidden'}), 403
+    return send_from_directory(str(media_dir), filename)
 
 
-@api.route('/stories/schedules', methods=['GET'])
-def list_story_schedules():
-    """List story batch schedules."""
-    with get_db_context() as db:
-        rows = db.query(StorySchedule).order_by(StorySchedule.run_at).all()
-        return jsonify([
-            {
-                "id": r.id,
-                "story_template_id": r.story_template_id,
-                "name": r.name,
-                "run_at": r.run_at.isoformat() if r.run_at else None,
-                "repeat": r.repeat,
-                "media_path": r.media_path,
-                "max_accounts": r.max_accounts,
-                "is_enabled": r.is_enabled,
-                "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ])
-
-
-@api.route('/stories/schedules', methods=['POST'])
-def create_story_schedule():
-    """Create a story schedule. Body: story_template_id, run_at (ISO), name (optional), media_path (optional), max_accounts (optional), repeat (optional: daily, weekly)."""
-    data = request.get_json() or {}
-    template_id = data.get("story_template_id")
-    if not template_id:
-        return jsonify({"error": "story_template_id required"}), 400
-    run_at_str = data.get("run_at")
-    if not run_at_str:
-        return jsonify({"error": "run_at required"}), 400
-    try:
-        run_at = datetime.fromisoformat(run_at_str.replace("Z", "+00:00"))
-    except Exception:
-        return jsonify({"error": "run_at must be ISO datetime"}), 400
-    with get_db_context() as db:
-        t = db.query(StoryTemplate).filter(StoryTemplate.id == int(template_id)).first()
-        if not t:
-            return jsonify({"error": "Template not found"}), 404
-        s = StorySchedule(
-            story_template_id=t.id,
-            name=(data.get("name") or "").strip() or None,
-            run_at=run_at,
-            repeat=(data.get("repeat") or "").strip() or None,
-            media_path=(data.get("media_path") or "").strip() or None,
-            max_accounts=int(data["max_accounts"]) if data.get("max_accounts") not in (None, "") else None,
-            is_enabled=data.get("is_enabled", True),
-        )
-        db.add(s)
-        db.flush()
-        return jsonify({"id": s.id, "run_at": s.run_at.isoformat()})
-
-
-@api.route('/stories/schedules/<int:schedule_id>', methods=['PATCH'])
-def update_story_schedule(schedule_id):
-    """Update a story schedule. Body: run_at, is_enabled, media_path, max_accounts, repeat, name."""
-    data = request.get_json() or {}
-    with get_db_context() as db:
-        s = db.query(StorySchedule).filter(StorySchedule.id == schedule_id).first()
-        if not s:
-            return jsonify({"error": "Not found"}), 404
-        if "run_at" in data and data["run_at"]:
-            try:
-                s.run_at = datetime.fromisoformat(data["run_at"].replace("Z", "+00:00"))
-            except Exception:
-                pass
-        if "is_enabled" in data:
-            s.is_enabled = bool(data["is_enabled"])
-        if "media_path" in data:
-            s.media_path = (data["media_path"] or "").strip() or None
-        if "max_accounts" in data:
-            s.max_accounts = int(data["max_accounts"]) if data["max_accounts"] not in (None, "") else None
-        if "repeat" in data:
-            s.repeat = (data["repeat"] or "").strip() or None
-        if "name" in data:
-            s.name = (data["name"] or "").strip() or None
-        return jsonify({"success": True})
-
-
-@api.route('/stories/schedules/<int:schedule_id>', methods=['DELETE'])
-def delete_story_schedule(schedule_id):
-    """Delete a story schedule."""
-    with get_db_context() as db:
-        s = db.query(StorySchedule).filter(StorySchedule.id == schedule_id).first()
-        if not s:
-            return jsonify({"error": "Not found"}), 404
-        db.delete(s)
-        return jsonify({"success": True})
-
-
-@api.route('/stories/upload-media', methods=['POST'])
-def upload_story_media():
-    """Upload a media file for story publishing (photo or video). Returns path for use in publish."""
-    rv, err = _media_upload_handler()
-    if err:
-        return err
-    return jsonify(rv)
-
+# ============================================
+# Stories API
+# ============================================
 
 @api.route('/stories', methods=['GET'])
 def list_stories():
@@ -3314,91 +1284,27 @@ def list_stories():
         })
 
 
-@api.route('/stories/<int:story_id>', methods=['GET'])
-def get_story(story_id):
-    """Get a single story (for editing)."""
-    with get_db_context() as db:
-        story = db.query(Story).filter(Story.id == story_id).first()
-        if not story:
-            return jsonify({"error": "Story not found"}), 404
-        return jsonify({
-            "id": story.id,
-            "account_id": story.account_id,
-            "caption": story.caption,
-            "mentioned_usernames": story.mentioned_usernames or [],
-            "mentioned_user_ids": story.mentioned_user_ids or [],
-            "views_count": story.views_count,
-            "published_at": story.published_at.isoformat() if story.published_at else None,
-        })
-
-
-@api.route('/stories/<int:story_id>', methods=['PATCH'])
-def update_story(story_id):
-    """Update a story record (caption, etc.). Does not change the story on Telegram."""
-    data = request.get_json() or {}
-    with get_db_context() as db:
-        story = db.query(Story).filter(Story.id == story_id).first()
-        if not story:
-            return jsonify({"error": "Story not found"}), 404
-        if "caption" in data:
-            story.caption = data["caption"] if data["caption"] else None
-        if "mentioned_usernames" in data:
-            story.mentioned_usernames = data["mentioned_usernames"] if isinstance(data["mentioned_usernames"], list) else []
-        db.commit()
-        return jsonify({
-            "id": story.id,
-            "caption": story.caption,
-            "mentions": len(story.mentioned_user_ids) if story.mentioned_user_ids else 0,
-        })
-
-
 @api.route('/stories/publish', methods=['POST'])
 def publish_story():
-    """Publish a new story. If mentions not provided, auto-select from discovered users (like the bot). Enforces safety: warmup, cooldown, precheck."""
+    """Publish a new story"""
     from src.stories.publisher import story_publisher
     from src.clients.manager import client_manager
-    from src.core.safety_policy import get_story_safety_decision, log_story_exclusion
     data = request.get_json()
     account_id = data.get('account_id')
     media_path = data.get('media_path')
-    caption = data.get('caption') or ''
+    caption = data.get('caption')
     mentions = data.get('mentions', [])
-    mentions_count = int(data.get('mentions_count', 5))
     if not account_id or not media_path:
         return jsonify({"error": "account_id and media_path required"}), 400
-    with get_db_context() as db:
-        account = db.query(Account).filter(Account.id == account_id).first()
-        if not account:
-            return jsonify({"error": "Account not found"}), 404
-        decision = get_story_safety_decision(account, requested_action="story_publish")
-        if not decision.allowed:
-            log_story_exclusion(account_id, account.phone_number, "story_publish", decision)
-            return jsonify({
-                "success": False,
-                "error": decision.human_reason,
-                "reason_code": decision.reason_code,
-                "operator_action": decision.operator_action,
-                "next_allowed_at": decision.next_allowed_at.isoformat() if decision.next_allowed_at else None,
-            }), 403
     async def publish():
         client = await client_manager.get_client(account_id)
         if not client:
-            return {"success": False, "error": "Client not found or not connected"}
-        if not mentions:
-            from src.core.models import DiscoveredUser
-            with get_db_context() as db:
-                users = db.query(DiscoveredUser).filter(
-                    DiscoveredUser.times_mentioned == 0,
-                    DiscoveredUser.username.isnot(None),
-                ).order_by(DiscoveredUser.discovered_at.desc()).limit(mentions_count).all()
-            mentions_to_use = [u.user_id for u in users]
-        else:
-            mentions_to_use = mentions
+            return {"error": "Client not found or not connected"}
         return await story_publisher.publish_story(
             client_wrapper=client,
             media_path=media_path,
             caption=caption,
-            mentions=mentions_to_use,
+            mentions=mentions,
             campaign_id=data.get('campaign_id')
         )
     result = run_async(publish())
@@ -3407,34 +1313,419 @@ def publish_story():
 
 @api.route('/stories/batch', methods=['POST'])
 def publish_batch():
-    """Publish stories in batch. Supports source_type, source_id, eligibility and mention strategy options."""
-    from src.stories.run_batch import run_batch_async
+    """Publish stories in batch"""
+    from src.stories.publisher import story_publisher
     data = request.get_json()
-    if not data:
-        return jsonify({"success": False, "error": "Request body must be JSON"}), 400
-    logger.info(
-        "Batch publish started",
-        media_path=data.get("media_path"),
-        source_id=data.get("source_id"),
-        content_type=request.content_type,
-        payload_keys=list(data.keys()) if data else [],
-        account_ids=data.get("account_ids"),
-        max_stories=data.get("max_stories"),
-        mentions_per_story=data.get("mentions_per_story"),
-    )
-    try:
-        result = run_async(run_batch_async(data))
-        logger.info("Batch publish finished", success=result.get("success"), run_id=result.get("run_id"))
-        return jsonify(result)
-    except Exception as e:
-        logger.exception("Batch publish failed")
-        return jsonify({"success": False, "error": str(e)}), 500
+    result = run_async(story_publisher.publish_batch(
+        media_path=data.get('media_path'),
+        caption=data.get('caption'),
+        mentions_per_story=data.get('mentions_per_story', 5),
+        max_stories=data.get('max_stories', 10),
+        campaign_id=data.get('campaign_id')
+    ))
+    return jsonify(result)
 
 
-async def _run_batch_with_config(data: dict):
-    """Thin wrapper for run_batch_async (kept for any direct callers)."""
-    from src.stories.run_batch import run_batch_async
-    return await run_batch_async(data)
+# ============================================
+# Story Pools API
+# ============================================
+
+@api.route('/stories/pools', methods=['GET'])
+def list_story_pools():
+    """List all story pools with member counts."""
+    from src.core.models import StoryPool, StoryPoolMember
+    with get_db_context() as db:
+        pools = db.query(StoryPool).order_by(StoryPool.created_at.desc()).all()
+        result = []
+        for p in pools:
+            total = db.query(StoryPoolMember).filter(
+                StoryPoolMember.pool_id == p.id).count()
+            enabled = db.query(StoryPoolMember).filter(
+                StoryPoolMember.pool_id == p.id,
+                StoryPoolMember.is_enabled == True).count()
+            result.append({
+                'id': p.id,
+                'name': p.name,
+                'slug': p.slug,
+                'description': p.description,
+                'is_active': p.is_active,
+                'member_count': total,
+                'enabled_count': enabled,
+                'created_at': p.created_at.isoformat(),
+            })
+        return jsonify({'pools': result})
+
+
+@api.route('/stories/pools', methods=['POST'])
+def create_story_pool():
+    """Create a new story pool."""
+    from src.core.models import StoryPool
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+    slug = (data.get('slug') or name.lower().replace(' ', '_').replace('-', '_'))
+    with get_db_context() as db:
+        if db.query(StoryPool).filter(StoryPool.slug == slug).first():
+            return jsonify({'error': f"Pool '{slug}' already exists"}), 409
+        pool = StoryPool(
+            name=name,
+            slug=slug,
+            description=(data.get('description') or '').strip(),
+        )
+        db.add(pool)
+        db.commit()
+        return jsonify({'success': True, 'id': pool.id, 'slug': pool.slug})
+
+
+@api.route('/stories/pools/<int:pool_id>', methods=['DELETE'])
+def delete_story_pool(pool_id):
+    """Delete a story pool (cascades members)."""
+    from src.core.models import StoryPool
+    with get_db_context() as db:
+        pool = db.get(StoryPool, pool_id)
+        if not pool:
+            return jsonify({'error': 'Not found'}), 404
+        db.delete(pool)
+        db.commit()
+        return jsonify({'success': True})
+
+
+@api.route('/stories/pools/<int:pool_id>/members', methods=['GET'])
+def list_pool_members(pool_id):
+    """List accounts in a pool with story stats."""
+    from src.core.models import StoryPool, StoryPoolMember
+    with get_db_context() as db:
+        pool = db.get(StoryPool, pool_id)
+        if not pool:
+            return jsonify({'error': 'Pool not found'}), 404
+        members = db.query(StoryPoolMember).filter(
+            StoryPoolMember.pool_id == pool_id).all()
+        rows = []
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        for m in members:
+            acc = db.get(Account, m.account_id)
+            if not acc:
+                continue
+            total_stories = db.query(Story).filter(Story.account_id == acc.id).count()
+            today_stories = db.query(Story).filter(
+                Story.account_id == acc.id,
+                Story.published_at >= today_start,
+            ).count()
+            last_story = db.query(Story).filter(
+                Story.account_id == acc.id
+            ).order_by(Story.published_at.desc()).first()
+            last_story_at = last_story.published_at.isoformat() if last_story else None
+            # Next allowed = last_active + cooldown
+            next_allowed_at = None
+            if acc.last_active:
+                from src.stories.rotation import ACCOUNT_STORY_COOLDOWN_SEC
+                next_dt = acc.last_active + timedelta(seconds=ACCOUNT_STORY_COOLDOWN_SEC)
+                next_allowed_at = next_dt.isoformat() if next_dt > datetime.utcnow() else None
+            rows.append({
+                'member_id': m.id,
+                'account_id': acc.id,
+                'phone': acc.phone_number,
+                'username': acc.username,
+                'status': acc.status.value if hasattr(acc.status, 'value') else acc.status,
+                'health': acc.health_status,
+                'story_precheck': acc.story_precheck_status,
+                'is_enabled': m.is_enabled,
+                'total_stories': total_stories,
+                'today_stories': today_stories,
+                'last_story_at': last_story_at,
+                'next_allowed_at': next_allowed_at,
+                'added_at': m.added_at.isoformat(),
+            })
+        return jsonify({'pool_id': pool_id, 'pool_name': pool.name, 'members': rows})
+
+
+@api.route('/stories/pools/<int:pool_id>/members', methods=['POST'])
+def add_pool_members(pool_id):
+    """Add one or more accounts to a pool."""
+    from src.core.models import StoryPool, StoryPoolMember
+    data = request.get_json() or {}
+    account_ids = data.get('account_ids', [])
+    if not account_ids:
+        return jsonify({'error': 'account_ids required'}), 400
+    with get_db_context() as db:
+        if not db.get(StoryPool, pool_id):
+            return jsonify({'error': 'Pool not found'}), 404
+        added = 0
+        for aid in account_ids:
+            existing = db.query(StoryPoolMember).filter(
+                StoryPoolMember.pool_id == pool_id,
+                StoryPoolMember.account_id == aid,
+            ).first()
+            if not existing:
+                db.add(StoryPoolMember(pool_id=pool_id, account_id=aid))
+                added += 1
+        db.commit()
+        return jsonify({'success': True, 'added': added})
+
+
+@api.route('/stories/pools/<int:pool_id>/members/<int:account_id>', methods=['DELETE'])
+def remove_pool_member(pool_id, account_id):
+    """Remove an account from a pool."""
+    from src.core.models import StoryPoolMember
+    with get_db_context() as db:
+        m = db.query(StoryPoolMember).filter(
+            StoryPoolMember.pool_id == pool_id,
+            StoryPoolMember.account_id == account_id,
+        ).first()
+        if not m:
+            return jsonify({'error': 'Member not found'}), 404
+        db.delete(m)
+        db.commit()
+        return jsonify({'success': True})
+
+
+# ============================================
+# Story Runs API
+# ============================================
+
+@api.route('/stories/runs', methods=['GET'])
+def list_story_runs():
+    """List story runs (batch history)."""
+    from src.core.models import StoryRun, StoryPool
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    with get_db_context() as db:
+        q = db.query(StoryRun).order_by(StoryRun.created_at.desc())
+        total = q.count()
+        runs = q.offset((page - 1) * per_page).limit(per_page).all()
+        pool_ids = {r.pool_id for r in runs if r.pool_id}
+        pool_names = {}
+        if pool_ids:
+            for p in db.query(StoryPool).filter(StoryPool.id.in_(pool_ids)).all():
+                pool_names[p.id] = p.name
+        return jsonify({
+            'total': total,
+            'page': page,
+            'runs': [
+                {
+                    'id': r.id,
+                    'pool_id': r.pool_id,
+                    'pool_name': pool_names.get(r.pool_id, '—'),
+                    'mode': r.mode,
+                    'interval_minutes': r.interval_minutes,
+                    'caption': (r.caption or '')[:60] or None,
+                    'media_path': r.media_path,
+                    'mentions_per_story': r.mentions_per_story,
+                    'mention_source_chat_id': getattr(r, 'mention_source_chat_id', None),
+                    'status': r.status,
+                    'stories_ok': r.stories_ok,
+                    'stories_failed': r.stories_failed,
+                    'started_at': r.started_at.isoformat() if r.started_at else None,
+                    'last_tick_at': r.last_tick_at.isoformat() if r.last_tick_at else None,
+                    'next_tick_at': r.next_tick_at.isoformat() if r.next_tick_at else None,
+                    'created_at': r.created_at.isoformat(),
+                }
+                for r in runs
+            ],
+        })
+
+
+@api.route('/stories/runs', methods=['POST'])
+def create_story_run():
+    """Create and queue a new story run (picked up by worker)."""
+    from src.core.models import StoryRun
+    data = request.get_json() or {}
+    media_path = (data.get('media_path') or '').strip()
+    if not media_path:
+        return jsonify({'error': 'media_path required'}), 400
+    mode = data.get('mode', 'once')
+    if mode not in ('once', 'continuous'):
+        return jsonify({'error': "mode must be 'once' or 'continuous'"}), 400
+    interval = data.get('interval_minutes')
+    if mode == 'continuous' and not interval:
+        return jsonify({'error': 'interval_minutes required for continuous mode'}), 400
+    raw_msc = data.get('mention_source_chat_id')
+    mention_source_chat_id = None
+    if raw_msc not in (None, '', 'null'):
+        try:
+            mention_source_chat_id = int(raw_msc)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'mention_source_chat_id must be an integer or null'}), 400
+    with get_db_context() as db:
+        run = StoryRun(
+            pool_id=data.get('pool_id') or None,
+            mode=mode,
+            interval_minutes=int(interval) if interval else None,
+            caption=data.get('caption'),
+            media_path=media_path,
+            mentions_per_story=int(data.get('mentions_per_story', 5)),
+            max_stories=int(data.get('max_stories')) if data.get('max_stories') else None,
+            mention_source_chat_id=mention_source_chat_id,
+            status='pending',
+        )
+        db.add(run)
+        db.commit()
+        return jsonify({'success': True, 'run_id': run.id, 'status': 'pending'})
+
+
+@api.route('/stories/runs/<int:run_id>', methods=['GET'])
+def get_story_run(run_id):
+    """Get detail + recent steps for a run."""
+    from src.core.models import StoryRun, StoryRunStep
+    with get_db_context() as db:
+        run = db.get(StoryRun, run_id)
+        if not run:
+            return jsonify({'error': 'Not found'}), 404
+        steps = db.query(StoryRunStep).filter(
+            StoryRunStep.run_id == run_id
+        ).order_by(StoryRunStep.executed_at.desc()).limit(20).all()
+        return jsonify({
+            'run': {
+                'id': run.id, 'mode': run.mode, 'status': run.status,
+                'pool_id': run.pool_id,
+                'mention_source_chat_id': getattr(run, 'mention_source_chat_id', None),
+                'interval_minutes': run.interval_minutes,
+                'stories_ok': run.stories_ok, 'stories_failed': run.stories_failed,
+                'started_at': run.started_at.isoformat() if run.started_at else None,
+                'last_tick_at': run.last_tick_at.isoformat() if run.last_tick_at else None,
+                'next_tick_at': run.next_tick_at.isoformat() if run.next_tick_at else None,
+            },
+            'steps': [
+                {
+                    'id': s.id, 'account_id': s.account_id,
+                    'status': s.status, 'error': s.error,
+                    'executed_at': s.executed_at.isoformat(),
+                }
+                for s in steps
+            ],
+        })
+
+
+@api.route('/stories/runs/<int:run_id>/cancel', methods=['POST'])
+def cancel_story_run(run_id):
+    """Cancel a pending or running story run."""
+    from src.core.models import StoryRun
+    with get_db_context() as db:
+        run = db.get(StoryRun, run_id)
+        if not run:
+            return jsonify({'error': 'Not found'}), 404
+        if run.status in ('completed', 'failed', 'cancelled'):
+            return jsonify({'error': f'Run is already {run.status}'}), 409
+        run.status = 'cancelled'
+        run.completed_at = datetime.utcnow()
+        db.commit()
+        return jsonify({'success': True})
+
+
+# ============================================
+# Story Blacklist API
+# ============================================
+
+@api.route('/stories/blacklist', methods=['GET'])
+def list_blacklist():
+    """List blacklisted discovered users."""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    with get_db_context() as db:
+        q = db.query(DiscoveredUser).filter(DiscoveredUser.is_blocked == True)
+        total = q.count()
+        users = q.order_by(DiscoveredUser.discovered_at.desc()).offset(
+            (page - 1) * per_page).limit(per_page).all()
+        return jsonify({
+            'total': total,
+            'entries': [
+                {
+                    'id': u.id,
+                    'user_id': u.user_id,
+                    'username': u.username,
+                    'first_name': u.first_name,
+                    'source': u.source_chat_title,
+                    'discovered_at': u.discovered_at.isoformat(),
+                }
+                for u in users
+            ],
+        })
+
+
+@api.route('/stories/blacklist', methods=['POST'])
+def add_to_blacklist():
+    """Blacklist a discovered user by user_id or username."""
+    data = request.get_json() or {}
+    user_id = data.get('user_id')
+    username = (data.get('username') or '').lstrip('@').strip() or None
+    if not user_id and not username:
+        return jsonify({'error': 'user_id or username required'}), 400
+    with get_db_context() as db:
+        if user_id:
+            user = db.query(DiscoveredUser).filter(
+                DiscoveredUser.user_id == int(user_id)).first()
+        else:
+            user = db.query(DiscoveredUser).filter(
+                DiscoveredUser.username == username).first()
+        if not user:
+            return jsonify({'error': 'User not found in discovered users'}), 404
+        user.is_blocked = True
+        db.commit()
+        return jsonify({'success': True, 'user_id': user.user_id, 'username': user.username})
+
+
+@api.route('/stories/blacklist/<int:discovered_id>', methods=['DELETE'])
+def remove_from_blacklist(discovered_id):
+    """Unblock a discovered user."""
+    with get_db_context() as db:
+        user = db.query(DiscoveredUser).filter(
+            DiscoveredUser.id == discovered_id).first()
+        if not user:
+            return jsonify({'error': 'Not found'}), 404
+        user.is_blocked = False
+        db.commit()
+        return jsonify({'success': True})
+
+
+# ============================================
+# Story Account Stats API
+# ============================================
+
+@api.route('/stories/account-stats', methods=['GET'])
+def story_account_stats():
+    """
+    Per-account story counters for fleet status table.
+    Returns accounts with story-ready status and their posting history.
+    """
+    from src.stories.rotation import ACCOUNT_STORY_COOLDOWN_SEC
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    with get_db_context() as db:
+        accounts = db.query(Account).filter(
+            Account.status == AccountStatus.ACTIVE,
+        ).order_by(Account.last_active.desc().nullslast()).all()
+
+        rows = []
+        for acc in accounts:
+            total = db.query(Story).filter(Story.account_id == acc.id).count()
+            today = db.query(Story).filter(
+                Story.account_id == acc.id,
+                Story.published_at >= today_start,
+            ).count()
+            last_s = db.query(Story).filter(
+                Story.account_id == acc.id
+            ).order_by(Story.published_at.desc()).first()
+            last_at = last_s.published_at.isoformat() if last_s else None
+
+            next_allowed = None
+            if acc.last_active:
+                nxt = acc.last_active + timedelta(seconds=ACCOUNT_STORY_COOLDOWN_SEC)
+                if nxt > datetime.utcnow():
+                    next_allowed = nxt.isoformat()
+
+            rows.append({
+                'account_id': acc.id,
+                'phone': acc.phone_number,
+                'username': acc.username,
+                'status': acc.status.value if hasattr(acc.status, 'value') else acc.status,
+                'health': acc.health_status,
+                'story_precheck': acc.story_precheck_status,
+                'total_stories': total,
+                'today_stories': today,
+                'last_story_at': last_at,
+                'next_allowed_at': next_allowed,
+            })
+        return jsonify({'accounts': rows})
 
 
 # ============================================
@@ -3442,48 +1733,49 @@ async def _run_batch_with_config(data: dict):
 # ============================================
 @api.route('/discovery/sources', methods=['GET'])
 def list_discovery_sources():
-    """List distinct source groups (by username) with user counts for filtering."""
+    """Return distinct source chats with counts of available mention targets."""
+    from sqlalchemy import text
+
+    sql = text("""
+        SELECT source_chat_id, source_chat_title,
+               COUNT(*) AS total,
+               SUM(CASE WHEN times_mentioned=0 AND is_blocked=0 AND username IS NOT NULL THEN 1 ELSE 0 END) AS available,
+               SUM(CASE WHEN times_mentioned > 0 THEN 1 ELSE 0 END) AS mentioned
+        FROM discovered_users
+        WHERE source_chat_id IS NOT NULL
+        GROUP BY source_chat_id, source_chat_title
+        ORDER BY available DESC
+    """)
     with get_db_context() as db:
-        from sqlalchemy import func
-        rows = db.query(
-            DiscoveredUser.source_chat_username,
-            DiscoveredUser.source_chat_title,
-            func.count(DiscoveredUser.id).label("count"),
-        ).filter(
-            DiscoveredUser.source_chat_username.isnot(None)
-        ).group_by(
-            DiscoveredUser.source_chat_username,
-            DiscoveredUser.source_chat_title,
-        ).order_by(
-            func.count(DiscoveredUser.id).desc()
-        ).all()
-        return jsonify([
-            {"username": r[0], "title": r[1] or r[0], "count": r[2]}
-            for r in rows
-        ])
+        rows = db.execute(sql).fetchall()
+    sources = []
+    for row in rows:
+        chat_id, title, total, available, mentioned = row[0], row[1], row[2], row[3], row[4]
+        sources.append({
+            'chat_id': chat_id,
+            'title': title or f'Chat {chat_id}',
+            'total': int(total or 0),
+            'available': int(available or 0),
+            'mentioned': int(mentioned or 0),
+        })
+    return jsonify({'sources': sources})
 
 
 @api.route('/discovery/users', methods=['GET'])
 def list_discovered_users():
-    """List discovered users. Optional: mentioned, source_username (filter by group @username)."""
+    """List discovered users"""
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 50, type=int)
     mentioned = request.args.get('mentioned', None)
-    source_username = request.args.get('source_username', "").strip().lstrip("@") or None
-    search = request.args.get('search', "").strip() or None
+    source_chat_id = request.args.get('source_chat_id', type=int)
     with get_db_context() as db:
         query = db.query(DiscoveredUser)
+        if source_chat_id is not None:
+            query = query.filter(DiscoveredUser.source_chat_id == source_chat_id)
         if mentioned == 'true':
             query = query.filter(DiscoveredUser.times_mentioned > 0)
         elif mentioned == 'false':
             query = query.filter(DiscoveredUser.times_mentioned == 0)
-        if source_username:
-            query = query.filter(DiscoveredUser.source_chat_username == source_username)
-        if search:
-            like = f"%{search}%"
-            query = query.filter(
-                (DiscoveredUser.username.ilike(like)) | (DiscoveredUser.first_name.ilike(like))
-            )
         total = query.count()
         users = query.order_by(DiscoveredUser.discovered_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
         return jsonify({
@@ -3497,7 +1789,7 @@ def list_discovered_users():
                     "username": u.username,
                     "first_name": u.first_name,
                     "source": u.source_chat_title,
-                    "source_username": u.source_chat_username,
+                    "source_chat_id": u.source_chat_id,
                     "times_mentioned": u.times_mentioned,
                     "discovered_at": u.discovered_at.isoformat(),
                 }
@@ -3508,31 +1800,17 @@ def list_discovered_users():
 
 @api.route('/discovery/scan', methods=['POST'])
 def scan_channel():
-    """Scan channel(s) for users (group/channel usernames or links, one per line)."""
+    """Scan a channel for users"""
     from src.discovery.scanner import user_discovery
-    data = request.get_json() or {}
-    channels_raw = data.get('channels', [])
-    if isinstance(channels_raw, str):
-        channels_raw = [s.strip() for s in channels_raw.splitlines() if s.strip()]
-    channels = [c.strip() for c in channels_raw if c.strip()]
+    data = request.get_json()
+    channels = data.get('channels', [])
     if not channels:
-        return jsonify({"success": False, "error": "channels list required (e.g. @p2pgroup or one per line)"}), 400
-    try:
-        result = run_async(user_discovery.discover_from_groups(
-            group_usernames=channels,
-            days_back=365,
-        ))
-        if not result.get("success") and result.get("group_results"):
-            errors = []
-            for gr in result["group_results"]:
-                if gr.get("errors"):
-                    errors.extend(gr["errors"])
-            if errors:
-                return jsonify({**result, "error": "; ".join(str(e) for e in errors[:5])})
-        return jsonify(result)
-    except Exception as e:
-        logger.exception("discovery/scan failed")
-        return jsonify({"success": False, "error": str(e)})
+        return jsonify({"error": "channels list required"}), 400
+    result = run_async(user_discovery.discover_from_channels(
+        channel_usernames=channels,
+        limit_per_channel=data.get('limit', 500)
+    ))
+    return jsonify(result)
 
 
 @api.route('/discovery/stats', methods=['GET'])
@@ -3650,43 +1928,49 @@ def favicon():
     return send_from_directory(_dir, 'favicon.svg', mimetype='image/svg+xml')
 
 
+@web.route('/logout')
+def logout():
+    """Log out the current user and redirect to home."""
+    try:
+        from flask_login import logout_user
+        logout_user()
+    except Exception:
+        pass
+    from flask import redirect
+    return redirect('/')
+
+
 @web.route('/')
-@login_required
 def index():
     """Dashboard home page"""
     return render_template('index.html')
 
 
 @web.route('/accounts')
-@login_required
 def accounts_page():
     """Accounts management page"""
     return render_template('accounts.html')
 
 
 @web.route('/stories')
-@login_required
 def stories_page():
     """Stories page"""
     return render_template('stories.html')
 
 
 @web.route('/discovery')
-@login_required
 def discovery_page():
     """User discovery page"""
     return render_template('discovery.html')
 
 
 @web.route('/campaigns')
-@login_required
 def campaigns_page():
     """Campaigns page"""
     return render_template('campaigns.html')
 
 
 @web.route('/scheduler')
-@login_required
 def scheduler_page():
     """Scheduler configuration page"""
     return render_template('scheduler.html')

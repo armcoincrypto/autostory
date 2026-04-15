@@ -111,7 +111,20 @@
                 <input type="number" class="form-control form-control-sm" id="sched-interval"
                        value="60" min="5" max="1440" placeholder="60">
             </div>
-
+        </div>
+        <div class="row g-3">
+            <!-- Mention source (discovered users) -->
+            <div class="col-md-4">
+                <label class="form-label fw-semibold mb-1">
+                    Mention source <span class="text-muted fw-normal small">(optional)</span>
+                </label>
+                <select class="form-select form-select-sm" id="sched-mention-source">
+                    <option value="">— All groups —</option>
+                </select>
+                <div class="text-muted small mt-1" id="sched-mention-source-count"></div>
+            </div>
+        </div>
+        <div class="row g-3">
             <!-- Media picker -->
             <div class="col-12">
                 <label class="form-label fw-semibold mb-1">Media</label>
@@ -851,8 +864,19 @@ async function scheduleRun() {
     const mode = document.getElementById('sched-mode').value;
     const interval = parseInt(document.getElementById('sched-interval').value) || 60;
     if (mode === 'continuous' && interval < 5) { alert('Interval must be at least 5 minutes.'); return; }
+    // Parse pool selector: values like "purpose:autostory" are purpose filters, not pool IDs
+    const poolVal = document.getElementById('sched-pool').value || '';
+    let poolId = null, purposeFilter = null;
+    if (poolVal.startsWith('purpose:')) {
+        purposeFilter = poolVal.replace('purpose:', '');
+    } else if (poolVal) {
+        poolId = poolVal;
+    }
+    const mscSel = document.getElementById('sched-mention-source');
+    const mscVal = mscSel && mscSel.value ? parseInt(mscSel.value, 10) : null;
     const body = {
-        pool_id:           document.getElementById('sched-pool').value || null,
+        pool_id:           poolId,
+        purpose_filter:    purposeFilter,
         mode,
         interval_minutes:  mode === 'continuous' ? interval : null,
         media_path:        mediaPath,
@@ -860,6 +884,7 @@ async function scheduleRun() {
         mentions_per_story: parseInt(document.getElementById('sched-mentions').value) || 5,
         max_stories:       document.getElementById('sched-max-stories').value
                                ? parseInt(document.getElementById('sched-max-stories').value) : null,
+        mention_source_chat_id: Number.isFinite(mscVal) ? mscVal : null,
     };
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting…';
@@ -1011,6 +1036,39 @@ async function removeBlacklist(id) {
 let _openPoolId   = null;
 let _allAccounts  = [];   // populated by loadFleetStatus
 
+function _bindMentionSourceCountHint() {
+    const sel = document.getElementById('sched-mention-source');
+    const countEl = document.getElementById('sched-mention-source-count');
+    if (!sel || !countEl || sel.dataset._boundCount === '1') return;
+    sel.dataset._boundCount = '1';
+    sel.addEventListener('change', () => {
+        const opt = sel.selectedOptions[0];
+        const av = opt && opt.dataset.available ? parseInt(opt.dataset.available, 10) : NaN;
+        countEl.textContent = (sel.value && Number.isFinite(av)) ? `${av} users available` : '';
+    });
+}
+
+async function loadMentionSources() {
+    _bindMentionSourceCountHint();
+    const sel = document.getElementById('sched-mention-source');
+    if (!sel) return;
+    try {
+        const r = await fetch('/api/discovery/sources');
+        if (!r.ok) return;
+        const data = await r.json();
+        const items = data.sources || [];
+        sel.innerHTML = '<option value="">— All groups —</option>';
+        for (const s of items) {
+            const o = document.createElement('option');
+            o.value = String(s.chat_id);
+            o.dataset.available = String(s.available);
+            o.textContent = `${s.title} (${s.available} available)`;
+            sel.appendChild(o);
+        }
+        sel.dispatchEvent(new Event('change'));
+    } catch (e) {}
+}
+
 async function loadPoolsUI() {
     try {
         const r    = await fetch('/api/stories/pools');
@@ -1025,10 +1083,20 @@ async function loadPoolsUI() {
         // also refresh the hero form dropdown (reuse loadPools logic)
         const sel = document.getElementById('sched-pool');
         if (sel) {
-            const opts = pools.map(p =>
+            const poolOpts = pools.map(p =>
                 `<option value="${p.id}">${p.name} (${p.enabled_count} accounts)</option>`
             ).join('');
-            sel.innerHTML = '<option value="">— All ready accounts —</option>' + opts;
+            const poolGroup = pools.length
+                ? `<optgroup label="Named Pools">${poolOpts}</optgroup>`
+                : '';
+            sel.innerHTML = `
+                <option value="">— All ready accounts (stories + both) —</option>
+                <optgroup label="By Purpose">
+                    <option value="purpose:autostory">Stories-only accounts</option>
+                    <option value="purpose:both">Both (stories + messaging) accounts</option>
+                </optgroup>
+                ${poolGroup}
+            `;
         }
 
         const tbody = document.getElementById('pool-list-table');
@@ -1213,6 +1281,7 @@ function closePoolDetail() {
 document.addEventListener('DOMContentLoaded', () => {
     loadFleetStatus();
     loadPoolsUI();
+    loadMentionSources();
     loadMediaBrowser();   // pre-fetch file count for badge
     loadStories();
     loadBatchHistory();

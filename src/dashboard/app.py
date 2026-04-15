@@ -18,7 +18,6 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from config.settings import settings
-from src.core.database import init_db
 
 logger = structlog.get_logger(__name__)
 
@@ -28,8 +27,6 @@ csrf = CSRFProtect()
 
 def create_app() -> Flask:
     """Create and configure Flask application"""
-    # Gunicorn uses this factory directly (not main.py), so ensure DB schema matches models.
-    init_db()
     app = Flask(
         __name__,
         template_folder='templates',
@@ -46,8 +43,9 @@ def create_app() -> Flask:
     login_manager.login_view = 'auth.login'
     csrf.init_app(app)
 
-    from .auth_routes import auth
-    app.register_blueprint(auth)
+    # Ensure all DB tables exist (additive — never drops columns)
+    from src.core.database import init_db
+    init_db()
 
     # Register blueprints
     from .routes import register_routes, api
@@ -56,6 +54,11 @@ def create_app() -> Flask:
     app.register_blueprint(scheduler_api)
     csrf.exempt(api)
     csrf.exempt(scheduler_api)
+
+    # Inject admin token into every template context so JS can send it
+    @app.context_processor
+    def inject_admin_token():
+        return {'admin_token': os.environ.get('DASHBOARD_ADMIN_TOKEN', '')}
 
     # Error handlers
     @app.errorhandler(404)
