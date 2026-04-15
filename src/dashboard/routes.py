@@ -1802,15 +1802,20 @@ def list_discovered_users():
 def scan_channel():
     """Scan a channel for users"""
     from src.discovery.scanner import user_discovery
-    data = request.get_json()
+    data = request.get_json() or {}
     channels = data.get('channels', [])
     if not channels:
         return jsonify({"error": "channels list required"}), 400
-    result = run_async(user_discovery.discover_from_channels(
-        channel_usernames=channels,
-        limit_per_channel=data.get('limit', 500)
-    ))
-    return jsonify(result)
+    limit = int(data.get('limit') or 500)
+    try:
+        result = run_async(user_discovery.discover_from_channels(
+            channel_usernames=channels,
+            limit_per_channel=limit,
+        ))
+        return jsonify(result)
+    except Exception as exc:
+        logger.error("Discovery scan failed", error=str(exc), exc_info=True)
+        return jsonify({"success": False, "errors": [str(exc)]}), 500
 
 
 @api.route('/discovery/stats', methods=['GET'])

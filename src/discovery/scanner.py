@@ -28,8 +28,12 @@ from telethon.errors import (
 )
 import structlog
 
+import os
 import sys
-sys.path.insert(0, '/home/user/autostory')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, '..', '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 from config.settings import settings
 from src.core.models import DiscoveredUser, Account, AccountStatus
 from src.core.database import get_db_context
@@ -98,6 +102,7 @@ class GroupMessageScanner:
         self,
         group_username: str,
         days_back: int = 365,
+        limit: int = 500,
         progress_callback=None,
     ) -> Dict[str, Any]:
         """
@@ -162,9 +167,10 @@ class GroupMessageScanner:
             message_count = 0
             last_progress = 0
 
-            # Iterate through messages
+            # Iterate through messages (capped by limit to avoid Gunicorn timeout)
             async for message in client.iter_messages(
                 group,
+                limit=limit,
                 offset_date=datetime.utcnow(),
                 reverse=False,  # Newest first
             ):
@@ -330,11 +336,13 @@ class GroupMessageScanner:
         self,
         group_usernames: List[str],
         days_back: int = 365,
+        limit_per_channel: int = 500,
         progress_callback=None,
     ) -> Dict[str, Any]:
         """Scan multiple groups sequentially"""
         total_results = {
             "success": False,
+            "channels_processed": 0,
             "groups_scanned": 0,
             "total_messages": 0,
             "total_new_users": 0,
@@ -351,11 +359,13 @@ class GroupMessageScanner:
             result = await self.scan_group_messages(
                 group,
                 days_back=days_back,
+                limit=limit_per_channel,
                 progress_callback=progress_callback,
             )
 
             total_results["group_results"].append(result)
             total_results["groups_scanned"] += 1
+            total_results["channels_processed"] += 1
             total_results["total_messages"] += result.get("messages_scanned", 0)
             total_results["total_new_users"] += result.get("new_users_saved", 0)
 
@@ -395,12 +405,14 @@ class UserDiscovery:
         self,
         group_usernames: List[str],
         days_back: int = 365,
+        limit_per_channel: int = 500,
         progress_callback=None,
     ) -> Dict[str, Any]:
         """Discover users from multiple groups"""
         return await self._scanner.scan_multiple_groups(
             group_usernames,
             days_back=days_back,
+            limit_per_channel=limit_per_channel,
             progress_callback=progress_callback,
         )
 
@@ -415,6 +427,7 @@ class UserDiscovery:
         return await self.discover_from_groups(
             group_usernames=channel_usernames,
             days_back=days_back,
+            limit_per_channel=limit_per_channel,
             progress_callback=progress_callback,
         )
 
