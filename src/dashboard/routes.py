@@ -5,6 +5,8 @@ import asyncio
 import json
 import os
 import sys
+import threading
+import uuid
 import urllib.error
 import urllib.request
 from functools import wraps
@@ -1798,24 +1800,64 @@ def list_discovered_users():
         })
 
 
+_scan_tasks: dict = {}  # task_id -> {status, progress, result}
+
+
+def _run_scan_background(task_id: str, channels: list, limit) -> None:
+    from src.discovery.scanner import user_discovery
+    _scan_tasks[task_id] = {'status': 'running', 'progress': [], 'result': None}
+
+    async def _progress(msg: str) -> None:
+        _scan_tasks[task_id]['progress'].append(msg)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = loop.run_until_complete(
+            user_discovery.discover_from_channels(
+                channel_usernames=channels,
+                limit_per_channel=limit,
+                progress_callback=_progress,
+            )
+        )
+        _scan_tasks[task_id]['result'] = result
+        _scan_tasks[task_id]['status'] = 'done'
+    except Exception as exc:
+        logger.error("Background scan failed", error=str(exc), exc_info=True)
+        _scan_tasks[task_id]['result'] = {'success': False, 'errors': [str(exc)]}
+        _scan_tasks[task_id]['status'] = 'error'
+    finally:
+        loop.close()
+
+
 @api.route('/discovery/scan', methods=['POST'])
 def scan_channel():
-    """Scan a channel for users"""
-    from src.discovery.scanner import user_discovery
+    """Start a background channel scan and return a task_id for polling"""
     data = request.get_json() or {}
     channels = data.get('channels', [])
     if not channels:
         return jsonify({"error": "channels list required"}), 400
-    limit = int(data.get('limit') or 500)
-    try:
-        result = run_async(user_discovery.discover_from_channels(
-            channel_usernames=channels,
-            limit_per_channel=limit,
-        ))
-        return jsonify(result)
-    except Exception as exc:
-        logger.error("Discovery scan failed", error=str(exc), exc_info=True)
-        return jsonify({"success": False, "errors": [str(exc)]}), 500
+    # limit=0 or omitted → None (unlimited); otherwise use provided value
+    raw_limit = data.get('limit')
+    limit = int(raw_limit) if raw_limit else None
+
+    task_id = uuid.uuid4().hex[:10]
+    t = threading.Thread(
+        target=_run_scan_background,
+        args=(task_id, channels, limit),
+        daemon=True,
+    )
+    t.start()
+    return jsonify({'task_id': task_id, 'status': 'running'})
+
+
+@api.route('/discovery/scan_status/<task_id>', methods=['GET'])
+def scan_status(task_id: str):
+    """Poll background scan progress"""
+    task = _scan_tasks.get(task_id)
+    if not task:
+        return jsonify({'error': 'task not found'}), 404
+    return jsonify(task)
 
 
 @api.route('/discovery/join', methods=['POST'])

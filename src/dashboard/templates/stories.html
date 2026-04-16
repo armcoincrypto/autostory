@@ -11,6 +11,9 @@
         <small class="text-muted">Continuous story publishing across your account fleet</small>
     </div>
     <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#storiesJoinModal">
+            <i class="bi bi-box-arrow-in-right"></i> Join Channel
+        </button>
         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#batchPublishModal">
             <i class="bi bi-layers"></i> Quick Batch
         </button>
@@ -512,6 +515,29 @@
                 <button class="btn btn-primary w-100" id="btn-batch-start" onclick="batchPublish()">
                     <i class="bi bi-layers"></i> Start Batch Now
                 </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Join Channel Modal -->
+<div class="modal fade" id="storiesJoinModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-box-arrow-in-right"></i> Join Telegram Channel</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Join a channel/group so your accounts can discover and mention users from it.</p>
+                <div class="mb-3">
+                    <label class="form-label">Channel</label>
+                    <input type="text" class="form-control" id="stories-join-channel" placeholder="@channelname or https://t.me/...">
+                </div>
+                <button class="btn btn-success w-100" onclick="storiesJoinChannel()">
+                    <i class="bi bi-box-arrow-in-right"></i> Join
+                </button>
+                <div id="stories-join-result" class="mt-3" style="display:none;"></div>
             </div>
         </div>
     </div>
@@ -1275,6 +1301,33 @@ async function removeMember(accountId) {
 function closePoolDetail() {
     _openPoolId = null;
     document.getElementById('pool-detail-panel').classList.add('d-none');
+}
+
+// ── Join Channel ───────────────────────────────────────────────────────────
+async function storiesJoinChannel() {
+    const channel = document.getElementById('stories-join-channel').value.trim();
+    const resultEl = document.getElementById('stories-join-result');
+    if (!channel) { alert('Please enter a channel username or invite link'); return; }
+
+    resultEl.style.display = 'block';
+    resultEl.innerHTML = '<div class="text-muted">Joining...</div>';
+
+    try {
+        const r = await fetch('/api/discovery/join', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ channel }),
+        });
+        const result = await r.json();
+        if (result.success) {
+            resultEl.innerHTML = `<div class="alert alert-success mb-0">Joined <strong>${result.title || channel}</strong>. You can now scan this channel from the Discovery page.</div>`;
+            document.getElementById('stories-join-channel').value = '';
+        } else {
+            resultEl.innerHTML = `<div class="alert alert-danger mb-0">Failed: ${result.error || 'Unknown error'}</div>`;
+        }
+    } catch (e) {
+        resultEl.innerHTML = `<div class="alert alert-danger mb-0">Error: ${e}</div>`;
+    }
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
