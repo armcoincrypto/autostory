@@ -451,6 +451,34 @@ class UserDiscovery:
             progress_callback=progress_callback,
         )
 
+    async def join_channel(self, channel: str) -> Dict[str, Any]:
+        """
+        Join a Telegram channel/group using the first available active account.
+        This is needed so that account sessions cache the access hash for
+        private/ID-based channel resolution (required for scanning).
+        """
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        client = await self._scanner.get_active_client()
+        if not client:
+            return {'success': False, 'error': 'No active Telegram account available'}
+
+        try:
+            # Handle invite links like t.me/joinchat/... or t.me/+...
+            if 'joinchat/' in channel or channel.startswith('https://t.me/+'):
+                hash_part = channel.split('/')[-1].lstrip('+')
+                await client(ImportChatInviteRequest(hash_part))
+                return {'success': True, 'title': channel}
+
+            entity = await client.get_entity(channel)
+            await client(JoinChannelRequest(entity))
+            return {'success': True, 'title': getattr(entity, 'title', channel)}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        finally:
+            await client.disconnect()
+
     async def get_discovery_stats(self) -> Dict[str, Any]:
         """Get discovery statistics"""
         with get_db_context() as db:

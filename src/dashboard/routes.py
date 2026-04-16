@@ -1818,6 +1818,22 @@ def scan_channel():
         return jsonify({"success": False, "errors": [str(exc)]}), 500
 
 
+@api.route('/discovery/join', methods=['POST'])
+def join_channel_route():
+    """Join a Telegram channel/group using an active account"""
+    from src.discovery.scanner import user_discovery
+    data = request.get_json() or {}
+    channel = (data.get('channel') or '').strip()
+    if not channel:
+        return jsonify({'error': 'channel required'}), 400
+    try:
+        result = run_async(user_discovery.join_channel(channel))
+        return jsonify(result)
+    except Exception as exc:
+        logger.error("Join channel failed", error=str(exc), exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
 @api.route('/discovery/stats', methods=['GET'])
 def discovery_stats():
     """Get discovery statistics"""
