@@ -3,7 +3,7 @@ Scheduler API routes - Targets, Templates, Bindings, Schedule, Logs
 """
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, date
 
 from flask import Blueprint, jsonify, request
 
@@ -20,7 +20,35 @@ from src.scheduler.executor import execute_job
 scheduler_api = Blueprint('scheduler_api', __name__, url_prefix='/api/v1')
 
 
-# ============ Targets ============
+# ============ Stats ============
+@scheduler_api.route('/stats', methods=['GET'])
+def scheduler_stats():
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    with get_db_context() as db:
+        sent_today = db.query(MessageDelivery).filter(
+            MessageDelivery.status == 'SENT',
+            MessageDelivery.created_at >= today_start,
+        ).count()
+        failed_today = db.query(MessageDelivery).filter(
+            MessageDelivery.status == 'FAILED',
+            MessageDelivery.created_at >= today_start,
+        ).count()
+        active_accounts = db.query(ScheduleProfile).filter(
+            ScheduleProfile.is_enabled == True
+        ).count()
+        target_groups = db.query(ChatTarget).count()
+        pending_jobs = db.query(ScheduledJob).filter(
+            ScheduledJob.status == JobStatus.PENDING
+        ).count()
+    return jsonify({
+        'sent_today': sent_today,
+        'failed_today': failed_today,
+        'active_accounts': active_accounts,
+        'target_groups': target_groups,
+        'pending_jobs': pending_jobs,
+    })
+
+
 @scheduler_api.route('/targets', methods=['GET'])
 def list_targets():
     with get_db_context() as db:
@@ -227,6 +255,21 @@ def preview_template():
 
 
 # ============ Schedule Profile ============
+@scheduler_api.route('/schedule/profiles', methods=['GET'])
+def list_schedule_profiles():
+    with get_db_context() as db:
+        profiles = db.query(ScheduleProfile).all()
+        return jsonify([{
+            "id": p.id,
+            "account_id": p.account_id,
+            "is_enabled": p.is_enabled,
+            "timezone": p.timezone,
+            "min_interval_sec": p.min_interval_sec,
+            "daily_cap_total": p.daily_cap_total,
+            "jitter_sec": p.jitter_sec,
+        } for p in profiles])
+
+
 @scheduler_api.route('/schedule/profile/<int:account_id>', methods=['GET'])
 def get_schedule_profile(account_id):
     with get_db_context() as db:
@@ -264,6 +307,20 @@ def update_schedule_profile(account_id):
 
 
 # ============ Schedule Rules ============
+@scheduler_api.route('/schedule/rules', methods=['GET'])
+def list_all_schedule_rules():
+    with get_db_context() as db:
+        rules = db.query(ScheduleRule).all()
+        return jsonify([{
+            "id": r.id,
+            "account_id": r.account_id,
+            "type": r.type,
+            "times_json": r.times_json,
+            "target_mode": r.target_mode,
+            "is_enabled": r.is_enabled,
+        } for r in rules])
+
+
 @scheduler_api.route('/schedule/rules/<int:account_id>', methods=['GET'])
 def list_schedule_rules(account_id):
     with get_db_context() as db:
