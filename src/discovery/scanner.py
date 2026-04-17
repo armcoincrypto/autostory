@@ -28,8 +28,12 @@ from telethon.errors import (
 )
 import structlog
 
+import os
 import sys
-sys.path.insert(0, '/home/user/autostory')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, '..', '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 from config.settings import settings
 from src.core.models import DiscoveredUser, Account, AccountStatus
 from src.core.database import get_db_context
@@ -65,39 +69,60 @@ class GroupMessageScanner:
             logger.error("Failed to load existing users", error=str(e))
             self._seen_users = set()
 
-    async def get_active_client(self) -> Optional[TelegramClient]:
-        """Get an active Telegram client from database"""
-        from telethon.sessions import StringSession
+    async def get_active_client(self, entity_hint=None) -> Optional[TelegramClient]:
+        """
+        Get an active Telegram client from database, trying accounts until one works.
+        If entity_hint is provided (username or ID), verify the account can resolve it.
+        """
+        from telethon.sessions import StringSession, SQLiteSession
 
         with get_db_context() as db:
-            account = db.query(Account).filter(
+            accounts = db.query(Account).filter(
                 Account.status == AccountStatus.ACTIVE,
-                Account.session_string.isnot(None)
-            ).first()
+                Account.session_string.isnot(None),
+            ).all()
+            session_pairs = [(a.id, a.session_string) for a in accounts]
 
-            if not account:
-                return None
+        for account_id, session_string in session_pairs:
+            try:
+                # session_string stores a file path (e.g. /opt/.../account_13.session)
+                # SQLiteSession expects path without the .session extension
+                if session_string.startswith('/') or session_string.endswith('.session'):
+                    sess_path = session_string.removesuffix('.session')
+                    session = SQLiteSession(sess_path)
+                else:
+                    session = StringSession(session_string)
 
-            session_string = account.session_string
+                client = TelegramClient(
+                    session,
+                    settings.telegram.api_id,
+                    settings.telegram.api_hash,
+                )
+                await client.connect()
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    continue
 
-        # Create client from session
-        client = TelegramClient(
-            StringSession(session_string),
-            settings.telegram.api_id,
-            settings.telegram.api_hash
-        )
+                if entity_hint is not None:
+                    try:
+                        await client.get_entity(entity_hint)
+                    except Exception:
+                        await client.disconnect()
+                        continue  # this account can't see the entity, try next
 
-        await client.connect()
+                return client
+            except Exception as e:
+                logger.warning("Skipping account with unusable session",
+                               account_id=account_id, error=str(e))
+                continue
 
-        if not await client.is_user_authorized():
-            return None
-
-        return client
+        return None
 
     async def scan_group_messages(
         self,
         group_username: str,
         days_back: int = 365,
+        limit: int = 500,
         progress_callback=None,
     ) -> Dict[str, Any]:
         """
@@ -127,14 +152,14 @@ class GroupMessageScanner:
 
         start_time = datetime.utcnow()
 
-        # Get client
-        client = await self.get_active_client()
+        # Get client — pass group_username so we skip accounts that can't see this entity
+        client = await self.get_active_client(entity_hint=group_username)
         if not client:
-            results["errors"].append("No active Telegram account. Use /login first.")
+            results["errors"].append("No active Telegram account with access to this group.")
             return results
 
         try:
-            # Get group entity
+            # Get group entity (already verified in get_active_client)
             try:
                 group = await client.get_entity(group_username)
             except Exception as e:
@@ -162,9 +187,10 @@ class GroupMessageScanner:
             message_count = 0
             last_progress = 0
 
-            # Iterate through messages
+            # Iterate through messages (capped by limit to avoid Gunicorn timeout)
             async for message in client.iter_messages(
                 group,
+                limit=limit,
                 offset_date=datetime.utcnow(),
                 reverse=False,  # Newest first
             ):
@@ -330,11 +356,13 @@ class GroupMessageScanner:
         self,
         group_usernames: List[str],
         days_back: int = 365,
+        limit_per_channel: int = 500,
         progress_callback=None,
     ) -> Dict[str, Any]:
         """Scan multiple groups sequentially"""
         total_results = {
             "success": False,
+            "channels_processed": 0,
             "groups_scanned": 0,
             "total_messages": 0,
             "total_new_users": 0,
@@ -351,11 +379,13 @@ class GroupMessageScanner:
             result = await self.scan_group_messages(
                 group,
                 days_back=days_back,
+                limit=limit_per_channel,
                 progress_callback=progress_callback,
             )
 
             total_results["group_results"].append(result)
             total_results["groups_scanned"] += 1
+            total_results["channels_processed"] += 1
             total_results["total_messages"] += result.get("messages_scanned", 0)
             total_results["total_new_users"] += result.get("new_users_saved", 0)
 
@@ -395,14 +425,59 @@ class UserDiscovery:
         self,
         group_usernames: List[str],
         days_back: int = 365,
+        limit_per_channel: int = 500,
         progress_callback=None,
     ) -> Dict[str, Any]:
         """Discover users from multiple groups"""
         return await self._scanner.scan_multiple_groups(
             group_usernames,
             days_back=days_back,
+            limit_per_channel=limit_per_channel,
             progress_callback=progress_callback,
         )
+
+    async def discover_from_channels(
+        self,
+        channel_usernames: List[str],
+        limit_per_channel: int = 500,
+        days_back: int = 365,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        """Alias for discover_from_groups — supports channel and group usernames."""
+        return await self.discover_from_groups(
+            group_usernames=channel_usernames,
+            days_back=days_back,
+            limit_per_channel=limit_per_channel,
+            progress_callback=progress_callback,
+        )
+
+    async def join_channel(self, channel: str) -> Dict[str, Any]:
+        """
+        Join a Telegram channel/group using the first available active account.
+        This is needed so that account sessions cache the access hash for
+        private/ID-based channel resolution (required for scanning).
+        """
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        client = await self._scanner.get_active_client()
+        if not client:
+            return {'success': False, 'error': 'No active Telegram account available'}
+
+        try:
+            # Handle invite links like t.me/joinchat/... or t.me/+...
+            if 'joinchat/' in channel or channel.startswith('https://t.me/+'):
+                hash_part = channel.split('/')[-1].lstrip('+')
+                await client(ImportChatInviteRequest(hash_part))
+                return {'success': True, 'title': channel}
+
+            entity = await client.get_entity(channel)
+            await client(JoinChannelRequest(entity))
+            return {'success': True, 'title': getattr(entity, 'title', channel)}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        finally:
+            await client.disconnect()
 
     async def get_discovery_stats(self) -> Dict[str, Any]:
         """Get discovery statistics"""

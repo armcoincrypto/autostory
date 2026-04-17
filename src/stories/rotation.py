@@ -12,13 +12,18 @@ Key design decisions:
 - All DB mutations happen inside get_db_context so they're atomic.
 """
 import asyncio
+import os
 import sys
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 import structlog
 
-sys.path.insert(0, '/home/user/autostory')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, '..', '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from src.core.models import (
     Account, AccountStatus, DiscoveredUser,
     StoryPool, StoryPoolMember, StoryRun, StoryRunStep,
