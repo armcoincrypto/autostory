@@ -371,6 +371,115 @@ def delete_schedule_rule(account_id, rule_id):
         return jsonify({"success": True})
 
 
+# ============ Bulk Apply ============
+@scheduler_api.route('/schedule/bulk-apply', methods=['POST'])
+def bulk_apply_schedule():
+    """Copy profile + rules + template (+ bindings) from one account to many."""
+    data = request.get_json() or {}
+    source_id = data.get('source_account_id')
+    target_ids = data.get('target_account_ids', [])
+    copy_profile = data.get('copy_profile', True)
+    copy_rules = data.get('copy_rules', True)
+    copy_template = data.get('copy_template', True)
+    copy_bindings = data.get('copy_bindings', True)
+
+    if not source_id:
+        return jsonify({'error': 'source_account_id required'}), 400
+    if not target_ids or not isinstance(target_ids, list):
+        return jsonify({'error': 'target_account_ids must be a non-empty list'}), 400
+    if len(target_ids) > 50:
+        return jsonify({'error': 'Maximum 50 target accounts per request'}), 400
+    target_ids = [tid for tid in target_ids if tid != source_id]
+
+    # Load source data into plain dicts (session-independent)
+    profile_data = rules_data = templates_data = bindings_data = None
+    with get_db_context() as db:
+        if copy_profile:
+            src = db.query(ScheduleProfile).filter(ScheduleProfile.account_id == source_id).first()
+            if not src:
+                return jsonify({'error': 'Source account has no schedule profile. Save settings first.'}), 400
+            profile_data = {
+                'is_enabled': src.is_enabled, 'timezone': src.timezone,
+                'min_interval_sec': src.min_interval_sec, 'daily_cap_total': src.daily_cap_total,
+                'daily_cap_promo': src.daily_cap_promo, 'daily_cap_info': src.daily_cap_info,
+                'jitter_sec': src.jitter_sec, 'quiet_hours_json': src.quiet_hours_json,
+            }
+        if copy_rules:
+            rules_data = [
+                {'type': r.type, 'times_json': r.times_json, 'target_mode': r.target_mode,
+                 'selected_target_ids_json': r.selected_target_ids_json, 'is_enabled': r.is_enabled}
+                for r in db.query(ScheduleRule).filter(ScheduleRule.account_id == source_id).all()
+            ]
+        if copy_template:
+            templates_data = [
+                {'type': t.type, 'name': t.name, 'body': t.body,
+                 'is_active': t.is_active, 'weight': t.weight}
+                for t in db.query(MessageTemplate).filter(
+                    MessageTemplate.account_id == source_id,
+                    MessageTemplate.scope == 'ACCOUNT'
+                ).all()
+            ]
+        if copy_bindings:
+            bindings_data = [
+                {'target_id': b.target_id, 'can_post': b.can_post,
+                 'allowed_types': b.allowed_types, 'daily_cap': b.daily_cap}
+                for b in db.query(AccountTargetBinding).filter(
+                    AccountTargetBinding.account_id == source_id
+                ).all()
+            ]
+
+    results = []
+    for target_id in target_ids:
+        try:
+            with get_db_context() as db:
+                if profile_data:
+                    existing = db.query(ScheduleProfile).filter(
+                        ScheduleProfile.account_id == target_id
+                    ).first()
+                    if existing:
+                        for k, v in profile_data.items():
+                            setattr(existing, k, v)
+                    else:
+                        db.add(ScheduleProfile(account_id=target_id, **profile_data))
+
+                if rules_data is not None:
+                    for r in db.query(ScheduleRule).filter(
+                        ScheduleRule.account_id == target_id
+                    ).all():
+                        db.delete(r)
+                    db.flush()
+                    for rd in rules_data:
+                        db.add(ScheduleRule(account_id=target_id, **rd))
+
+                if templates_data is not None:
+                    for t in db.query(MessageTemplate).filter(
+                        MessageTemplate.account_id == target_id,
+                        MessageTemplate.scope == 'ACCOUNT'
+                    ).all():
+                        db.delete(t)
+                    db.flush()
+                    for td in templates_data:
+                        db.add(MessageTemplate(scope='ACCOUNT', account_id=target_id, **td))
+
+                if bindings_data is not None:
+                    existing_tids = {b.target_id for b in db.query(AccountTargetBinding).filter(
+                        AccountTargetBinding.account_id == target_id
+                    ).all()}
+                    for bd in bindings_data:
+                        if bd['target_id'] not in existing_tids:
+                            db.add(AccountTargetBinding(account_id=target_id, **bd))
+
+            results.append({'account_id': target_id, 'success': True})
+        except Exception as e:
+            results.append({'account_id': target_id, 'success': False, 'error': str(e)})
+
+    succeeded = sum(1 for r in results if r['success'])
+    return jsonify({
+        'results': results, 'total': len(results),
+        'succeeded': succeeded, 'failed': len(results) - succeeded,
+    })
+
+
 # ============ Run Now (Test) ============
 @scheduler_api.route('/jobs/run-now', methods=['POST'])
 def run_job_now():

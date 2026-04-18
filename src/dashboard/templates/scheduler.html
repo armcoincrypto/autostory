@@ -55,12 +55,15 @@
                     </div>
                 </div>
             </div>
-            <div class="d-flex gap-2">
+            <div class="d-flex gap-2 flex-wrap">
                 <button type="submit" class="btn btn-primary" id="simple-save">
                     <i class="bi bi-check-circle"></i> Save settings
                 </button>
                 <button type="button" class="btn btn-outline-success" id="simple-test-now">
                     <i class="bi bi-send"></i> Send test now
+                </button>
+                <button type="button" class="btn btn-outline-info" id="simple-bulk-apply-btn" onclick="openBulkApplyModal()">
+                    <i class="bi bi-clipboard-plus"></i> Copy to accounts...
                 </button>
             </div>
         </form>
@@ -599,6 +602,80 @@ async function createTemplate() {
         document.getElementById('template-body').value = ''; document.getElementById('template-name').value = '';
         showToast('Template created'); loadTemplates();
     } catch (e) { showToast(e.message, 'error'); }
+}
+
+// ============ Bulk Apply ============
+function openBulkApplyModal() {
+    const sourceId = document.getElementById('simple-account').value;
+    if (!sourceId) { showToast('Select an account first', 'error'); return; }
+    const sourceAccount = accounts.find(a => String(a.id) === String(sourceId));
+    const sourceLabel = sourceAccount
+        ? esc((sourceAccount.phone_number || '') + (sourceAccount.username ? ' @' + sourceAccount.username : ''))
+        : 'Account #' + sourceId;
+    document.getElementById('bulk-source-label').textContent = sourceLabel;
+    document.getElementById('bulk-results').classList.add('d-none');
+    document.getElementById('bulk-results-body').innerHTML = '';
+
+    const others = accounts.filter(a => String(a.id) !== String(sourceId));
+    const list = document.getElementById('bulk-accounts-list');
+    if (others.length === 0) {
+        list.innerHTML = '<div class="text-muted small py-2">No other accounts available.</div>';
+    } else {
+        list.innerHTML = others.map(a => {
+            const label = esc((a.phone_number || '') + (a.username ? ' @' + a.username : '') || 'Account #' + a.id);
+            return `<div class="form-check">
+                <input class="form-check-input bulk-account-cb" type="checkbox" value="${a.id}" id="ba-${a.id}">
+                <label class="form-check-label" for="ba-${a.id}">${label}</label>
+            </div>`;
+        }).join('');
+    }
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('bulkApplyModal')).show();
+}
+
+function bulkSelectAll(checked) {
+    document.querySelectorAll('.bulk-account-cb').forEach(cb => { cb.checked = checked; });
+}
+
+async function bulkApply() {
+    const sourceId = parseInt(document.getElementById('simple-account').value);
+    if (!sourceId) { showToast('No source account', 'error'); return; }
+    const targetIds = [...document.querySelectorAll('.bulk-account-cb:checked')].map(cb => parseInt(cb.value));
+    if (targetIds.length === 0) { showToast('Select at least one target account', 'error'); return; }
+
+    const btn = document.getElementById('bulk-apply-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Applying...';
+    document.getElementById('bulk-results').classList.add('d-none');
+
+    try {
+        const result = await apiFetch(API + '/schedule/bulk-apply', {
+            method: 'POST',
+            body: JSON.stringify({
+                source_account_id: sourceId,
+                target_account_ids: targetIds,
+                copy_profile: document.getElementById('bulk-copy-profile').checked,
+                copy_rules: document.getElementById('bulk-copy-rules').checked,
+                copy_template: document.getElementById('bulk-copy-template').checked,
+                copy_bindings: document.getElementById('bulk-copy-bindings').checked,
+            })
+        });
+        const accMap = Object.fromEntries(accounts.map(a => [a.id, a]));
+        const rows = (result.results || []).map(r => {
+            const acc = accMap[r.account_id];
+            const label = acc ? esc((acc.phone_number || '') + (acc.username ? ' @' + acc.username : '')) : 'Account #' + r.account_id;
+            const badge = r.success ? '<span class="badge bg-success">OK</span>' : '<span class="badge bg-danger">Failed</span>';
+            const err = r.error ? ` <small class="text-danger ms-1">${esc(r.error)}</small>` : '';
+            return `<div class="d-flex align-items-center gap-2 mb-1">${badge} <span>${label}</span>${err}</div>`;
+        }).join('');
+        document.getElementById('bulk-results-body').innerHTML =
+            `<div class="mb-2 fw-semibold">${result.succeeded}/${result.total} succeeded</div>` + rows;
+        document.getElementById('bulk-results').classList.remove('d-none');
+        if (result.succeeded > 0) showToast(`Copied to ${result.succeeded} account(s)`);
+        if (result.failed > 0) showToast(`${result.failed} account(s) failed`, 'error');
+    } catch (e) { showToast(e.message, 'error'); }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-clipboard-plus"></i> Apply to selected';
 }
 
 // ============ Init ============
