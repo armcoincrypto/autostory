@@ -29,12 +29,14 @@ def column_exists(cur, table: str, column: str) -> bool:
 
 MIGRATIONS = [
     # (table, column, definition)
-    ("accounts", "health_status",           "TEXT"),
-    ("accounts", "health_reason",           "TEXT"),
-    ("accounts", "health_checked_at",       "DATETIME"),
-    ("accounts", "purpose",                 "TEXT DEFAULT 'both'"),
-    ("accounts", "story_precheck_status",   "TEXT"),
-    ("accounts", "story_precheck_checked_at", "DATETIME"),
+    ("accounts", "health_status",              "TEXT"),
+    ("accounts", "health_reason",              "TEXT"),
+    ("accounts", "health_checked_at",          "DATETIME"),
+    ("accounts", "purpose",                    "TEXT DEFAULT 'both'"),
+    ("accounts", "story_precheck_status",      "TEXT"),
+    ("accounts", "story_precheck_checked_at",  "DATETIME"),
+    # Added in mention-source feature (commit 5c0a654) — was never in MIGRATIONS
+    ("story_runs", "mention_source_chat_id",   "INTEGER"),
 ]
 
 
