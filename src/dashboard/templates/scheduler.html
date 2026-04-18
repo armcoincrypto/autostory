@@ -87,7 +87,12 @@
                 <input type="text" class="form-control form-control-sm mb-2" id="simple-target-search" placeholder="Search groups..." autocomplete="off">
                 <div id="simple-targets-wrap" class="border rounded p-2" style="max-height: 180px; overflow-y: auto; background-color: #1e293b;">
                     <div id="simple-targets-list"></div>
-                    <div id="simple-targets-empty" class="text-muted small">No targets. Add targets in Advanced.</div>
+                    <div id="simple-targets-empty" class="text-muted small">No groups yet. Add one below.</div>
+                </div>
+                <div class="input-group input-group-sm mt-2">
+                    <span class="input-group-text"><i class="bi bi-plus-circle"></i></span>
+                    <input type="text" class="form-control" id="simple-add-group" placeholder="@username or https://t.me/+invite" autocomplete="off">
+                    <button class="btn btn-outline-secondary" type="button" onclick="addTargetInline()">Add group</button>
                 </div>
             </div>
             <div class="mb-3">
@@ -96,18 +101,23 @@
             </div>
             <div class="row g-2 mb-3">
                 <div class="col-md-4">
-                    <label class="form-label">Allowed send window (MSK)</label>
+                    <label class="form-label">Send window (MSK)</label>
                     <div class="input-group input-group-sm">
                         <input type="text" class="form-control" id="simple-window-start" value="10:00" placeholder="10:00">
                         <span class="input-group-text">–</span>
                         <input type="text" class="form-control" id="simple-window-end" value="21:00" placeholder="21:00">
                     </div>
-                    <small class="text-muted">Never sends at night</small>
+                    <small class="text-muted">Never sends outside this window</small>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Messages / day / group</label>
+                    <input type="number" class="form-control form-control-sm" id="simple-per-day" value="1" min="1" max="24" placeholder="1">
+                    <small class="text-muted">Window splits evenly</small>
                 </div>
                 <div class="col-md-4 d-flex align-items-end">
                     <div class="form-check form-switch">
                         <input class="form-check-input" type="checkbox" id="simple-random" checked>
-                        <label class="form-check-label" for="simple-random">Random send time each day</label>
+                        <label class="form-check-label" for="simple-random">Random time within each slot</label>
                     </div>
                 </div>
             </div>
@@ -326,17 +336,31 @@ async function loadSimpleState(accountId) {
     } catch (_) {}
     document.getElementById('simple-body').value = body;
 
-    let start = '10:00', end = '21:00';
+    let start = '10:00', end = '21:00', perDay = 1;
     try {
         const rules = await apiFetch(API + '/schedule/rules/' + accountId);
         const r = rules.find(x => (x.times_json || '').includes('RANDOM'));
         if (r && r.times_json) {
-            const m = String(r.times_json).match(/RANDOM:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/);
-            if (m) { start = m[1]; end = m[2]; }
+            try {
+                const arr = JSON.parse(r.times_json);
+                const randoms = arr.filter(t => String(t).includes('RANDOM'));
+                if (randoms.length > 0) {
+                    const fm = String(randoms[0]).match(/RANDOM:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/);
+                    const lm = String(randoms[randoms.length - 1]).match(/RANDOM:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/);
+                    if (fm) start = fm[1];
+                    if (lm) end = lm[2];
+                    perDay = randoms.length;
+                }
+            } catch (_) {
+                const m = String(r.times_json).match(/RANDOM:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/);
+                if (m) { start = m[1]; end = m[2]; }
+            }
         }
     } catch (_) {}
     document.getElementById('simple-window-start').value = start;
     document.getElementById('simple-window-end').value = end;
+    const perDayEl = document.getElementById('simple-per-day');
+    if (perDayEl) perDayEl.value = perDay;
 }
 
 async function simpleSave(e) {
@@ -392,7 +416,19 @@ async function simpleSave(e) {
 
         const rules = await apiFetch(API + '/schedule/rules/' + accountId);
         for (const r of rules || []) await apiFetch(API + '/schedule/rules/' + accountId + '/' + r.id, { method: 'DELETE' });
-        const timesJson = useRandom ? `["RANDOM:${start}-${end}"]` : JSON.stringify([start]);
+        const perDay = Math.max(1, Math.min(24, parseInt(document.getElementById('simple-per-day')?.value) || 1));
+        let timesJson;
+        if (useRandom) {
+            const sm = timeToMins(start), em = timeToMins(end);
+            if (em <= sm) { showToast('End time must be after start time', 'error'); return; }
+            const slot = Math.floor((em - sm) / perDay);
+            if (slot < 10) { showToast(`Window too narrow for ${perDay}×/day — need at least ${perDay * 10} min`, 'error'); return; }
+            const slots = [];
+            for (let i = 0; i < perDay; i++) slots.push(`RANDOM:${minsToTime(sm + i * slot)}-${minsToTime(sm + (i + 1) * slot)}`);
+            timesJson = JSON.stringify(slots);
+        } else {
+            timesJson = JSON.stringify([start]);
+        }
         await apiFetch(API + '/schedule/rules/' + accountId, {
             method: 'POST',
             body: JSON.stringify({ type: 'PROMO', times_json: timesJson, target_mode: 'ONLY_SELECTED', selected_target_ids: selected, is_enabled: true })
@@ -658,6 +694,31 @@ async function createTemplate() {
         document.getElementById('template-body').value = ''; document.getElementById('template-name').value = '';
         showToast('Template created'); loadTemplates();
     } catch (e) { showToast(e.message, 'error'); }
+}
+
+// ============ Helpers ============
+function timeToMins(t) { const [h, m] = (t || '00:00').split(':').map(Number); return h * 60 + (m || 0); }
+function minsToTime(m) { const h = Math.floor(m / 60) % 24; const min = m % 60; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
+
+async function addTargetInline() {
+    const input = document.getElementById('simple-add-group');
+    const raw = (input.value || '').trim();
+    if (!raw) return;
+    const isInvite = raw.startsWith('http') || raw.includes('/+') || raw.includes('joinchat');
+    const payload = isInvite
+        ? { invite_link: raw, chat_type: 'group' }
+        : { username: raw.replace(/^@/, ''), chat_type: 'group' };
+    const btn = input.nextElementSibling;
+    btn.disabled = true;
+    try {
+        const result = await apiFetch(API + '/targets', { method: 'POST', body: JSON.stringify(payload) });
+        input.value = '';
+        await loadTargets();
+        const cb = document.querySelector(`.simple-target-cb[value="${result.id}"]`);
+        if (cb) { cb.checked = true; cb.closest('.form-check').style.background = 'rgba(25,135,84,0.15)'; setTimeout(() => cb.closest('.form-check').style.background = '', 2000); }
+        showToast('Group added and selected');
+    } catch (e) { showToast(e.message, 'error'); }
+    btn.disabled = false;
 }
 
 // ============ Stats & Campaigns ============
