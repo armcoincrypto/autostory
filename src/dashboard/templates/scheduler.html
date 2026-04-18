@@ -9,11 +9,67 @@
 
 <div class="toast-container position-fixed top-0 end-0 p-3" id="toast-container"></div>
 
-<!-- Simple Daily Mode -->
+<!-- Stats Row -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-success" id="stat-active">—</div>
+                <div class="text-muted small">Active Campaigns</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-info" id="stat-sent">—</div>
+                <div class="text-muted small">Sent Today</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-danger" id="stat-failed">—</div>
+                <div class="text-muted small">Failed Today</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <div class="fs-2 fw-bold text-warning" id="stat-groups">—</div>
+                <div class="text-muted small">Target Groups</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Active Campaigns -->
 <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-broadcast"></i> Active Campaigns</span>
+        <button class="btn btn-outline-secondary btn-sm" onclick="loadCampaigns(); loadStats();"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    </div>
+    <div class="card-body p-0">
+        <div id="campaigns-loading" class="text-center py-4 text-muted">Loading...</div>
+        <div id="campaigns-empty" class="text-center py-4 text-muted d-none">
+            No campaigns configured yet. Use <strong>Campaign Setup</strong> below to get started.
+        </div>
+        <table class="table table-hover mb-0 d-none" id="campaigns-table">
+            <thead class="table-dark">
+                <tr><th>Account</th><th>Groups</th><th>Window</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="campaigns-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Campaign Setup -->
+<div class="card mb-4" id="campaign-setup-card">
     <div class="card-header">
-        <h5 class="mb-0"><i class="bi bi-sun"></i> Simple Daily Mode</h5>
-        <small class="text-muted">One message per day per group, random time (MSK 10:00–21:00)</small>
+        <h5 class="mb-0"><i class="bi bi-pencil-square"></i> Campaign Setup</h5>
+        <small class="text-muted">Configure account, target groups, message, and send window — then save to activate</small>
     </div>
     <div class="card-body">
         <div id="simple-no-account" class="alert alert-info d-none">
@@ -604,6 +660,92 @@ async function createTemplate() {
     } catch (e) { showToast(e.message, 'error'); }
 }
 
+// ============ Stats & Campaigns ============
+async function loadStats() {
+    try {
+        const s = await apiFetch(API + '/stats');
+        document.getElementById('stat-active').textContent = s.active_accounts ?? '—';
+        document.getElementById('stat-sent').textContent = s.sent_today ?? '—';
+        document.getElementById('stat-failed').textContent = s.failed_today ?? '—';
+        document.getElementById('stat-groups').textContent = s.target_groups ?? '—';
+    } catch (_) {}
+}
+
+async function loadCampaigns() {
+    const loading = document.getElementById('campaigns-loading');
+    const empty = document.getElementById('campaigns-empty');
+    const tbl = document.getElementById('campaigns-table');
+    const body = document.getElementById('campaigns-body');
+    loading?.classList.remove('d-none'); empty?.classList.add('d-none'); tbl?.classList.add('d-none');
+    try {
+        const [profiles, rules, bindingsList] = await Promise.all([
+            apiFetch(API + '/schedule/profiles'),
+            apiFetch(API + '/schedule/rules'),
+            apiFetch(API + '/bindings'),
+        ]);
+        loading?.classList.add('d-none');
+        if (!profiles.length) { empty?.classList.remove('d-none'); return; }
+
+        const accMap = Object.fromEntries(accounts.map(a => [a.id, a]));
+        const bindingCount = {};
+        for (const b of bindingsList) { bindingCount[b.account_id] = (bindingCount[b.account_id] || 0) + 1; }
+        const rulesByAcc = {};
+        for (const r of rules) { (rulesByAcc[r.account_id] = rulesByAcc[r.account_id] || []).push(r); }
+
+        tbl?.classList.remove('d-none');
+        body.innerHTML = profiles.map(p => {
+            const acc = accMap[p.account_id];
+            const accLabel = acc
+                ? esc((acc.phone_number || '') + (acc.username ? ' @' + acc.username : ''))
+                : 'Account #' + p.account_id;
+            const groups = bindingCount[p.account_id] || 0;
+
+            let window = '—';
+            for (const r of (rulesByAcc[p.account_id] || [])) {
+                const m = String(r.times_json || '').match(/RANDOM:(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/);
+                if (m) { window = m[1] + ' – ' + m[2]; break; }
+                try { const arr = JSON.parse(r.times_json); if (Array.isArray(arr) && arr.length) { window = arr.join(', '); break; } } catch (_) {}
+            }
+
+            const statusBadge = p.is_enabled
+                ? '<span class="badge bg-success">Active</span>'
+                : '<span class="badge bg-secondary">Paused</span>';
+            const toggleBtn = p.is_enabled
+                ? `<button class="btn btn-sm btn-outline-warning me-1" onclick="toggleCampaign(${p.account_id},false)" title="Pause"><i class="bi bi-pause-fill"></i></button>`
+                : `<button class="btn btn-sm btn-outline-success me-1" onclick="toggleCampaign(${p.account_id},true)" title="Resume"><i class="bi bi-play-fill"></i></button>`;
+
+            return `<tr>
+                <td class="align-middle">${accLabel}</td>
+                <td class="align-middle">${groups}</td>
+                <td class="align-middle"><small class="text-muted">${window}</small></td>
+                <td class="align-middle">${statusBadge}</td>
+                <td class="align-middle">
+                    ${toggleBtn}
+                    <button class="btn btn-sm btn-outline-primary" onclick="editCampaign(${p.account_id})" title="Edit in Campaign Setup"><i class="bi bi-pencil"></i> Edit</button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) { loading?.classList.add('d-none'); showToast('Could not load campaigns: ' + e.message, 'error'); }
+}
+
+async function toggleCampaign(accountId, enabled) {
+    try {
+        await apiFetch(API + '/schedule/profile/' + accountId, {
+            method: 'PUT',
+            body: JSON.stringify({ is_enabled: enabled })
+        });
+        showToast(enabled ? 'Campaign resumed' : 'Campaign paused');
+        loadCampaigns();
+        loadStats();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+function editCampaign(accountId) {
+    const sel = document.getElementById('simple-account');
+    if (sel) { sel.value = accountId; sel.dispatchEvent(new Event('change')); }
+    document.getElementById('campaign-setup-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // ============ Bulk Apply ============
 function openBulkApplyModal() {
     const sourceId = document.getElementById('simple-account').value;
@@ -682,6 +824,8 @@ async function bulkApply() {
 document.addEventListener('DOMContentLoaded', async () => {
     await loadAccounts();
     await loadTargets();
+    loadStats();
+    loadCampaigns();
 
     document.getElementById('simple-account')?.addEventListener('change', function() {
         loadSimpleState(this.value);
