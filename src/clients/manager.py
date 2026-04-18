@@ -137,8 +137,14 @@ class ClientManager:
 
             try:
                 # Create session from string or file
-                if account.session_string:
-                    session = StringSession(account.session_string)
+                ss = account.session_string
+                if ss:
+                    if ss.endswith('.session') or '/' in ss or '\\' in ss:
+                        from telethon.sessions import SQLiteSession
+                        session_path = ss.removesuffix('.session')
+                        session = SQLiteSession(session_path)
+                    else:
+                        session = StringSession(ss)
                 else:
                     session = StringSession()
 
