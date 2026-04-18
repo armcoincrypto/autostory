@@ -146,7 +146,7 @@
         <div id="simple-deliveries-loading" class="text-center py-4">Loading...</div>
         <div id="simple-deliveries-empty" class="text-center py-4 text-muted d-none">No deliveries yet.</div>
         <table class="table table-hover d-none" id="simple-deliveries-table">
-            <thead><tr><th>Target</th><th>Status</th><th>Sent at</th></tr></thead>
+            <thead><tr><th>Target</th><th>Status</th><th>Sent at</th><th>Error</th></tr></thead>
             <tbody></tbody>
         </table>
     </div>
@@ -476,7 +476,8 @@ async function loadSimpleDeliveries() {
         tbl.querySelector('tbody').innerHTML = data.slice(0, 20).map(d => {
             const tgt = tgtMap[d.target_id];
             const statusBadge = d.status === 'SENT' ? 'bg-success' : d.status === 'FAILED' ? 'bg-danger' : 'bg-secondary';
-            return `<tr><td>${tgt ? esc(formatTargetLabel(tgt)) : d.target_id}</td><td><span class="badge ${statusBadge}">${d.status}</span></td><td>${d.sent_at ? new Date(d.sent_at).toLocaleString() : '-'}</td></tr>`;
+            const errCell = d.error_message ? `<small class="text-danger">${esc(d.error_message)}</small>` : (d.error_code ? `<small class="text-warning">${esc(d.error_code)}</small>` : '-');
+            return `<tr><td>${tgt ? esc(formatTargetLabel(tgt)) : d.target_id}</td><td><span class="badge ${statusBadge}">${d.status}</span></td><td class="text-nowrap">${d.sent_at ? new Date(d.sent_at).toLocaleString() : '-'}</td><td>${errCell}</td></tr>`;
         }).join('');
     } catch (e) { loading.classList.add('d-none'); showToast(e.message, 'error'); }
 }
