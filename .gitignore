@@ -108,3 +108,5 @@ celerybeat.pid
 
 # local bot session
 data/bot/storyfleet_bot.session
+
+data/*.backup*
