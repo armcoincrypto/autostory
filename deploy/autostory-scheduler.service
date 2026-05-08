@@ -1,0 +1,16 @@
+[Unit]
+Description=STORYFLEET scheduler worker
+After=network.target autostory-web.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/autostory
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/opt/autostory/.env
+# Singleton: flock released when Python exits (crash/restart safe). Rollback: use direct python line below.
+ExecStart=/opt/autostory/deploy/run_scheduler_singleton.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
