@@ -33,10 +33,16 @@ class TargetMode(str, Enum):
 
 class JobStatus(str, Enum):
     PENDING = "PENDING"
+    RUNNING = "RUNNING"
     SENT = "SENT"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
     CANCELLED = "CANCELLED"
+
+# Temporary value on ``ScheduledJob.last_error`` while PENDING for jobs created by
+# the dashboard Send Test API. ``execute_job`` clears it and treats the job like
+# ``is_send_test=True`` (pacing, active-account hint) when run by the scheduler worker.
+SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER = "__operator_send_test__"
 
 
 class DeliveryStatus(str, Enum):
@@ -162,6 +168,9 @@ class ScheduledJob(Base):
     template_id = Column(Integer, ForeignKey("message_templates.id"), nullable=True)
     attempts = Column(Integer, default=0)
     last_error = Column(Text, nullable=True)
+
+    lease_until = Column(DateTime, nullable=True)
+    lease_owner = Column(String(128), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

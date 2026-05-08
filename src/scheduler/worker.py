@@ -2,13 +2,14 @@
 Scheduler worker - main loop: generate jobs, execute due jobs
 """
 import asyncio
-from datetime import datetime, date
+import os
+from datetime import datetime, date, timezone
 
-from src.core.database import init_db
-from src.core.scheduler_models import ScheduledJob, JobStatus
-from src.clients.manager import client_manager
+from src.core.database import init_db, get_db_context, run_with_sqlite_lock_retry
+from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
 from .generator import generate_jobs_for_date
 from .executor import execute_job
+from .job_claim import claim_due_job
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -16,36 +17,56 @@ logger = structlog.get_logger(__name__)
 LOOP_INTERVAL_SEC = 45
 LAST_GEN_DATE: date = None
 
+LEASE_SECONDS = int(os.environ.get("SCHEDULER_JOB_LEASE_SEC", "900"))
+WORKER_ID = os.environ.get("AUTOSTORY_SCHEDULER_WORKER_ID", f"w{os.getpid()}")
+
 
 async def run_scheduler_loop():
     """Main scheduler loop"""
     init_db()
-    await client_manager.initialize()
-    await client_manager.connect_all()
+    # Do not preload or connect all accounts — ``execute_job`` connects lazily per
+    # job so we do not hold SQLite Telethon session files open while the web app runs.
 
     global LAST_GEN_DATE
-    logger.info("Scheduler worker started")
+    logger.info(
+        "Scheduler worker started",
+        reserved_ai_account_ids=sorted(RESERVED_AI_AGENT_ACCOUNT_IDS),
+    )
 
     while True:
         try:
-            now = datetime.utcnow()
-            today = now.date()
+            # ORM stores naive UTC instants; compare with naive UTC "now".
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            today_utc = now.date()
 
-            if LAST_GEN_DATE != today:
-                created = generate_jobs_for_date(today)
-                LAST_GEN_DATE = today
+            if LAST_GEN_DATE != today_utc:
+                # Per-profile local calendar day is resolved inside the generator.
+                created = generate_jobs_for_date(None)
+                LAST_GEN_DATE = today_utc
                 if created:
-                    logger.info("Generated jobs for date", date=str(today), count=created)
+                    logger.info("Generated jobs for date", date=str(today_utc), count=created)
 
-            from src.core.database import get_db_context
-            with get_db_context() as db:
-                due = db.query(ScheduledJob).filter(
-                    ScheduledJob.status == JobStatus.PENDING,
-                    ScheduledJob.run_at <= now
-                ).order_by(ScheduledJob.run_at).limit(10).all()
-                job_ids = [j.id for j in due]
+            claimed_ids: list[int] = []
+            for _ in range(10):
 
-            for jid in job_ids:
+                def _claim_one():
+                    with get_db_context() as db:
+                        return claim_due_job(
+                            db,
+                            worker_id=WORKER_ID,
+                            lease_seconds=LEASE_SECONDS,
+                            now_naive=now,
+                        )
+
+                cr = run_with_sqlite_lock_retry(
+                    _claim_one,
+                    operation="scheduler_claim_due_job",
+                )
+                if cr.job_id is None:
+                    break
+                claimed_ids.append(int(cr.job_id))
+
+            for jid in claimed_ids:
                 try:
                     await execute_job(jid)
                 except Exception as e:

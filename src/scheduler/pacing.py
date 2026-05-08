@@ -162,23 +162,41 @@ def get_send_pacing_decision(
 
 
 def defer_scheduled_job_for_pacing(_db: Any, job_id: int, next_allowed_at_naive: datetime) -> None:
-    """Push ``run_at`` forward; keep PENDING. Does not create a delivery row.
+    """Push ``run_at`` forward; reset ``RUNNING`` + lease back to ``PENDING``. Uses ``last_error='pacing_deferred'``.
 
     Uses a dedicated transaction with SQLite lock retries. The ``db`` session argument
     is kept for call-site compatibility; the update is applied via ``get_db_context()``.
     """
+    import structlog
+
     from src.core.database import get_db_context, run_with_sqlite_lock_retry
-    from src.core.scheduler_models import ScheduledJob
+    from src.core.scheduler_models import JobStatus, ScheduledJob
+
+    pacing_logger = structlog.get_logger(__name__)
 
     def _do() -> None:
         with get_db_context() as db2:
             job = db2.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
             if not job:
                 return
+            prev_lo = job.lease_owner
+            prev_lu = job.lease_until
+            was_running = str(job.status) == JobStatus.RUNNING.value
             cur = job.run_at or next_allowed_at_naive
             job.run_at = max(cur, next_allowed_at_naive)
             job.last_error = "pacing_deferred"
             job.updated_at = _utc_naive_now()
+            job.status = JobStatus.PENDING.value
+            job.lease_until = None
+            job.lease_owner = None
+            if was_running and (prev_lo is not None or prev_lu is not None):
+                pacing_logger.info(
+                    "scheduler_job_lease_released",
+                    job_id=int(job_id),
+                    lease_owner=prev_lo,
+                    lease_until=prev_lu,
+                    reason="pacing_deferred",
+                )
 
     run_with_sqlite_lock_retry(
         _do,

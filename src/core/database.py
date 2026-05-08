@@ -198,6 +198,7 @@ def init_db() -> None:
     _ensure_accounts_profile_capability_columns()
     _ensure_account_risk_events_table()
     _ensure_discovered_users_source_username_column()
+    _ensure_scheduled_jobs_lease_columns()
     logger.info("Database initialized", tables=list(Base.metadata.tables.keys()))
     if _is_sqlite(settings.database.url):
         try:
@@ -250,6 +251,34 @@ def _ensure_discovered_users_source_username_column() -> None:
         logger.info("Added discovered_users.source_chat_username column")
     except Exception as e:
         logger.warning("Could not add source_chat_username column (may already exist)", error=str(e))
+
+
+def _ensure_scheduled_jobs_lease_columns() -> None:
+    """Add lease_until / lease_owner for scheduler DB-level claims (additive)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "scheduled_jobs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("scheduled_jobs")}
+    for name, ddl in (
+        ("lease_until", "DATETIME"),
+        ("lease_owner", "VARCHAR(128)"),
+    ):
+        if name in cols:
+            continue
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE scheduled_jobs ADD COLUMN {name} {ddl}"))
+                conn.commit()
+            logger.info("Added scheduled_jobs column", column=name)
+        except Exception as e:
+            logger.warning(
+                "Could not add scheduled_jobs.%s (may already exist)",
+                name,
+                error=str(e),
+            )
+
 
 
 def _ensure_healthcheck_run_columns() -> None:

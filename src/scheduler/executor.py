@@ -78,6 +78,24 @@ from .renderer import render_template
 logger = structlog.get_logger(__name__)
 
 
+def _maybe_log_lease_released(
+    job_id: int,
+    prev_owner: Optional[str],
+    prev_until: Optional[datetime],
+    *,
+    reason: str,
+) -> None:
+    if prev_owner is None and prev_until is None:
+        return
+    logger.info(
+        "scheduler_job_lease_released",
+        job_id=int(job_id),
+        lease_owner=prev_owner,
+        lease_until=prev_until,
+        reason=reason,
+    )
+
+
 def _map_error(exc: Exception) -> Tuple[str, str]:
     """Map Telethon exception to (error_code, short operator-facing message)."""
     if isinstance(exc, FloodWaitError):
@@ -135,8 +153,8 @@ async def _resolve_send_entity(client: Any, target: Any) -> Any:
 
 def _reconcile_job_if_sent_delivery_exists(job_id: int) -> bool:
     """
-    If a SENT delivery row already exists for this job but the job is still PENDING,
-    reconcile status and skip a second Telegram send (idempotency guard).
+    If a SENT delivery row already exists for this job but the job is still PENDING
+    or RUNNING, reconcile status and skip a second Telegram send (idempotency guard).
 
     FAILED / SKIPPED delivery rows do not trigger reconciliation.
     """
@@ -151,9 +169,11 @@ def _reconcile_job_if_sent_delivery_exists(job_id: int) -> bool:
         if not row:
             return False
         job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
-        if job and str(job.status) == JobStatus.PENDING.value:
+        if job and str(job.status) in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
             job.status = JobStatus.SENT.value
             job.updated_at = datetime.utcnow()
+            job.lease_until = None
+            job.lease_owner = None
         logger.info(
             "scheduler_idempotent_sent_skip",
             job_id=int(job_id),
@@ -188,9 +208,8 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         job = db.query(ScheduledJob).filter(ScheduledJob.id == job_id).first()
         if not job:
             return False
-        # Hard guard: only ever execute runnable jobs. ``ScheduledJob.status`` is a VARCHAR;
-        # compare using the canonical string to avoid Enum/SQLAlchemy coercion mismatches.
-        if str(job.status) != JobStatus.PENDING.value:
+        # Runnable jobs: queued (PENDING) or claimed by this worker loop (RUNNING).
+        if str(job.status) not in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
             return False
         account = db.query(Account).filter(Account.id == job.account_id).first()
         target = db.query(ChatTarget).filter(ChatTarget.id == job.target_id).first()
@@ -202,10 +221,14 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         if not account or not target or not binding:
             reason = "missing_account" if not account else ("missing_target" if not target else "missing_binding")
             # Disable the job so it is idempotent and won't spam logs every tick.
+            prev_lo, prev_lu = job.lease_owner, job.lease_until
             job.status = JobStatus.FAILED.value
             job.attempts = (job.attempts or 0) + 1
             job.last_error = reason
             job.updated_at = datetime.utcnow()
+            job.lease_until = None
+            job.lease_owner = None
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_missing_binding")
             logger.warning(
                 "scheduler_job_disabled_missing_binding",
                 job_id=job_id,
@@ -474,8 +497,12 @@ def _mark_job_sent(job_id: int, tg_message_id: int, rendered: str) -> None:
         job = db.query(ScheduledJob).filter(ScheduledJob.id == job_id).first()
         if not job:
             return
+        prev_lo, prev_lu = job.lease_owner, job.lease_until
         job.status = JobStatus.SENT.value
         job.updated_at = datetime.utcnow()
+        job.lease_until = None
+        job.lease_owner = None
+        _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_sent")
         d = MessageDelivery(
             job_id=job_id,
             account_id=job.account_id,
@@ -494,10 +521,14 @@ def _mark_job_failed(job_id: int, error: str, *, error_code: Optional[str] = Non
         job = db.query(ScheduledJob).filter(ScheduledJob.id == job_id).first()
         if not job:
             return
+        prev_lo, prev_lu = job.lease_owner, job.lease_until
         job.status = JobStatus.FAILED.value
         job.attempts = (job.attempts or 0) + 1
         job.last_error = error
         job.updated_at = datetime.utcnow()
+        job.lease_until = None
+        job.lease_owner = None
+        _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_failed")
         d = MessageDelivery(
             job_id=job_id,
             account_id=job.account_id,
@@ -514,6 +545,10 @@ def _mark_job_skipped(job_id: int, reason: str) -> None:
     with get_db_context() as db:
         job = db.query(ScheduledJob).filter(ScheduledJob.id == job_id).first()
         if job:
+            prev_lo, prev_lu = job.lease_owner, job.lease_until
             job.status = JobStatus.SKIPPED.value
             job.last_error = reason
             job.updated_at = datetime.utcnow()
+            job.lease_until = None
+            job.lease_owner = None
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_skipped")

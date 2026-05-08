@@ -10,6 +10,8 @@ def column_exists(cur, table, column):
     cur.execute(f"PRAGMA table_info({table})")
     return any(row[1] == column for row in cur.fetchall())
 MIGRATIONS = [
+    ("scheduled_jobs", "lease_until", "DATETIME"),
+    ("scheduled_jobs", "lease_owner", "VARCHAR(128)"),
     ("accounts", "health_status",             "TEXT"),
     ("accounts", "health_reason",             "TEXT"),
     ("accounts", "health_checked_at",         "DATETIME"),
