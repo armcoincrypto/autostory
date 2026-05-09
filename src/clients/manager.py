@@ -3,35 +3,37 @@ Telegram Client Manager - Multi-Account Orchestration
 Handles concurrent user sessions using Telethon
 """
 import asyncio
-import secrets
 import sqlite3
 import threading
 import time
-from datetime import datetime
-import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, List, Callable, Any, Tuple
+from typing import Dict, Optional, List, Callable, Any, Union, Tuple
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl import functions, types
+from telethon.tl.types import Channel, Chat
 from telethon.errors import (
     FloodWaitError,
     AuthKeyError,
     SessionPasswordNeededError,
     PhoneCodeInvalidError,
     PhoneNumberBannedError,
+    AuthKeyUnregisteredError,
+    UserDeactivatedBanError,
+    UserDeactivatedError,
+    SessionRevokedError,
 )
-from telethon.tl.types import User, Chat, Channel
-from telethon.utils import get_peer_id
+from telethon.errors.rpcerrorlist import UserRestrictedError
+from telethon.errors.rpcbaseerrors import RPCError
 import structlog
 
-import sys
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
 from config.settings import settings
 from src.core.models import Account, AccountStatus
 from src.core.database import get_db_context
+from src.core.session_paths import get_canonical_session_path
 from .rate_limiter import RateLimiter
 from .session_resolve import (
     resolve_telethon_session,
@@ -45,17 +47,14 @@ from src.core.session_lock import acquire_session_lock, SessionLockHandle
 
 logger = structlog.get_logger(__name__)
 
-# Telethon connect retries (transient network / SQLite session contention).
+# Telethon connect retries (deep readiness only; not used by add_account).
 _CONNECT_ATTEMPTS = 4
 _CONNECT_BACKOFF_BASE_S = 0.5
 _CONNECT_BACKOFF_CAP_S = 30.0
 
 
 def _connect_failure_code(exc: Optional[BaseException]) -> str:
-    """
-    Classify Telethon connect failures for readiness / pool (not Telegram auth).
-    Auth failures are handled separately via ``is_user_authorized`` false.
-    """
+    """Classify Telethon connect failures for deep readiness checks."""
     if exc is None:
         return "failed_connect"
     if isinstance(exc, sqlite3.OperationalError):
@@ -65,7 +64,6 @@ def _connect_failure_code(exc: Optional[BaseException]) -> str:
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return "failed_connect_network"
     if isinstance(exc, OSError):
-        # Broken pipe, reset, network unreachable, etc.
         return "failed_connect_network"
     msg = str(exc).lower()
     if "database is locked" in msg or "database locked" in msg:
@@ -75,6 +73,56 @@ def _connect_failure_code(exc: Optional[BaseException]) -> str:
     return "failed_connect"
 
 
+def _mask_phone(phone: Optional[str], account_id: int) -> str:
+    """Mask phone for logging; never log full number or session. E.g. +1513*****764"""
+    if not phone or not isinstance(phone, str):
+        return f"#{account_id}"
+    phone = phone.strip()
+    if phone.startswith("+"):
+        digits = "".join(c for c in phone[1:] if c.isdigit())
+    else:
+        digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) < 4:
+        return f"#{account_id}"
+    return f"+{digits[:3]}*****{digits[-3:]}" if len(digits) >= 6 else f"#{account_id}"
+
+
+
+def _existing_session_source_for_healthcheck(account) -> tuple[object | None, str | None]:
+    """
+    Prefer real on-disk sessions used by production.
+    Fallback to session_path, then Telethon StringSession when valid.
+    Returns: (session_source, source_kind)
+    """
+    account_id = getattr(account, "id", None)
+
+    try:
+        if account_id is not None:
+            canonical = get_canonical_session_path(int(account_id))
+            if canonical.is_file():
+                return str(canonical), "canonical_file"
+    except Exception:
+        pass
+
+    session_path = getattr(account, "session_path", None)
+    if isinstance(session_path, str) and session_path.strip():
+        try:
+            sp = Path(session_path).expanduser()
+            if sp.is_file():
+                return str(sp), "session_path_file"
+        except Exception:
+            pass
+
+    session_string = getattr(account, "session_string", None)
+    if isinstance(session_string, str) and session_string.strip():
+        try:
+            return StringSession(session_string.strip()), "string_session"
+        except Exception:
+            return None, None
+
+    return None, None
+
+
 class TelegramClientWrapper:
     """Wrapper around Telethon client with additional functionality"""
 
@@ -82,83 +130,42 @@ class TelegramClientWrapper:
         self,
         account: Account,
         client: TelegramClient,
-        rate_limiter: RateLimiter,
-        session_file_lock: Optional[SessionLockHandle] = None,
+        rate_limiter: RateLimiter
     ):
         self.account = account
         self.client = client
         self.rate_limiter = rate_limiter
         self.is_connected = False
         self._lock = asyncio.Lock()
-        # Thread that completed a successful authorized connect (no cross-thread reuse).
-        self._owner_thread_id: Optional[int] = None
-        # Exclusive fcntl lock while SQLite session file is open (cross-process safety).
-        self._session_file_lock: Optional[SessionLockHandle] = session_file_lock
-
-    async def connect_with_reason(self) -> Tuple[bool, Optional[str]]:
-        """
-        Connect and verify user authorization.
-        Returns (ok, failure_code) where failure_code is None on success.
-        """
-        async with self._lock:
-            last_err: Optional[BaseException] = None
-            for attempt in range(1, _CONNECT_ATTEMPTS + 1):
-                try:
-                    await self.client.connect()
-                    if await self.client.is_user_authorized():
-                        self.is_connected = True
-                        self._owner_thread_id = threading.get_ident()
-                        me = await self.client.get_me()
-                        logger.debug(
-                            "Client connected",
-                            account_id=self.account.id,
-                            phone=self.account.phone_number,
-                            user_id=me.id,
-                            username=me.username,
-                            connect_attempt=attempt,
-                        )
-                        return True, None
-                    logger.warning(
-                        "Client not authorized",
-                        account_id=self.account.id,
-                        phone=self.account.phone_number,
-                    )
-                    return False, "unauthorized_session"
-                except Exception as e:
-                    last_err = e
-                    logger.warning(
-                        "Connection attempt failed",
-                        account_id=self.account.id,
-                        phone=self.account.phone_number,
-                        error=str(e),
-                        connect_attempt=attempt,
-                        max_attempts=_CONNECT_ATTEMPTS,
-                    )
-                    try:
-                        if self.client.is_connected():
-                            await self.client.disconnect()
-                    except Exception:
-                        pass
-                    self.is_connected = False
-                    if attempt >= _CONNECT_ATTEMPTS:
-                        logger.error(
-                            "Connection failed after retries",
-                            account_id=self.account.id,
-                            phone=self.account.phone_number,
-                            error=str(last_err),
-                        )
-                        return False, _connect_failure_code(last_err)
-                    delay = min(
-                        _CONNECT_BACKOFF_CAP_S,
-                        _CONNECT_BACKOFF_BASE_S * (2 ** (attempt - 1)),
-                    )
-                    await asyncio.sleep(delay)
-            return False, _connect_failure_code(last_err)
 
     async def connect(self) -> bool:
         """Connect to Telegram"""
-        ok, _ = await self.connect_with_reason()
-        return ok
+        async with self._lock:
+            try:
+                await self.client.connect()
+                if await self.client.is_user_authorized():
+                    self.is_connected = True
+                    me = await self.client.get_me()
+                    logger.info(
+                        "Client connected",
+                        phone=self.account.phone_number,
+                        user_id=me.id,
+                        username=me.username
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        "Client not authorized",
+                        phone=self.account.phone_number
+                    )
+                    return False
+            except Exception as e:
+                logger.error(
+                    "Connection failed",
+                    phone=self.account.phone_number,
+                    error=str(e)
+                )
+                return False
 
     async def disconnect(self) -> None:
         """Disconnect from Telegram"""
@@ -166,14 +173,7 @@ class TelegramClientWrapper:
             if self.client.is_connected():
                 await self.client.disconnect()
                 self.is_connected = False
-                self._owner_thread_id = None
-                logger.debug("Client disconnected", phone=self.account.phone_number)
-            if self._session_file_lock is not None:
-                try:
-                    self._session_file_lock.release()
-                except Exception:
-                    pass
-                self._session_file_lock = None
+                logger.info("Client disconnected", phone=self.account.phone_number)
 
     async def execute(self, coro_func: Callable, *args, **kwargs) -> Any:
         """Execute a coroutine with rate limiting"""
@@ -206,162 +206,42 @@ class ClientManager:
         self._clients: Dict[int, TelegramClientWrapper] = {}
         self._rate_limiter = RateLimiter()
         self._lock = asyncio.Lock()
-        # Serialize connect/create per account on the *current* event loop only.
-        self._account_connect_locks: Dict[int, asyncio.Lock] = {}
-        self._account_connect_lock_loop: Dict[int, asyncio.AbstractEventLoop] = {}
         self._session_dir = Path(settings.storage.sessions_dir)
         self._session_dir.mkdir(parents=True, exist_ok=True)
 
-    def _telethon_loop_mismatch(self, wrapper: TelegramClientWrapper) -> bool:
-        """
-        Telethon binds each TelegramClient to the asyncio loop that first called
-        ``connect``. Flask uses ``asyncio.new_event_loop()`` per request (see
-        ``run_async`` / ``asyncio.run``); reusing a cached client raises:
-        "The asyncio event loop must not change after connection".
-        """
-        try:
-            current = asyncio.get_running_loop()
-        except RuntimeError:
-            return False
-        bound = getattr(wrapper.client, "_loop", None)
-        return bound is not None and bound is not current
-
-    def _telethon_thread_mismatch(self, wrapper: TelegramClientWrapper) -> bool:
-        """True if the client was connected on another OS thread (Telethon is not thread-safe)."""
-        tid = wrapper._owner_thread_id
-        return tid is not None and tid != threading.get_ident()
-
-    def _stale_client_reason(self, wrapper: TelegramClientWrapper) -> Optional[str]:
-        if self._telethon_loop_mismatch(wrapper):
-            return "event_loop_mismatch"
-        if self._telethon_thread_mismatch(wrapper):
-            return "thread_mismatch"
-        return None
-
-    def _ensure_account_connect_lock_unlocked(self, account_id: int) -> asyncio.Lock:
-        """Bind per-account connect lock to the running event loop. Caller holds ``self._lock``."""
-        loop = asyncio.get_running_loop()
-        prev = self._account_connect_lock_loop.get(account_id)
-        if prev is not loop:
-            if prev is not None:
-                logger.info(
-                    "telethon_client_manager_account_lock_rebound",
-                    account_id=account_id,
-                    reason="event_loop_changed_for_account_connect_lock",
-                )
-            self._account_connect_locks[account_id] = asyncio.Lock()
-            self._account_connect_lock_loop[account_id] = loop
-        return self._account_connect_locks[account_id]
-
-    async def _drop_stale_client_unlocked(self, account_id: int) -> bool:
-        """
-        Remove pool entry if the Telethon client is tied to another loop or thread.
-        Caller must hold ``self._lock``. Awaits ``disconnect`` when possible.
-        """
-        w = self._clients.get(account_id)
-        if not w:
-            return False
-        reason = self._stale_client_reason(w)
-        if not reason:
-            return False
-        if reason == "event_loop_mismatch":
-            logger.warning(
-                "telethon_event_loop_mismatch",
-                account_id=account_id,
-                message="cached client bound to a different asyncio loop; will recreate",
-            )
-        else:
-            logger.warning(
-                "telethon_thread_mismatch",
-                account_id=account_id,
-                message="cached client was connected on a different thread; will recreate",
-            )
-        logger.info(
-            "telethon_client_recycled",
-            account_id=account_id,
-            reason=reason,
-        )
-        await self._remove_client_unlocked(account_id)
-        return True
-
-    async def _remove_client_unlocked(self, account_id: int) -> None:
-        """Pop a client from the pool and disconnect (caller must hold self._lock)."""
-        if account_id not in self._clients:
-            return
-        w = self._clients.pop(account_id)
-        try:
-            await w.disconnect()
-        except Exception:
-            pass
-
     async def initialize(self) -> None:
-        """
-        Legacy entrypoint for workers/Celery.
+        """Initialize all active accounts from database"""
+        with get_db_context() as db:
+            accounts = db.query(Account).filter(
+                Account.status.in_([AccountStatus.ACTIVE, AccountStatus.INACTIVE])
+            ).all()
 
-        **Does not** preload Telegram sessions — connecting every account at process
-        start fights the web tier for SQLite ``.session`` files. Use lazy
-        ``add_account`` from the executor / API handlers instead.
-        """
-        logger.info(
-            "ClientManager initialize() — skipping bulk Telegram preload (lazy connect per job)",
-            pooled_clients=len(self._clients),
-        )
+            for account in accounts:
+                _, _ = await self.add_account(account)
+
+        logger.info("Client manager initialized", total_clients=len(self._clients))
 
     async def add_account(
-        self,
-        account: Account,
-        *,
-        session_lock_timeout_sec: float = 60.0,
+        self, account: Union[Account, int]
     ) -> Tuple[Optional[TelegramClientWrapper], Optional[str]]:
-        """
-        Add an account: resolve session (file vs string), connect, require authorization.
-
-        Returns (wrapper, None) on success, or (None, failure_code) on failure.
-        """
+        """Add a new account to the manager. Accepts Account instance or account id (int)."""
         async with self._lock:
-            ac_lock = self._ensure_account_connect_lock_unlocked(account.id)
-
-        async with ac_lock:
-            async with self._lock:
-                await self._drop_stale_client_unlocked(account.id)
-                if account.id in self._clients:
-                    existing = self._clients[account.id]
-                    ok, reason = await existing.connect_with_reason()
-                    if ok:
-                        return existing, None
-                    logger.warning(
-                        "Existing client not usable; rebuilding",
-                        account_id=account.id,
-                        reason=reason,
-                    )
-                    await self._remove_client_unlocked(account.id)
-
-            session, session_kind, resolve_err = resolve_telethon_session(account)
-            if resolve_err:
-                logger.error(
-                    "Failed to add account",
-                    account_id=account.id,
-                    session_kind=session_kind,
-                    reason=resolve_err,
-                    error=human_message_for_code(resolve_err),
-                )
-                return None, resolve_err
-
-            session_file_lock: Optional[SessionLockHandle] = None
-            if session_kind == "file":
-                ok_lock, lock_handle, lock_err = acquire_session_lock(
-                    account.id, timeout_sec=float(session_lock_timeout_sec),
-                )
-                if not ok_lock:
-                    logger.warning(
-                        "session_file_lock_not_acquired",
-                        account_id=account.id,
-                        detail=lock_err,
-                    )
-                    return None, "session_lock_timeout"
-                session_file_lock = lock_handle
+            if isinstance(account, int):
+                with get_db_context() as db:
+                    account = db.query(Account).filter(Account.id == account).first()
+                    if not account or not account.session_string:
+                        return None, "empty_session"
+            if account.id in self._clients:
+                return self._clients[account.id], None
 
             try:
+                # Create session from string or file
+                if account.session_string:
+                    session = StringSession(account.session_string)
+                else:
+                    session = StringSession()
+
+                # Create Telethon client
                 client = TelegramClient(
                     session,
                     settings.telegram.api_id,
@@ -372,90 +252,24 @@ class ClientManager:
                     system_version="Linux",
                     lang_code="en",
                 )
-                wrapper = TelegramClientWrapper(
-                    account, client, self._rate_limiter, session_file_lock=session_file_lock,
-                )
-                session_file_lock = None  # wrapper owns release on disconnect
-            except Exception as e:
-                if session_file_lock is not None:
-                    try:
-                        session_file_lock.release()
-                    except Exception:
-                        pass
-                logger.error(
-                    "Failed to add account",
-                    account_id=account.id,
-                    session_kind=session_kind,
-                    error=str(e),
-                )
-                return None, "failed_connect"
 
-            async def _release_orphan_wrapper(reason: str) -> None:
-                """Disconnect wrapper not yet registered in ``_clients`` (releases session flock)."""
-                try:
-                    await wrapper.disconnect()
-                except Exception:
-                    pass
-                logger.info(
-                    "client_manager_orphan_wrapper_released",
-                    account_id=account.id,
-                    reason=reason,
-                )
-
-            try:
-                ok, connect_reason = await wrapper.connect_with_reason()
-            except asyncio.CancelledError:
-                await _release_orphan_wrapper("cancelled")
-                raise
-            except Exception:
-                await _release_orphan_wrapper("connect_failed")
-                raise
-
-            if not ok:
-                await _release_orphan_wrapper("connect_failed")
-                logger.warning(
-                    "Failed to add account — not authorized or connect failed",
-                    account_id=account.id,
-                    session_kind=session_kind,
-                    reason=connect_reason,
-                    error=human_message_for_code(connect_reason),
-                )
-                return None, connect_reason
-
-            async with self._lock:
+                wrapper = TelegramClientWrapper(account, client, self._rate_limiter)
                 self._clients[account.id] = wrapper
-            logger.debug(
-                "Account added",
-                account_id=account.id,
-                phone=account.phone_number,
-                session_kind=session_kind,
-            )
-            return wrapper, None
 
-    async def connect_account(
-        self,
-        account_id: int,
-        *,
-        session_lock_timeout_sec: Optional[float] = None,
-    ) -> Tuple[Optional[TelegramClientWrapper], Optional[str]]:
-        """Load account from DB and register a verified client (same as add_account)."""
-        with get_db_context() as db:
-            account = db.query(Account).filter(Account.id == account_id).first()
-        if not account:
-            return None, "account_not_found"
-        lock_to = 60.0 if session_lock_timeout_sec is None else float(session_lock_timeout_sec)
-        return await self.add_account(account, session_lock_timeout_sec=lock_to)
+                logger.info("Account added", account_id=account.id, phone=account.phone_number)
+                return wrapper, None
+
+            except Exception as e:
+                logger.error("Failed to add account", account_id=account.id, error=str(e))
+                return None, "failed_connect"
 
     async def collect_accounts_readiness(
         self, deep: bool = False, only_account_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Read-only readiness snapshot for operators.
-        When deep=False: filesystem + StringSession parse only (no Telegram network;
-        no ``SQLiteSession`` / session DB open — see ``probe_telethon_session_kind``).
-        ``ready`` is **never** set True in shallow mode — a session file existing is not
-        proof of Telegram authorization (see ``_readiness_row``).
-        When deep=True: connect + is_user_authorized per account (slower; hits Telegram).
+        When deep=False: path / StringSession probe only (no SQLiteSession, no Telegram connect).
+        When deep=True: connect + is_user_authorized per account.
         """
         from src.clients import readiness_store
         from src.core.scheduler_models import AccountReadinessSnapshot
@@ -479,7 +293,6 @@ class ClientManager:
             aid = int(account.id)
             snap = snaps.get(aid)
 
-            # Always start with shallow + cached overlay (fast, stable).
             base = await self._readiness_row(account, deep=False)
             if snap and readiness_store.snapshot_row_valid(snap, now):
                 base = readiness_store.overlay_cached_readiness(base, snap)
@@ -488,7 +301,6 @@ class ClientManager:
                 rows.append(base)
                 continue
 
-            # Deep mode: skip Telegram connect when READY is still trusted.
             if (
                 snap
                 and snap.status == readiness_store.STAT_READY
@@ -526,8 +338,6 @@ class ClientManager:
                 base["ready"] = False
                 base["error"] = human_message_for_code(err)
                 return base
-            # Session on disk ≠ logged in at Telegram. UI must not show READY until
-            # a deep check proves ``is_user_authorized()`` (or operator rechecks).
             base["authorized"] = None
             base["ready"] = False
             base["error"] = None
@@ -538,7 +348,7 @@ class ClientManager:
         session, kind, err = resolve_telethon_session(account)
         session_exists = err is None and kind in ("file", "string")
 
-        base: Dict[str, Any] = {
+        base = {
             "account_id": account.id,
             "phone": account.phone_number,
             "display_name": display,
@@ -645,28 +455,186 @@ class ClientManager:
                 wrapper = self._clients[account_id]
                 await wrapper.disconnect()
                 del self._clients[account_id]
-                self._account_connect_locks.pop(account_id, None)
-                self._account_connect_lock_loop.pop(account_id, None)
-                logger.debug("Account removed", account_id=account_id)
+                logger.info("Account removed", account_id=account_id)
                 return True
             return False
 
     async def get_client(self, account_id: int) -> Optional[TelegramClientWrapper]:
-        """Get a client by account ID"""
-        async with self._lock:
-            await self._drop_stale_client_unlocked(account_id)
-            return self._clients.get(account_id)
+        """Get a client by account ID. Adds and connects the account if not already in the manager."""
+        wrapper = self._clients.get(account_id)
+        if wrapper is not None and wrapper.is_connected:
+            return wrapper
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account or not account.session_string:
+                logger.warning("Account not found or no session", account_id=account_id)
+                return None
+        if wrapper is None:
+            wrapper, _ = await self.add_account(account_id)
+        if wrapper is None:
+            return None
+        if not wrapper.is_connected:
+            ok = await wrapper.connect()
+            if not ok:
+                logger.warning("Client failed to connect", account_id=account_id)
+                return None
+        return wrapper
+
+    async def get_fresh_client_for_story_publish(
+        self, account_id: int
+    ) -> tuple[Optional[TelegramClientWrapper], Optional[str]]:
+        """
+        Dedicated Telethon client for story precheck/publish, not pooled in _clients.
+        Uses the same session resolution as check_accounts_health (canonical file,
+        session_path file, valid session_string).
+
+        Returns:
+            (wrapper, None) on success — wrapper._precheck_disconnect_after is True;
+            routes disconnect in finally after precheck.
+            (None, reason_code) on failure — short machine-friendly reason, no secrets.
+        """
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                return None, "account_not_found"
+
+        session_source, source_kind = _existing_session_source_for_healthcheck(account)
+        if session_source is None:
+            return None, "no_usable_session"
+
+        try:
+            client = TelegramClient(
+                session_source,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+                proxy=account.proxy_config if account.proxy_config else None,
+                device_model="STORYFLEET",
+                app_version="1.0.0",
+                system_version="Linux",
+                lang_code="en",
+            )
+        except Exception as e:
+            logger.warning(
+                "story_publish_client_build_failed",
+                account_id=account_id,
+                source_kind=source_kind,
+                error=str(e),
+            )
+            return None, "client_build_failed"
+
+        wrapper = TelegramClientWrapper(account, client, self._rate_limiter)
+        wrapper._precheck_disconnect_after = True
+
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                return None, "not_authorized"
+        except Exception as e:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            logger.warning(
+                "story_publish_client_connect_failed",
+                account_id=account_id,
+                source_kind=source_kind,
+                error=str(e),
+            )
+            return None, "connect_failed"
+
+        logger.info(
+            "story_publish_client_ready",
+            account_id=account_id,
+            session_source_kind=source_kind,
+        )
+        return wrapper, None
+
+    async def get_dialogs(self, account_id: int, limit: int = 200) -> List[Dict[str, Any]]:
+        """Fetch groups/channels the account is in. Returns list of {id, title, username, chat_type}."""
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == account_id).first()
+            if not account or not account.session_string:
+                return []
+        wrapper = await self.get_client(account_id)
+        if not wrapper:
+            _, _ = await self.add_account(account)
+            wrapper = await self.get_client(account_id)
+        if not wrapper:
+            return []
+        if not wrapper.is_connected:
+            await wrapper.connect()
+        if not wrapper.is_connected:
+            return []
+        try:
+            dialogs = await wrapper.client.get_dialogs(limit=limit)
+            result = []
+            for d in dialogs:
+                e = d.entity
+                if isinstance(e, Chat):
+                    result.append({
+                        "id": e.id, "title": getattr(e, "title", None) or str(e.id),
+                        "username": getattr(e, "username", None), "chat_type": "group",
+                    })
+                elif isinstance(e, Channel):
+                    title = getattr(e, "title", None) or str(e.id)
+                    username = getattr(e, "username", None)
+                    ct = "channel" if getattr(e, "broadcast", False) else "supergroup"
+                    result.append({
+                        "id": e.id, "title": title, "username": username,
+                        "chat_type": ct,
+                    })
+            return result
+        except Exception as e:
+            logger.error("get_dialogs failed", account_id=account_id, error=str(e))
+            return []
+
+    async def set_account_username(self, account_id: int, username: str) -> Dict[str, Any]:
+        """Set Telegram username for an account. Username without @."""
+        username = (username or "").strip().replace("@", "").strip()
+        if not username or len(username) < 5:
+            return {"success": False, "error": "Username must be 5–32 characters (without @)."}
+        wrapper = await self.get_client(account_id)
+        if not wrapper:
+            return {"success": False, "error": "Account not available or not connected."}
+        try:
+            await wrapper.client(functions.account.UpdateUsernameRequest(username=username))
+            with get_db_context() as db:
+                acc = db.query(Account).filter(Account.id == account_id).first()
+                if acc:
+                    acc.username = username
+                    db.commit()
+            return {"success": True, "username": username}
+        except Exception as e:
+            err = str(e)
+            if "USERNAME_INVALID" in err or "Invalid" in err:
+                return {"success": False, "error": "Username invalid. Use 5–32 characters, letters, numbers, underscores."}
+            if "USERNAME_OCCUPIED" in err or "occupied" in err.lower():
+                return {"success": False, "error": "This username is already taken."}
+            return {"success": False, "error": err}
+
+    async def set_account_profile_photo(self, account_id: int, file_path: str) -> Dict[str, Any]:
+        """Set profile photo for an account from a local file path."""
+        wrapper = await self.get_client(account_id)
+        if not wrapper:
+            return {"success": False, "error": "Account not available or not connected."}
+        try:
+            uploaded = await wrapper.client.upload_file(file_path)
+            await wrapper.client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def get_available_clients(self) -> List[TelegramClientWrapper]:
         """Get all available (connected and not rate-limited) clients"""
-        async with self._lock:
-            for aid in list(self._clients.keys()):
-                await self._drop_stale_client_unlocked(aid)
-            available = []
-            for wrapper in self._clients.values():
-                if wrapper.is_connected and not self._rate_limiter.is_blocked(wrapper.account.id):
-                    available.append(wrapper)
-            return available
+        available = []
+        for wrapper in self._clients.values():
+            if wrapper.is_connected and not self._rate_limiter.is_blocked(wrapper.account.id):
+                available.append(wrapper)
+        return available
 
     async def connect_all(self) -> Dict[int, bool]:
         """Connect all accounts"""
@@ -717,8 +685,408 @@ class ClientManager:
 
         return status
 
+    def healthcheck_eligible_account_ids(
+        self,
+        account_ids_filter: Optional[List[int]] = None,
+    ) -> List[int]:
+        """
+        Account IDs that have a usable session source for general Telegram healthcheck
+        (canonical file, session_path file, or valid session_string — same as check_accounts_health).
+
+        Used by background fleet jobs to skip accounts that would only produce no_session rows.
+        Optional account_ids_filter: if provided (non-empty), restrict to these IDs; if [],
+        returns []. If None, evaluate all accounts in DB.
+        """
+        with get_db_context() as db:
+            q = db.query(Account)
+            if account_ids_filter is not None:
+                if not account_ids_filter:
+                    return []
+                q = q.filter(Account.id.in_(account_ids_filter))
+            accounts = q.order_by(Account.id).all()
+
+        eligible: List[int] = []
+        for account in accounts:
+            session_source, _ = _existing_session_source_for_healthcheck(account)
+            if session_source is not None:
+                eligible.append(account.id)
+        return eligible
+
+    async def check_accounts_health(
+        self,
+        update_status: bool = False,
+        account_ids: Optional[List[int]] = None,
+        verbose: bool = False,
+        persist: bool = True,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Check accounts: connect + multiple API calls to detect deleted/banned/auth.
+        Returns list of {account_id, phone, status, message, reason_code, checked_at}.
+
+        Classification rules:
+          - auth_required: no session | not authorized | SessionRevokedError | AuthKeyUnregisteredError | AuthKeyError
+          - deleted: User.deleted=True | UserDeactivatedError | UserDeactivatedBanError | RPCError 401 / deactivated
+          - banned: UserDeactivatedBanError
+          - restricted: User.restricted=True | UserRestrictedError | RPCError restricted
+          - flood_wait: FloodWaitError
+          - alive: only if ALL of (get_dialogs(1), get_me(), GetFullUser, GetAccountTTL) succeed and no bad flags
+        """
+        results: List[Dict[str, Any]] = []
+        with get_db_context() as db:
+            q = db.query(Account)
+            if account_ids is not None:
+                q = q.filter(Account.id.in_(account_ids))
+            accounts = q.all()
+
+        total_accounts = len(accounts)
+        progress_callback = kwargs.get("progress_callback")
+        local_checked = 0
+
+        def _append_result(row: Dict[str, Any]) -> None:
+            nonlocal local_checked
+            results.append(row)
+            local_checked += 1
+            if callable(progress_callback):
+                progress_callback(local_checked, total_accounts, row)
+
+        for account in accounts:
+            account_id = account.id
+            phone = getattr(account, "phone_number", None)
+            username = getattr(account, "username", None)
+            _status = getattr(account, "status", None)
+            masked = _mask_phone(phone, account_id)
+            checked_at = datetime.now(timezone.utc).isoformat()
+
+            if verbose:
+                logger.info(
+                    "alive_check_start",
+                    account_id=account_id,
+                    phone_masked=masked,
+                    username=username,
+                    checked_at=checked_at,
+                )
+
+            session_source, session_source_kind = _existing_session_source_for_healthcheck(account)
+            if session_source is None:
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "username": username,
+                    "status": "error",
+                    "message": "No usable session",
+                    "reason_code": "no_session",
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.AUTH_REQUIRED
+                continue
+
+            if verbose:
+                logger.info(
+                    "alive_check_session_source",
+                    account_id=account_id,
+                    source=session_source_kind,
+                )
+
+            client = TelegramClient(
+                session_source,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+            )
+            try:
+                # Step 1: connect
+                await client.connect()
+                if verbose:
+                    logger.info("alive_check_step", account_id=account_id, step="connect", result="ok")
+
+                # Step 2: is_user_authorized
+                if not await client.is_user_authorized():
+                    if verbose:
+                        logger.info("alive_check_step", account_id=account_id, step="is_user_authorized", result="not_authorized")
+                    _append_result({
+                        "account_id": account_id,
+                        "phone": phone or f"#{account_id}",
+                        "status": "auth_required",
+                        "message": "Session not authorized",
+                        "reason_code": "not_authorized",
+                        "checked_at": checked_at,
+                    })
+                    if update_status:
+                        with get_db_context() as db:
+                            acc = db.query(Account).filter(Account.id == account_id).first()
+                            if acc:
+                                acc.status = AccountStatus.AUTH_REQUIRED
+                    await client.disconnect()
+                    continue
+
+                if verbose:
+                    logger.info("alive_check_step", account_id=account_id, step="is_user_authorized", result="ok")
+
+                # Step 3: get_dialogs(limit=1) FIRST — triggers USER_DEACTIVATED for deleted accounts
+                await client.get_dialogs(limit=1)
+                if verbose:
+                    logger.info("alive_check_step", account_id=account_id, step="get_dialogs(limit=1)", result="ok")
+
+                # Step 4: get_me()
+                me = await client.get_me()
+                if verbose:
+                    user_flags = {
+                        "deleted": getattr(me, "deleted", None),
+                        "restricted": getattr(me, "restricted", None),
+                        "bot": getattr(me, "bot", None),
+                        "scam": getattr(me, "scam", None),
+                        "fake": getattr(me, "fake", None),
+                    }
+                    logger.info(
+                        "alive_check_step",
+                        account_id=account_id,
+                        step="get_me",
+                        result="ok",
+                        user_id=me.id,
+                        user_flags=user_flags,
+                    )
+
+                if getattr(me, "deleted", False):
+                    await client.disconnect()
+                    _append_result({
+                        "account_id": account_id,
+                        "phone": phone or f"#{account_id}",
+                        "status": "deleted",
+                        "message": "Account deleted (User.deleted=True)",
+                        "reason_code": "user_deleted_flag",
+                        "checked_at": checked_at,
+                    })
+                    if update_status:
+                        with get_db_context() as db:
+                            acc = db.query(Account).filter(Account.id == account_id).first()
+                            if acc:
+                                acc.status = AccountStatus.AUTH_REQUIRED
+                    await asyncio.sleep(0.5)
+                    continue
+                if getattr(me, "restricted", False):
+                    await client.disconnect()
+                    _append_result({
+                        "account_id": account_id,
+                        "phone": phone or f"#{account_id}",
+                        "status": "restricted",
+                        "message": "Account restricted (User.restricted=True)",
+                        "reason_code": "user_restricted_flag",
+                        "checked_at": checked_at,
+                    })
+                    if update_status:
+                        with get_db_context() as db:
+                            acc = db.query(Account).filter(Account.id == account_id).first()
+                            if acc:
+                                acc.status = AccountStatus.AUTH_REQUIRED
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Step 5: GetFullUser (server-side validation)
+                await client(functions.users.GetFullUserRequest(me))
+                if verbose:
+                    logger.info("alive_check_step", account_id=account_id, step="GetFullUserRequest", result="ok")
+
+                # Step 6: GetAccountTTL (fails for many deleted/limited)
+                await client(functions.account.GetAccountTTLRequest())
+                if verbose:
+                    logger.info("alive_check_step", account_id=account_id, step="GetAccountTTLRequest", result="ok")
+
+                # Step 7: updates.GetState (lightweight server validation)
+                await client(functions.updates.GetStateRequest())
+                if verbose:
+                    logger.info("alive_check_step", account_id=account_id, step="GetStateRequest", result="ok")
+
+                await client.disconnect()
+
+                # Only mark ALIVE when all checks passed
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "alive",
+                    "message": (f"@{me.username}" if me.username else (me.first_name or str(me.id))),
+                    "reason_code": "all_checks_passed",
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc and acc.status != AccountStatus.ACTIVE:
+                            acc.status = AccountStatus.ACTIVE
+
+            except FloodWaitError as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                if verbose:
+                    logger.info(
+                        "alive_check_exception",
+                        account_id=account_id,
+                        exception_type=type(e).__name__,
+                        message=str(e),
+                        seconds=getattr(e, "seconds", None),
+                    )
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "flood_wait",
+                    "message": f"Rate limited; wait {getattr(e, 'seconds', 0)}s",
+                    "reason_code": "flood_wait",
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.FLOOD_WAIT
+            except UserDeactivatedBanError as e:
+                await client.disconnect()
+                if verbose:
+                    logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "banned",
+                    "message": "Account banned by Telegram",
+                    "reason_code": "UserDeactivatedBanError",
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.BANNED
+            except UserDeactivatedError as e:
+                await client.disconnect()
+                if verbose:
+                    logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "deleted",
+                    "message": "Account deleted or deactivated",
+                    "reason_code": "UserDeactivatedError",
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.AUTH_REQUIRED
+            except UserRestrictedError as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                if verbose:
+                    logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "restricted",
+                    "message": "Account restricted by Telegram",
+                    "reason_code": "UserRestrictedError",
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.AUTH_REQUIRED
+            except (SessionRevokedError, AuthKeyUnregisteredError, AuthKeyError) as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                if verbose:
+                    logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "auth_required",
+                    "message": "Session invalid or revoked",
+                    "reason_code": type(e).__name__,
+                    "checked_at": checked_at,
+                })
+                if update_status:
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.AUTH_REQUIRED
+            except RPCError as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                msg = str(e).lower()
+                code = getattr(e, "code", None)
+                if code == 401 or "deactivated" in msg or "user_deactivated" in msg:
+                    status, message, reason_code = "deleted", "Account deleted or deactivated (RPC)", f"RPCError_code_{code}"
+                elif code == 420 or "frozen" in msg:
+                    status, message, reason_code = "frozen", "Account frozen by Telegram (limited methods)", f"RPCError_code_{code}"
+                elif "restricted" in msg:
+                    status, message, reason_code = "restricted", str(e), "RPCError_restricted"
+                else:
+                    status, message, reason_code = "error", str(e), f"RPCError_{code}"
+                if verbose:
+                    logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, code=code, message=str(e))
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": status,
+                    "message": message,
+                    "reason_code": reason_code,
+                    "checked_at": checked_at,
+                })
+                if update_status and status in ("deleted", "restricted", "frozen"):
+                    with get_db_context() as db:
+                        acc = db.query(Account).filter(Account.id == account_id).first()
+                        if acc:
+                            acc.status = AccountStatus.BANNED if status == "restricted" else AccountStatus.AUTH_REQUIRED
+            except Exception as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                if verbose:
+                    logger.info("alive_check_exception", account_id=account_id, exception_type=type(e).__name__, message=str(e))
+                _append_result({
+                    "account_id": account_id,
+                    "phone": phone or f"#{account_id}",
+                    "status": "error",
+                    "message": str(e),
+                    "reason_code": type(e).__name__,
+                    "checked_at": checked_at,
+                })
+
+            await asyncio.sleep(0.5)
+
+        return results
+
     async def start_phone_auth(self, phone_number: str) -> Dict[str, Any]:
         """Start phone authentication for a new account"""
+        # Normalize phone for comparison
+        phone_norm = phone_number.strip().replace(" ", "").replace("-", "")
+        if not phone_norm.startswith("+"):
+            phone_norm = "+" + phone_norm
+
+        # If this number is already in our accounts, the code goes to that session (not SMS)
+        with get_db_context() as db:
+            for acc in db.query(Account).all():
+                p = (acc.phone_number or "").replace(" ", "").replace("-", "").strip()
+                if not p.startswith("+"):
+                    p = "+" + p
+                if p == phone_norm or (len(p) >= 9 and len(phone_norm) >= 9 and p[-9:] == phone_norm[-9:]):
+                    return {
+                        "success": False,
+                        "error": f"This number is already added (Account #{acc.id}). Use the phone icon next to it to get the code.",
+                        "existing_account_id": acc.id,
+                    }
+
         # Create temporary client for auth
         session = StringSession()
         client = TelegramClient(
@@ -729,17 +1097,54 @@ class ClientManager:
 
         try:
             await client.connect()
-            sent_code = await client.send_code_request(phone_number)
+            # Use raw API with CodeSettings to prefer app delivery (Telegram "Login code: XXXXX")
+            # allow_app_hash=True, allow_missed_call=True = we support app/missed-call (not SMS-only)
+            sent_code = await client(
+                functions.auth.SendCodeRequest(
+                    phone_number=phone_number,
+                    api_id=settings.telegram.api_id,
+                    api_hash=settings.telegram.api_hash,
+                    settings=types.CodeSettings(
+                        allow_app_hash=True,
+                        allow_missed_call=True,
+                    ),
+                )
+            )
+
+            # Handle SentCodeSuccess (already logged in - shouldn't happen for new login)
+            if isinstance(sent_code, types.auth.SentCodeSuccess):
+                return {"success": False, "error": "This number is already logged in elsewhere."}
+
+            # Keep connection briefly (Telegram may not deliver if we disconnect immediately)
+            await asyncio.sleep(3)
+
+            # Check if this number exists in our accounts – code may arrive there, not SMS
+            existing_id = None
+            with get_db_context() as db:
+                for acc in db.query(Account).all():
+                    p = (acc.phone_number or "").replace(" ", "").replace("-", "").strip()
+                    if not p.startswith("+"):
+                        p = "+" + p
+                    if p == phone_norm or (len(p) >= 9 and len(phone_norm) >= 9 and p[-9:] == phone_norm[-9:]):
+                        existing_id = acc.id
+                        break
 
             return {
                 "success": True,
                 "phone_number": phone_number,
                 "phone_code_hash": sent_code.phone_code_hash,
                 "session_string": session.save(),
-                "message": f"Code sent to {phone_number}"
+                "message": f"Code sent to {phone_number}",
+                "existing_account_id": existing_id,
             }
         except PhoneNumberBannedError:
             return {"success": False, "error": "Phone number is banned"}
+        except FloodWaitError as e:
+            hours = round(e.seconds / 3600, 1)
+            return {
+                "success": False,
+                "error": f"Telegram rate limit: too many code requests. Wait ~{hours} hours before trying again, or use a different phone number."
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
         finally:
@@ -795,13 +1200,8 @@ class ClientManager:
                 db.commit()
                 db.refresh(account)
 
-                _w, mgr_err = await self.add_account(account)
-                if mgr_err:
-                    logger.warning(
-                        "Account saved but client manager could not load session",
-                        account_id=account.id,
-                        reason=mgr_err,
-                    )
+                # Add to manager
+                _, _ = await self.add_account(account)
 
                 return {
                     "success": True,
@@ -818,357 +1218,186 @@ class ClientManager:
         finally:
             await client.disconnect()
 
-    async def import_session_string(self, session_string: str, **_: Any) -> Dict[str, Any]:
-        """Import an account from a Telethon StringSession string."""
-        session = StringSession(session_string)
+    async def import_session_string(self, session_string: str) -> Dict[str, Any]:
+        """Import account from session string (e.g. from tdata conversion). No phone/code needed."""
+        if not session_string or not session_string.strip():
+            return {"success": False, "error": "Session string required"}
+        session = StringSession(session_string.strip())
         client = TelegramClient(
             session,
             settings.telegram.api_id,
             settings.telegram.api_hash,
+            device_model="STORYFLEET",
+            app_version="1.0.0",
+            system_version="Linux",
+            lang_code="en",
         )
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                return {"success": False, "error": "Session is not authorized"}
-
+                return {"success": False, "error": "Session not authorized. Use a valid session from tdata or Telegram."}
             me = await client.get_me()
-            phone = me.phone or str(me.id)
-
+            # Phone: from get_me() or GetFullUser (some sessions don't expose phone in get_me)
+            phone_number = f"+{me.phone}" if getattr(me, "phone", None) else None
+            if not phone_number:
+                try:
+                    full = await client(functions.users.GetFullUserRequest(me))
+                    if getattr(full, "full_user", None) and getattr(full.full_user, "phone", None):
+                        p = full.full_user.phone
+                        phone_number = (p if (p and str(p).startswith("+")) else f"+{p}") if p else None
+                except Exception:
+                    pass
+                if not phone_number:
+                    phone_number = f"user_{me.id}"
             with get_db_context() as db:
-                existing = db.query(Account).filter(
-                    Account.phone_number == phone
-                ).first()
-                if not existing and me.id:
-                    existing = db.query(Account).filter(
-                        Account.user_id == me.id
-                    ).first()
-
+                existing = db.query(Account).filter(Account.user_id == me.id).first()
                 if existing:
-                    existing.session_string = session_string
-                    existing.status = AccountStatus.ACTIVE
-                    existing.user_id = me.id
-                    existing.username = me.username
-                    existing.first_name = me.first_name
-                    existing.last_name = me.last_name
+                    existing.session_string = session.save()
                     existing.last_active = datetime.utcnow()
+                    # Refresh profile from Telegram so username/first_name/last_name/phone are up to date
+                    existing.phone_number = phone_number
+                    existing.username = getattr(me, "username", None)
+                    existing.first_name = getattr(me, "first_name", None)
+                    existing.last_name = getattr(me, "last_name", None)
                     db.commit()
                     db.refresh(existing)
-                    _w, mgr_err = await self.add_account(existing)
-                    if mgr_err:
-                        logger.warning(
-                            "Account updated but client manager could not load session",
-                            account_id=existing.id,
-                            reason=mgr_err,
-                        )
+                    _, _ = await self.add_account(existing)
                     return {
                         "success": True,
                         "account_id": existing.id,
                         "user_id": me.id,
                         "username": me.username,
-                        "phone_number": phone,
-                        "message": f"Updated existing account {me.first_name}",
+                        "phone_number": getattr(existing, "phone_number", None) or phone_number,
+                        "first_name": getattr(me, "first_name", None),
+                        "last_name": getattr(me, "last_name", None),
+                        "message": f"Session updated for {me.first_name}",
                     }
-                else:
-                    account = Account(
-                        phone_number=phone,
-                        session_string=session_string,
-                        user_id=me.id,
-                        username=me.username,
-                        first_name=me.first_name,
-                        last_name=me.last_name,
-                        status=AccountStatus.ACTIVE,
-                        last_active=datetime.utcnow(),
-                    )
-                    db.add(account)
-                    db.commit()
-                    db.refresh(account)
-                    _w, mgr_err = await self.add_account(account)
-                    if mgr_err:
-                        logger.warning(
-                            "Account imported but client manager could not load session",
-                            account_id=account.id,
-                            reason=mgr_err,
-                        )
-                    return {
-                        "success": True,
-                        "account_id": account.id,
-                        "user_id": me.id,
-                        "username": me.username,
-                        "phone_number": phone,
-                        "message": f"Imported account {me.first_name}",
-                    }
+                account = Account(
+                    phone_number=phone_number,
+                    session_string=session.save(),
+                    user_id=me.id,
+                    username=me.username,
+                    first_name=me.first_name,
+                    last_name=me.last_name,
+                    status=AccountStatus.ACTIVE,
+                    last_active=datetime.utcnow(),
+                )
+                db.add(account)
+                db.commit()
+                db.refresh(account)
+                _, _ = await self.add_account(account)
+                return {
+                    "success": True,
+                    "account_id": account.id,
+                    "user_id": me.id,
+                    "username": me.username,
+                    "phone_number": phone_number,
+                    "first_name": me.first_name,
+                    "last_name": me.last_name,
+                    "message": f"Successfully imported {me.first_name}",
+                }
+        except AuthKeyError:
+            return {"success": False, "error": "Invalid session. Convert tdata again or use a fresh session."}
         except Exception as e:
             return {"success": False, "error": str(e)}
         finally:
             await client.disconnect()
 
-    async def get_dialogs(self, account_id: int, limit: int = 200) -> Dict[str, Any]:
-        """Get dialogs (chats/channels) for an account."""
-        async with self._lock:
-            await self._drop_stale_client_unlocked(account_id)
-            wrapper = self._clients.get(account_id)
-        if not wrapper:
-            with get_db_context() as db:
-                account = db.query(Account).filter(Account.id == account_id).first()
-            if account:
-                wrapper, err = await self.add_account(account)
-                if not wrapper:
-                    return {
-                        "error": human_message_for_code(err) if err else "Account not in manager",
-                        "dialogs": [],
-                    }
-            else:
-                return {"error": "Account not in manager", "dialogs": []}
-        if not wrapper.is_connected:
-            ok, reason = await wrapper.connect_with_reason()
-            if not ok:
-                return {
-                    "error": human_message_for_code(reason) if reason else "Could not connect account",
-                    "dialogs": [],
-                }
-        try:
-            dialogs = []
-            async for dialog in wrapper.client.iter_dialogs(limit=limit):
-                entity = dialog.entity
-                d_type = "private"
-                if hasattr(entity, "broadcast") and entity.broadcast:
-                    d_type = "channel"
-                elif hasattr(entity, "megagroup") and entity.megagroup:
-                    d_type = "supergroup"
-                elif dialog.is_group:
-                    d_type = "group"
-                dialogs.append({
-                    "id": dialog.id,
-                    "name": dialog.name,
-                    "type": d_type,
-                    "unread": dialog.unread_count,
-                    "username": getattr(entity, "username", None),
-                })
-            return {"dialogs": dialogs, "total": len(dialogs)}
-        except Exception as e:
-            logger.error("get_dialogs failed", account_id=account_id, error=str(e))
-            return {"error": str(e), "dialogs": []}
 
-    async def list_joined_groups_channels(self, account_id: int, limit: int = 300) -> Dict[str, Any]:
-        """
-        Read-only: groups / channels / supergroups from the account's dialog list
-        (excludes private 1:1 User chats). Used by Scheduler operators to compare
-        Telegram membership vs ``chat_targets`` bindings — does not mutate Telegram.
-
-        ``limit`` is the maximum **group/channel rows** to return. Dialog iteration
-        continues past that many *dialogs* because the first N dialogs are often
-        dominated by DMs; we scan up to ``max_dialog_scans`` then stop (see response
-        ``scan_capped``).
-        """
-        async with self._lock:
-            await self._drop_stale_client_unlocked(account_id)
-            wrapper = self._clients.get(account_id)
-        if not wrapper:
-            with get_db_context() as db:
-                account = db.query(Account).filter(Account.id == account_id).first()
-            if account:
-                wrapper, err = await self.add_account(account)
-                if not wrapper:
-                    return {
-                        "error": human_message_for_code(err) if err else "Account not in manager",
-                        "groups": [],
-                    }
-            else:
-                return {"error": "Account not found", "groups": []}
-        if not wrapper.is_connected:
-            ok, reason = await wrapper.connect_with_reason()
-            if not ok:
-                return {
-                    "error": human_message_for_code(reason) if reason else "Could not connect account",
-                    "groups": [],
-                }
-        try:
-            max_groups = max(1, min(int(limit), 500))
-            # Budget of raw dialogs to walk before giving up (many accounts have lots
-            # of private chats ahead of older groups in recency order).
-            max_dialog_scans = min(20000, max(2000, max_groups * 25))
-            out: List[Dict[str, Any]] = []
-            seen_peers: set = set()
-            scanned = 0
-            async for dialog in wrapper.client.iter_dialogs():
-                scanned += 1
-                entity = dialog.entity
-                if not isinstance(entity, User):
-                    title = (dialog.name or getattr(entity, "title", None) or "") or ""
-                    username = getattr(entity, "username", None) or None
-                    if isinstance(entity, Channel):
-                        chat_type = "channel" if entity.broadcast else "supergroup"
-                        entity_id = int(entity.id)
-                    elif isinstance(entity, Chat):
-                        chat_type = "group"
-                        entity_id = int(entity.id)
-                    else:
-                        entity_id = None
-                        chat_type = ""
-                    if entity_id is not None:
-                        peer_id = int(get_peer_id(entity))
-                        if peer_id not in seen_peers:
-                            seen_peers.add(peer_id)
-                            out.append({
-                                "title": title,
-                                "username": username,
-                                "tg_entity_id": entity_id,
-                                "peer_id": peer_id,
-                                "chat_type": chat_type,
-                            })
-                if len(out) >= max_groups or scanned >= max_dialog_scans:
-                    break
-            scan_capped = scanned >= max_dialog_scans and len(out) < max_groups
-            if scan_capped:
-                logger.warning(
-                    "list_joined_groups_channels_scan_capped",
-                    account_id=account_id,
-                    groups=len(out),
-                    max_groups=max_groups,
-                    dialogs_scanned=scanned,
-                    max_dialog_scans=max_dialog_scans,
-                )
-            return {
-                "groups": out,
-                "total": len(out),
-                "dialogs_scanned": scanned,
-                "scan_capped": scan_capped,
-                "max_dialog_scans": max_dialog_scans,
-            }
-        except Exception as e:
-            logger.error("list_joined_groups_channels failed", account_id=account_id, error=str(e))
-            return {"error": str(e), "groups": []}
-
-
-# ---------------------------------------------------------------------------
-# QR Login — module-level helpers (sync wrappers around async Telethon flow)
-# ---------------------------------------------------------------------------
-
-_qr_sessions: Dict[str, Dict] = {}
+# Pending QR logins: token -> {url, status, account_id?, error?}
+_pending_qr: Dict[str, Dict[str, Any]] = {}
 _qr_lock = threading.Lock()
 
 
 def _qr_login_thread(token: str) -> None:
-    """Background thread: runs the full QR login coroutine and updates state."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    async def _run() -> None:
-        with _qr_lock:
-            state = _qr_sessions.get(token)
-        if not state:
-            return
-
-        client = TelegramClient(
-            StringSession(),
-            settings.telegram.api_id,
-            settings.telegram.api_hash,
-        )
-        state["client"] = client
+    """Background thread: create client, qr_login, wait for scan, save account."""
+    async def _run():
+        client = None
         try:
+            session = StringSession()
+            client = TelegramClient(
+                session,
+                settings.telegram.api_id,
+                settings.telegram.api_hash,
+            )
             await client.connect()
             qr = await client.qr_login()
-            state["url"] = qr.url
-            state["status"] = "waiting"
-
-            me = await qr.wait(60 * 5)  # wait up to 5 minutes
-            session_str = client.session.save()
-
+            with _qr_lock:
+                _pending_qr[token]["url"] = qr.url
+                _pending_qr[token]["status"] = "waiting"
+            await qr.wait(timeout=120)
+            me = await client.get_me()
+            phone = f"+{me.phone}" if me.phone else f"user_{me.id}"
             with get_db_context() as db:
-                existing = db.query(Account).filter(
-                    Account.user_id == me.id
-                ).first()
-                if existing:
-                    existing.session_string = session_str
-                    existing.status = AccountStatus.ACTIVE
-                    db.commit()
-                    account_id = existing.id
-                else:
-                    account = Account(
-                        phone_number=me.phone or str(me.id),
-                        session_string=session_str,
-                        user_id=me.id,
-                        username=me.username,
-                        first_name=me.first_name,
-                        last_name=me.last_name,
-                        status=AccountStatus.ACTIVE,
-                        last_active=datetime.utcnow(),
-                    )
-                    db.add(account)
-                    db.commit()
-                    db.refresh(account)
-                    account_id = account.id
-
-            state["account_id"] = account_id
-            state["status"] = "completed"
+                acc = Account(
+                    phone_number=phone,
+                    session_string=session.save(),
+                    user_id=me.id,
+                    username=me.username,
+                    first_name=me.first_name,
+                    last_name=me.last_name,
+                    status=AccountStatus.ACTIVE,
+                    last_active=datetime.utcnow(),
+                )
+                db.add(acc)
+                db.commit()
+                db.refresh(acc)
+            _, _ = await client_manager.add_account(acc)
+            with _qr_lock:
+                _pending_qr[token]["status"] = "success"
+                _pending_qr[token]["account_id"] = acc.id
         except asyncio.TimeoutError:
-            state["status"] = "expired"
-            state["error"] = "QR code expired — not scanned within 5 minutes"
+            with _qr_lock:
+                _pending_qr[token]["status"] = "expired"
+                _pending_qr[token]["error"] = "QR code expired. Generate a new one."
+        except SessionPasswordNeededError:
+            with _qr_lock:
+                _pending_qr[token]["status"] = "error"
+                _pending_qr[token]["error"] = "2FA password required. Use Import from tdata or Phone+Code instead."
         except Exception as e:
-            state["status"] = "error"
-            state["error"] = str(e)
+            with _qr_lock:
+                _pending_qr[token]["status"] = "error"
+                _pending_qr[token]["error"] = str(e)
         finally:
-            try:
+            if client:
                 await client.disconnect()
-            except Exception:
-                pass
 
-    loop.run_until_complete(_run())
-    loop.close()
+    asyncio.run(_run())
 
 
 def start_qr_login() -> Dict[str, Any]:
-    """Start a QR code login session. Returns URL + polling token."""
-    token = secrets.token_urlsafe(16)
-    state: Dict[str, Any] = {
-        "status": "starting",
-        "url": None,
-        "account_id": None,
-        "error": None,
-        "created_at": datetime.utcnow(),
-    }
+    """Start QR login. Returns token and URL. Background thread waits for scan."""
+    api_id = getattr(settings.telegram, "api_id", None) or int(__import__("os").environ.get("TELEGRAM_API_ID", 0) or 0)
+    api_hash = getattr(settings.telegram, "api_hash", None) or __import__("os").environ.get("TELEGRAM_API_HASH", "")
+    if not api_id or not api_hash:
+        return {"success": False, "error": "TELEGRAM_API_ID and TELEGRAM_API_HASH required. Run sync_db_from_server with --env."}
+    token = str(uuid.uuid4())
     with _qr_lock:
-        _qr_sessions[token] = state
-
-    t = threading.Thread(target=_qr_login_thread, args=(token,), daemon=True)
+        _pending_qr[token] = {"url": None, "status": "starting"}
+    t = threading.Thread(target=_qr_login_thread, args=(token,))
+    t.daemon = True
     t.start()
-
-    # Wait up to 3 seconds for the URL to appear
-    for _ in range(30):
-        time.sleep(0.1)
-        if state.get("url") or state["status"] in ("error", "expired"):
-            break
-
-    if not state.get("url"):
+    for _ in range(50):
+        time.sleep(0.2)
         with _qr_lock:
-            _qr_sessions.pop(token, None)
-        return {"success": False, "error": state.get("error", "Failed to generate QR code")}
-
-    return {"success": True, "token": token, "url": state["url"]}
+            if _pending_qr[token].get("url"):
+                return {"success": True, "token": token, "url": _pending_qr[token]["url"]}
+            if _pending_qr[token].get("status") == "error":
+                return {"success": False, "error": _pending_qr[token].get("error", "Unknown error")}
+    return {"success": False, "error": "QR login failed to start"}
 
 
 def check_qr_login(token: str) -> Dict[str, Any]:
-    """Poll QR login status by token."""
+    """Check if QR login completed."""
     with _qr_lock:
-        state = _qr_sessions.get(token)
-
-    if not state:
-        return {"success": False, "error": "QR session not found or expired"}
-
-    status = state["status"]
-
-    if status == "completed":
-        with _qr_lock:
-            _qr_sessions.pop(token, None)
-        return {"success": True, "completed": True, "account_id": state.get("account_id")}
-
-    if status in ("error", "expired"):
-        with _qr_lock:
-            _qr_sessions.pop(token, None)
-        return {"success": False, "completed": False, "error": state.get("error")}
-
-    # still waiting
-    return {"success": True, "completed": False, "url": state.get("url"), "status": status}
+        if token not in _pending_qr:
+            return {"success": False, "error": "Invalid or expired token"}
+        p = _pending_qr[token]
+        if p["status"] == "success":
+            return {"success": True, "account_id": p.get("account_id")}
+        if p["status"] in ("error", "expired"):
+            return {"success": False, "error": p.get("error", "Login failed")}
+        return {"success": False, "status": "waiting"}
 
 
 # Global client manager instance
