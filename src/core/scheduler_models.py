@@ -7,7 +7,7 @@ from enum import Enum
 
 from sqlalchemy import (
     Column, Integer, String, Text, Boolean, DateTime,
-    ForeignKey, JSON, Enum as SQLEnum, BigInteger, UniqueConstraint
+    ForeignKey, JSON, Enum as SQLEnum, BigInteger, UniqueConstraint, Index,
 )
 from sqlalchemy.orm import relationship, backref
 
@@ -39,6 +39,7 @@ class JobStatus(str, Enum):
     SKIPPED = "SKIPPED"
     CANCELLED = "CANCELLED"
 
+
 # Temporary value on ``ScheduledJob.last_error`` while PENDING for jobs created by
 # the dashboard Send Test API. ``execute_job`` clears it and treats the job like
 # ``is_send_test=True`` (pacing, active-account hint) when run by the scheduler worker.
@@ -46,6 +47,8 @@ SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER = "__operator_send_test__"
 
 
 class DeliveryStatus(str, Enum):
+    SENDING = "SENDING"
+    UNCERTAIN = "UNCERTAIN"
     SENT = "SENT"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
@@ -197,7 +200,54 @@ class MessageDelivery(Base):
     error_code = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
 
+    attempt_started_at = Column(DateTime, nullable=True)
+    idempotency_key = Column(String(64), nullable=True)
+
+    # Naive UTC instant (same convention as executor ``datetime.utcnow()`` writes).
     created_at = Column(DateTime, default=datetime.utcnow)
 
     account = relationship("Account", backref="message_deliveries")
     target = relationship("ChatTarget", backref="message_deliveries")
+
+
+class AccountReadinessSnapshot(Base):
+    """
+    Cross-process Telegram readiness truth (web workers + scheduler).
+
+    ``expires_at`` NULL means the row does not auto-expire (used for NOT_AUTHORIZED
+    until a later deep check overwrites it). READY / TEMP_CONNECT / ERROR use TTL.
+    """
+
+    __tablename__ = "account_readiness_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, unique=True, index=True)
+    status = Column(String(32), nullable=False)
+    reason = Column(Text, nullable=True)
+    failure_code = Column(String(64), nullable=True)
+    checked_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    account = relationship("Account", backref=backref("readiness_snapshot", uselist=False))
+
+
+class AccountTargetMembershipProbe(Base):
+    """
+    Short-lived cache of operator-triggered Telegram membership probes.
+    Not authoritative for scheduling — use for UI hints only.
+    """
+
+    __tablename__ = "account_target_membership_probes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    target_id = Column(Integer, ForeignKey("chat_targets.id"), nullable=False, index=True)
+    status = Column(String(40), nullable=False)
+    can_post = Column(Boolean, nullable=True)
+    message = Column(Text, nullable=True)
+    checked_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "target_id", name="uq_membership_probe_account_target"),
+        Index("ix_membership_probe_checked_at", "checked_at"),
+    )

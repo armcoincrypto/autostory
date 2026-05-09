@@ -2,7 +2,9 @@
 Scheduler job executor - sends messages via Telethon
 """
 import asyncio
+import os
 import random
+import uuid
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
@@ -201,6 +203,181 @@ def _should_flip_can_post_on_send_failure(exc: Exception) -> bool:
     return True
 
 
+def _delivery_status_lc():
+    return func.lower(func.trim(MessageDelivery.status))
+
+
+def _preflight_delivery_intent(job_id: int) -> Optional[str]:
+    """
+    Reconcile in-flight delivery rows before a new send attempt.
+
+    Returns:
+        ``uncertain_block`` — do not send (UNCERTAIN row exists).
+        ``already_sending`` — another worker holds a valid lease for SENDING intent.
+        ``None`` — safe to create a new SENDING row (stale SENDING rows are FAILED).
+    """
+    _st = _delivery_status_lc()
+    with get_db_context() as db:
+        job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+        if not job:
+            return None
+        uncertain = (
+            db.query(MessageDelivery)
+            .filter(MessageDelivery.job_id == int(job_id), _st == "uncertain")
+            .first()
+        )
+        if uncertain is not None:
+            return "uncertain_block"
+
+        sending_rows = (
+            db.query(MessageDelivery)
+            .filter(MessageDelivery.job_id == int(job_id), _st == "sending")
+            .order_by(MessageDelivery.id.asc())
+            .all()
+        )
+        if not sending_rows:
+            return None
+        if len(sending_rows) > 1:
+            for extra in sending_rows[:-1]:
+                extra.status = DeliveryStatus.FAILED.value
+                extra.error_code = "DUPLICATE_SENDING"
+                extra.error_message = "Superseded send-intent row"
+        latest = sending_rows[-1]
+        now = datetime.utcnow()
+        lu = job.lease_until
+        if str(job.status) == JobStatus.RUNNING.value and lu is not None and lu > now:
+            return "already_sending"
+        latest.status = DeliveryStatus.FAILED.value
+        latest.error_code = "STALE_SENDING"
+        latest.error_message = (
+            "Stale SENDING intent (lease expired or job not RUNNING) — cleared before retry"
+        )
+    return None
+
+
+def _fail_job_for_uncertain_block(job_id: int) -> None:
+    with get_db_context() as db:
+        job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+        if not job:
+            return
+        prev_lo, prev_lu = job.lease_owner, job.lease_until
+        job.status = JobStatus.FAILED.value
+        job.attempts = (job.attempts or 0) + 1
+        job.last_error = "UNCERTAIN prior delivery — operator review required"
+        job.updated_at = datetime.utcnow()
+        job.lease_until = None
+        job.lease_owner = None
+        _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="uncertain_block")
+
+
+def _create_sending_delivery(
+    job_id: int,
+    account_id: int,
+    target_id: int,
+    type_: str,
+    rendered: str,
+) -> int:
+    key = uuid.uuid4().hex[:32]
+    with get_db_context() as db:
+        now = datetime.utcnow()
+        d = MessageDelivery(
+            job_id=int(job_id),
+            account_id=int(account_id),
+            target_id=int(target_id),
+            type=type_,
+            status=DeliveryStatus.SENDING.value,
+            rendered_body=rendered[:500] if rendered else None,
+            attempt_started_at=now,
+            idempotency_key=key,
+        )
+        db.add(d)
+        db.flush()
+        did = int(d.id)
+    logger.info(
+        "scheduler_delivery_sending_created",
+        job_id=int(job_id),
+        delivery_id=did,
+        idempotency_key=key,
+    )
+    return did
+
+
+def _mark_delivery_uncertain(
+    delivery_id: int,
+    job_id: int,
+    detail: str,
+    *,
+    error_code: str = "AMBIGUOUS_RPC",
+) -> None:
+    with get_db_context() as db:
+        d = db.query(MessageDelivery).filter(MessageDelivery.id == int(delivery_id)).first()
+        if d:
+            d.status = DeliveryStatus.UNCERTAIN.value
+            d.error_code = error_code
+            d.error_message = detail[:2000] if detail else None
+    logger.info(
+        "scheduler_delivery_uncertain",
+        job_id=int(job_id),
+        delivery_id=int(delivery_id),
+        error_code=error_code,
+    )
+
+
+def _finalize_delivery_sent(
+    delivery_id: int,
+    job_id: int,
+    tg_message_id: int,
+    rendered: str,
+) -> None:
+    with get_db_context() as db:
+        d = db.query(MessageDelivery).filter(MessageDelivery.id == int(delivery_id)).first()
+        if d:
+            d.status = DeliveryStatus.SENT.value
+            d.tg_message_id = tg_message_id
+            d.sent_at = datetime.utcnow()
+            if not d.rendered_body and rendered:
+                d.rendered_body = rendered[:500]
+        job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+        if job:
+            prev_lo, prev_lu = job.lease_owner, job.lease_until
+            job.status = JobStatus.SENT.value
+            job.updated_at = datetime.utcnow()
+            job.lease_until = None
+            job.lease_owner = None
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_sent")
+    logger.info(
+        "scheduler_delivery_sent_finalized",
+        job_id=int(job_id),
+        delivery_id=int(delivery_id),
+        tg_message_id=int(tg_message_id),
+    )
+
+
+def _finalize_delivery_failed(
+    delivery_id: int,
+    job_id: int,
+    error: str,
+    *,
+    error_code: Optional[str] = None,
+) -> None:
+    with get_db_context() as db:
+        d = db.query(MessageDelivery).filter(MessageDelivery.id == int(delivery_id)).first()
+        if d:
+            d.status = DeliveryStatus.FAILED.value
+            d.error_code = error_code
+            d.error_message = error[:2000] if error else None
+        job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+        if job:
+            prev_lo, prev_lu = job.lease_owner, job.lease_until
+            job.status = JobStatus.FAILED.value
+            job.attempts = (job.attempts or 0) + 1
+            job.last_error = error
+            job.updated_at = datetime.utcnow()
+            job.lease_until = None
+            job.lease_owner = None
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_failed")
+
+
 async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
     """Execute a single scheduled job. Returns True if sent successfully."""
     effective_send_test = bool(is_send_test)
@@ -310,21 +487,39 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
                 )
                 return False
 
-    # Get template body
-    template_body = _get_template_body(job, account, target, binding)
-    if not template_body:
-        _mark_job_failed(job_id, "No template found")
-        return False
+        # Get template body (must stay inside this session: job/account/target are not valid after close)
+        template_body = _get_template_body(job, account, target, binding)
+        if not template_body:
+            _mark_job_failed(job_id, "No template found")
+            return False
 
-    if _reconcile_job_if_sent_delivery_exists(job_id):
-        return True
+        if _reconcile_job_if_sent_delivery_exists(job_id):
+            return True
 
-    account_name = account.first_name or account.username or account.phone_number
-    rendered = render_template(
-        template_body,
-        account_name=account_name,
-        chat_title=target.title,
-    )
+        account_name = account.first_name or account.username or account.phone_number
+        rendered = render_template(
+            template_body,
+            account_name=account_name,
+            chat_title=target.title,
+        )
+        job_type_str = str(job.type)
+        # Eager-load fields used after this session closes (Telethon / wrapper path).
+        _ = (
+            account.session_string,
+            getattr(account, "session_path", None),
+            account.proxy_config,
+            account.phone_number,
+        )
+        _ = (
+            getattr(target, "username", None),
+            getattr(target, "invite_link", None),
+            getattr(target, "tg_id", None),
+            target.title,
+        )
+        db.expunge(account)
+        db.expunge(target)
+        db.expunge(job)
+        db.expunge(binding)
 
     if effective_send_test:
         mark_account_active(int(account.id))
@@ -332,6 +527,15 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
 
     # Get client and send (add_account resolves file vs string session and verifies auth)
     try:
+        pre = _preflight_delivery_intent(job_id)
+        if pre == "uncertain_block":
+            logger.info("scheduler_delivery_uncertain_block", job_id=job_id)
+            _fail_job_for_uncertain_block(job_id)
+            return False
+        if pre == "already_sending":
+            logger.info("scheduler_delivery_already_sending", job_id=job_id)
+            return False
+
         wrapper, fail_reason = await client_manager.add_account(account)
         if not wrapper:
             detail = human_message_for_code(fail_reason) if fail_reason else "Failed to get client"
@@ -359,6 +563,16 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             _mark_job_failed(job_id, "Target has no tg_id/username/link", error_code="NoEntity")
             return False
 
+        delivery_id = _create_sending_delivery(
+            job_id,
+            int(account.id),
+            int(target.id),
+            job_type_str,
+            rendered,
+        )
+
+        timeout_sec = float(os.environ.get("SCHEDULER_SEND_RPC_TIMEOUT_SEC", "120"))
+
         retryable_post = (
             ChatWriteForbiddenError,
             UserBannedInChannelError,
@@ -368,12 +582,15 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         try:
             for attempt in (0, 1):
                 try:
-                    msg = await wrapper.execute(
-                        wrapper.client.send_message,
-                        entity,
-                        rendered,
-                    )
-                    _mark_job_sent(job_id, msg.id, rendered)
+                    async def _invoke_send():
+                        return await wrapper.execute(
+                            wrapper.client.send_message,
+                            entity,
+                            rendered,
+                        )
+
+                    msg = await asyncio.wait_for(_invoke_send(), timeout=timeout_sec)
+                    _finalize_delivery_sent(delivery_id, job_id, int(msg.id), rendered)
                     logger.info("Message sent", job_id=job_id, tg_msg_id=msg.id)
                     try:
                         from src.clients.readiness_store import mark_account_ready_after_success
@@ -387,6 +604,14 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
                             account_id=getattr(account, "id", None),
                         )
                     return True
+                except asyncio.TimeoutError:
+                    _mark_delivery_uncertain(
+                        delivery_id,
+                        job_id,
+                        f"send_message RPC timeout after {timeout_sec}s",
+                        error_code="SEND_TIMEOUT",
+                    )
+                    return False
                 except retryable_post as e:
                     if attempt == 0:
                         delay = 8.0 + random.random() * 4.0
@@ -403,7 +628,7 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
                             pass
                         continue
                     code, msg = _map_error(e)
-                    _mark_job_failed(job_id, f"{code}: {msg}", error_code=code)
+                    _finalize_delivery_failed(delivery_id, job_id, f"{code}: {msg}", error_code=code)
                     if _should_flip_can_post_on_send_failure(e):
                         with get_db_context() as db:
                             b = db.query(AccountTargetBinding).filter(
@@ -415,7 +640,7 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
                     return False
         except FloodWaitError as e:
             code, msg = _map_error(e)
-            _mark_job_failed(job_id, f"{code}: {msg}", error_code=code)
+            _finalize_delivery_failed(delivery_id, job_id, f"{code}: {msg}", error_code=code)
             raise
         except ValueError as e:
             err = str(e)
@@ -424,9 +649,13 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
                 "Use Advanced → Targets → Clear cached chat id, or fix username/invite."
             )
             if "PeerUser" in err or "entity" in err.lower():
-                _mark_job_failed(job_id, f"{hint} ({err})", error_code="EntityResolution")
+                _finalize_delivery_failed(
+                    delivery_id, job_id, f"{hint} ({err})", error_code="EntityResolution"
+                )
             else:
-                _mark_job_failed(job_id, f"{hint} ({err})", error_code="ValueError")
+                _finalize_delivery_failed(
+                    delivery_id, job_id, f"{hint} ({err})", error_code="ValueError"
+                )
             return False
         except (
             ChatWriteForbiddenError,
@@ -440,7 +669,7 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             PeerFloodError,
         ) as e:
             code, msg = _map_error(e)
-            _mark_job_failed(job_id, f"{code}: {msg}", error_code=code)
+            _finalize_delivery_failed(delivery_id, job_id, f"{code}: {msg}", error_code=code)
             if _should_flip_can_post_on_send_failure(e):
                 with get_db_context() as db:
                     b = db.query(AccountTargetBinding).filter(
@@ -452,7 +681,12 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             return False
         except Exception as e:
             code, msg = _map_error(e)
-            _mark_job_failed(job_id, f"{code}: {msg}", error_code=code)
+            _mark_delivery_uncertain(
+                delivery_id,
+                job_id,
+                f"{code}: {msg}",
+                error_code="AMBIGUOUS_RPC",
+            )
             return False
         finally:
             try:

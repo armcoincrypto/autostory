@@ -12,6 +12,8 @@ def column_exists(cur, table, column):
 MIGRATIONS = [
     ("scheduled_jobs", "lease_until", "DATETIME"),
     ("scheduled_jobs", "lease_owner", "VARCHAR(128)"),
+    ("message_deliveries", "attempt_started_at", "DATETIME"),
+    ("message_deliveries", "idempotency_key", "VARCHAR(64)"),
     ("accounts", "health_status",             "TEXT"),
     ("accounts", "health_reason",             "TEXT"),
     ("accounts", "health_checked_at",         "DATETIME"),

@@ -27,7 +27,7 @@ Base = declarative_base()
 
 # SQLite: WAL and busy_timeout (ms)
 SQLITE_BUSY_TIMEOUT_MS = 30000
-SQLITE_CONNECT_TIMEOUT_SEC = 30
+SQLITE_CONNECT_TIMEOUT_SEC = 60
 
 
 def _is_sqlite(url: str) -> bool:
@@ -78,6 +78,9 @@ def _sqlite_creator() -> sqlite3.Connection:
     )
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    # Reduce fsync pressure vs FULL while keeping WAL durability acceptable for dashboard use.
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -110,6 +113,8 @@ def _apply_sqlite_pragma_busy(dbapi_connection) -> None:
         cur = dbapi_connection.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA foreign_keys=ON")
         cur.close()
     except Exception:
         logger.warning("sqlite_pragma_apply_failed", exc_info=True)
@@ -143,6 +148,7 @@ def run_with_sqlite_lock_retry(
     *,
     operation: str,
     max_attempts: int | None = None,
+    retry_log_event: str = "sqlite_lock_retry",
     **log_extra,
 ) -> T:
     """
@@ -167,7 +173,7 @@ def run_with_sqlite_lock_retry(
                 raise
             delay = base * (2**attempt) + random.uniform(0, 0.08)
             logger.warning(
-                "db_sqlite_lock_retry",
+                retry_log_event,
                 operation=operation,
                 attempt=attempt + 1,
                 max_attempts=attempts,
@@ -186,9 +192,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expi
 def init_db() -> None:
     """Initialize database tables"""
     from . import models  # noqa: F401
+    import src.core.scheduler_models  # noqa: F401 - ChatTarget, membership probe cache, etc.
     import src.dashboard.models  # noqa: F401 - ensures dashboard_users table
+    import src.core.ai_agent_models  # noqa: F401 - AI Agent additive tables
+    import src.telegram_gateway.models  # noqa: F401 - Telegram gateway job queue
     from sqlalchemy import text
     Base.metadata.create_all(bind=engine)
+    _ensure_ai_agent_tasks_negotiation_stage_column()
+    _ensure_ai_agent_tasks_auto_loop_columns()
     _ensure_accounts_purpose_column()
     _ensure_accounts_healthcheck_columns()
     _ensure_healthcheck_run_columns()
@@ -199,6 +210,7 @@ def init_db() -> None:
     _ensure_account_risk_events_table()
     _ensure_discovered_users_source_username_column()
     _ensure_scheduled_jobs_lease_columns()
+    _ensure_message_deliveries_send_intent_columns()
     logger.info("Database initialized", tables=list(Base.metadata.tables.keys()))
     if _is_sqlite(settings.database.url):
         try:
@@ -233,6 +245,82 @@ def _ensure_accounts_purpose_column() -> None:
         logger.info("Added accounts.purpose column")
     except Exception as e:
         logger.warning("Could not add accounts.purpose column (may already exist)", error=str(e))
+
+
+def _ensure_ai_agent_tasks_negotiation_stage_column() -> None:
+    """Add negotiation_stage to ai_agent_tasks for Phase 7 intelligence (existing DBs)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "ai_agent_tasks" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("ai_agent_tasks")}
+    if "negotiation_stage" in cols:
+        return
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_agent_tasks ADD COLUMN negotiation_stage "
+                    "VARCHAR(32) DEFAULT 'opening'"
+                )
+            )
+            conn.execute(
+                text(
+                    "UPDATE ai_agent_tasks SET negotiation_stage = 'opening' "
+                    "WHERE negotiation_stage IS NULL OR negotiation_stage = ''"
+                )
+            )
+            conn.commit()
+        logger.info("Added ai_agent_tasks.negotiation_stage column")
+    except Exception as e:
+        logger.warning(
+            "Could not add ai_agent_tasks.negotiation_stage (may already exist)",
+            error=str(e),
+        )
+
+
+def _ensure_ai_agent_tasks_auto_loop_columns() -> None:
+    """Phase 11: auto_mode, auto_delay_sec, auto_last_run_at on ai_agent_tasks (additive)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "ai_agent_tasks" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("ai_agent_tasks")}
+    to_add: list[tuple[str, str]] = []
+    if "auto_mode" not in cols:
+        to_add.append(("auto_mode", "VARCHAR(16) DEFAULT 'autonomous'"))
+    if "auto_delay_sec" not in cols:
+        to_add.append(("auto_delay_sec", "INTEGER DEFAULT 20"))
+    if "auto_last_run_at" not in cols:
+        to_add.append(("auto_last_run_at", "DATETIME"))
+    for name, ddl in to_add:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE ai_agent_tasks ADD COLUMN {name} {ddl}"))
+                conn.commit()
+            logger.info("Added ai_agent_tasks column", column=name)
+        except Exception as e:
+            logger.warning(
+                "Could not add ai_agent_tasks.%s (may already exist)",
+                name,
+                error=str(e),
+            )
+    insp2 = inspect(engine)
+    cols2 = {c["name"] for c in insp2.get_columns("ai_agent_tasks")}
+    if "auto_mode" in cols2:
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE ai_agent_tasks SET auto_mode = 'autonomous' "
+                        "WHERE auto_mode IS NULL OR TRIM(auto_mode) = ''"
+                    )
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning("ai_agent_tasks auto_mode backfill skipped", error=str(e))
 
 
 def _ensure_discovered_users_source_username_column() -> None:
@@ -279,6 +367,32 @@ def _ensure_scheduled_jobs_lease_columns() -> None:
                 error=str(e),
             )
 
+
+def _ensure_message_deliveries_send_intent_columns() -> None:
+    """Add attempt_started_at / idempotency_key for durable send-intent (additive)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "message_deliveries" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("message_deliveries")}
+    for name, ddl in (
+        ("attempt_started_at", "DATETIME"),
+        ("idempotency_key", "VARCHAR(64)"),
+    ):
+        if name in cols:
+            continue
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE message_deliveries ADD COLUMN {name} {ddl}"))
+                conn.commit()
+            logger.info("Added message_deliveries column", column=name)
+        except Exception as e:
+            logger.warning(
+                "Could not add message_deliveries.%s (may already exist)",
+                name,
+                error=str(e),
+            )
 
 
 def _ensure_healthcheck_run_columns() -> None:
