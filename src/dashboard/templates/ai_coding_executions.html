@@ -1,0 +1,576 @@
+{% extends "base.html" %}
+{% block title %}Execution Programs — AI Coding{% endblock %}
+{% block extra_css %}
+<style>
+  .exec-glass { background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.18); backdrop-filter: blur(12px); border-radius: 14px; }
+  .exec-muted { color: #94a3b8; }
+  .exec-card { padding: 0.85rem; cursor: pointer; }
+  .exec-card:hover, .exec-card.active { border-color: rgba(56,189,248,0.35); }
+  .timeline-node { border-left: 3px solid rgba(56,189,248,0.35); padding-left: 0.75rem; margin-bottom: 0.85rem; }
+  .timeline-node.blocked { border-left-color: #ef4444; }
+  .timeline-node.completed { border-left-color: #22c55e; }
+  .timeline-node.failed { border-left-color: #ef4444; }
+  .timeline-node.running { border-left-color: #38bdf8; }
+  .timeline-node.review { border-left-color: #f59e0b; }
+  .timeline-node.validation { border-left-color: #a78bfa; }
+  .timeline-node.approval { border-left-color: #fcd34d; }
+  .phase-icon { margin-right: 0.35rem; }
+  .status-running { color:#7dd3fc; } .status-blocked { color:#fca5a5; } .status-completed { color:#6ee7b7; }
+  .gate-badge { display:inline-flex; border-radius:999px; padding:0.12rem 0.45rem; font-size:0.68rem; background:rgba(148,163,184,0.12); color:#cbd5e1; margin-right:0.25rem; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+  <div>
+    <h2 class="mb-1"><i class="bi bi-bezier2"></i> AI Workflows</h2>
+    <p class="exec-muted small mb-0">Technical view — use <a href="/ai-coding">Simple Operator Home</a> for day-to-day builds.</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-light btn-sm" href="/ai-coding"><i class="bi bi-arrow-left"></i> AI Coding</a>
+    <a class="btn btn-outline-info btn-sm" href="/ai-coding/planner"><i class="bi bi-diagram-2"></i> Planner</a>
+    <a class="btn btn-outline-warning btn-sm" href="/ai-coding/deployments"><i class="bi bi-shield-check"></i> Release readiness</a>
+    <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/audit-coverage"><i class="bi bi-journal-check"></i> Audit</a>
+    <button class="btn btn-outline-info btn-sm" id="exec-refresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    <label class="form-check-label small exec-muted ms-2"><input type="checkbox" class="form-check-input" id="exec-show-archived"> Show archived</label>
+  </div>
+</div>
+<div id="exec-alert"></div>
+<div class="exec-glass p-3 mb-3" id="exec-operator-banner" style="display:none"></div>
+<details class="mb-2"><summary class="small exec-muted">Guided Autopilot</summary>
+  <div class="mt-2" id="ai-code-wizard-panel"><div class="small exec-muted py-2">Loading…</div></div>
+</details>
+
+<div class="row g-3">
+  <div class="col-lg-4">
+    <details class="exec-glass p-3 mb-3" id="exec-advanced-sidebar">
+      <summary class="mb-2">Advanced — program stats</summary>
+      <div class="mt-2">
+      <h6 class="mb-2 small exec-muted">Program Overview</h6>
+      <div class="row g-2 text-center small">
+        <div class="col-4"><div class="exec-glass exec-card"><div class="exec-muted">Running</div><div id="stat-running">0</div></div></div>
+        <div class="col-4"><div class="exec-glass exec-card"><div class="exec-muted">Blocked</div><div id="stat-blocked">0</div></div></div>
+        <div class="col-4"><div class="exec-glass exec-card"><div class="exec-muted">Completed</div><div id="stat-completed">0</div></div></div>
+        <div class="col-4"><div class="exec-glass exec-card"><div class="exec-muted">Review</div><div id="stat-review">0</div></div></div>
+        <div class="col-4"><div class="exec-glass exec-card"><div class="exec-muted">Validation</div><div id="stat-validation">0</div></div></div>
+        <div class="col-4"><div class="exec-glass exec-card"><div class="exec-muted">Approval</div><div id="stat-approval">0</div></div></div>
+        <div class="col-12"><div class="exec-glass exec-card"><div class="exec-muted">Failed</div><div id="stat-failed">0</div></div></div>
+      </div>
+      <div id="exec-list" class="small mt-3">Loading programs…</div>
+      </div>
+    </details>
+    <div class="exec-glass p-3 mb-3">
+      <h6 class="mb-2">Programs</h6>
+      <div id="exec-list-simple" class="small">Loading…</div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="exec-glass p-3 mb-3" id="exec-detail">
+      <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+        <div><h5 class="mb-0" id="detail-title">Select a program</h5><div class="exec-muted small" id="detail-meta">—</div></div>
+        <div class="d-flex flex-wrap gap-2">
+          <button class="btn btn-outline-info btn-sm" id="exec-start" disabled>Start</button>
+          <button class="btn btn-outline-primary btn-sm" id="exec-continue" disabled>Continue Phase</button>
+          <button class="btn btn-outline-success btn-sm" id="exec-approve" disabled>Approve Phase</button>
+          <button class="btn btn-outline-danger btn-sm" id="exec-cancel" disabled>Cancel</button>
+          <button class="btn btn-outline-secondary btn-sm" id="exec-archive" disabled>Archive</button>
+          <button class="btn btn-outline-secondary btn-sm" id="exec-restore" disabled style="display:none">Restore</button>
+        </div>
+      </div>
+      <div id="detail-blocked" class="small mb-2"></div>
+      <div id="detail-review-gate" class="exec-glass p-2 mb-2 small" style="display:none"></div>
+      <div class="mb-2"><strong>Plan:</strong> <span id="detail-plan" class="exec-muted small">—</span></div>
+      <div class="mb-2"><strong>Phase completion:</strong> <span id="detail-progress" class="exec-muted small">—</span></div>
+      <div class="mb-2"><strong>Build progress:</strong> <span id="detail-build-progress" class="exec-muted small">—</span></div>
+    </div>
+
+    <details class="exec-glass p-3 mb-3" id="exec-advanced-main">
+      <summary>Advanced Details — timeline, journal, memory, IDs</summary>
+      <div class="row g-3 mt-2">
+        <div class="col-lg-7">
+          <div class="p-2">
+            <h5 class="mb-2 small">Workflow timeline</h5>
+            <div id="detail-timeline" class="small exec-muted">No program selected.</div>
+          </div>
+          <div class="p-2 mt-2">
+            <h5 class="mb-2 small">Current Phase Detail</h5>
+            <div id="detail-phase" class="small exec-muted">—</div>
+          </div>
+        </div>
+        <div class="col-lg-5">
+          <div class="p-2 mb-2">
+            <h5 class="mb-2 small">Project notes</h5>
+            <div id="detail-memory" class="small exec-muted">—</div>
+          </div>
+          <div class="p-2">
+            <h5 class="mb-2 small">Activity log</h5>
+            <div id="detail-journal" class="small exec-muted">—</div>
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/ai_coding_operator_mode.js') }}"></script>
+<script src="{{ url_for('static', filename='js/ai_coding_operator_wizard.js') }}"></script>
+<script>
+(function(){
+  const API = {{ api_base|tojson }};
+  const INITIAL_PROGRAM_ID = {{ program_id|tojson }};
+  const ADVANCED_MODE = new URLSearchParams(globalThis.location.search).get('mode') === 'advanced';
+  const OM = () => window.AiCodingOperatorMode;
+  let selectedProgramId = INITIAL_PROGRAM_ID || null;
+  let currentProgram = null;
+  let currentJournal = [];
+  let showArchived = false;
+  let buildRunsByProgramId = new Map();
+
+  async function loadBuildRunsForProgress() {
+    try {
+      const rows = await dashboardFetchJson(`${API}/build-runs?limit=50`);
+      const list = Array.isArray(rows) ? rows : (rows && rows.items) || [];
+      buildRunsByProgramId = new Map();
+      list.forEach((run) => {
+        const programId = run && run.execution_program_id;
+        if (!programId) return;
+        const key = String(programId);
+        const existing = buildRunsByProgramId.get(key);
+        if (!existing || String(run.updated_at || '') > String(existing.updated_at || '')) {
+          buildRunsByProgramId.set(key, run);
+        }
+      });
+    } catch (_) {
+      buildRunsByProgramId = new Map();
+    }
+  }
+
+  function findBuildRunForProgram(programId) {
+    if (!programId) return null;
+    return buildRunsByProgramId.get(String(programId)) || null;
+  }
+
+  function resolveOperatorProgress(program) {
+    const om = OM();
+    const run = findBuildRunForProgram(program && program.id);
+    const phaseDone = program ? Number(program.completed_phases || 0) : 0;
+    const phaseTotal = program ? Number(program.total_phases || 0) : 0;
+    const phaseCompletion = phaseTotal
+      ? `Phase completion: ${phaseDone}/${phaseTotal}`
+      : 'Phase completion: —';
+    if (run && om) {
+      return {
+        status: om.productionStatus(run),
+        buildProgress: om.progressPercent(run),
+        phaseCompletion,
+        currentStep: om.currentWorkSummary ? om.currentWorkSummary(run) : (run.current_step || run.current_work_summary || ''),
+        run,
+      };
+    }
+    const human = om ? om.humanBuildStatus(mapProgramStatus(program.status)) : program.status;
+    return {
+      status: human,
+      buildProgress: null,
+      phaseCompletion,
+      currentStep: '',
+      run: null,
+    };
+  }
+
+  function esc(v){ return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+  function alertMsg(msg, tone='warning'){ document.getElementById('exec-alert').innerHTML = `<div class="alert alert-${tone} py-2">${esc(msg)}</div>`; }
+  function friendlyExecError(err) {
+    const status = err && err.status;
+    const raw = err && err.message ? String(err.message) : '';
+    if (status === 502 || status === 503 || /unavailable|upstream/i.test(raw)) {
+      return 'AI Coding API unavailable. Check API health on port 8015.';
+    }
+    if (status === 401) return 'Session expired. Please sign in again.';
+    if (status === 409 && /runtime phase|uq_phases_project_number/i.test(raw)) {
+      return 'Cannot continue: project already has a runtime phase with this number. Resolve the phase conflict or use a different project.';
+    }
+    if (raw && raw.length < 280) return raw;
+    return 'Execution program action failed. See alert details or API logs.';
+  }
+  function requireProgramAndPhase() {
+    if (!selectedProgramId || !currentProgram) {
+      alertMsg('Select an execution program from the list first.', 'warning');
+      return null;
+    }
+    const ph = currentPhase(currentProgram);
+    if (!ph) {
+      alertMsg('No active phase found for this program.', 'warning');
+      return null;
+    }
+    return ph;
+  }
+
+  async function loadPrograms(){
+    const qs = showArchived ? '?limit=50&include_archived=true' : '?limit=50';
+    const rows = await dashboardFetchJson(`${API}/execution-programs${qs}`);
+    const stats = {running:0, blocked:0, completed:0, review:0, validation:0, approval:0, failed:0};
+    rows.forEach(p => {
+      if(p.status==='running') stats.running++;
+      if(p.status==='blocked') stats.blocked++;
+      if(p.status==='completed') stats.completed++;
+      if(p.status==='review_pending') stats.review++;
+      if(p.status==='validation_pending') stats.validation++;
+      if(p.status==='operator_approval') stats.approval++;
+      if(p.status==='failed') stats.failed++;
+    });
+    document.getElementById('stat-running').textContent = stats.running;
+    document.getElementById('stat-blocked').textContent = stats.blocked;
+    document.getElementById('stat-completed').textContent = stats.completed;
+    document.getElementById('stat-review').textContent = stats.review;
+    document.getElementById('stat-validation').textContent = stats.validation;
+    document.getElementById('stat-approval').textContent = stats.approval;
+    document.getElementById('stat-failed').textContent = stats.failed;
+    const listHtml = rows.length ? rows.map(p => {
+      const human = OM ? OM().humanBuildStatus(mapProgramStatus(p.status)) : p.status;
+      const title = p.plan_title || 'Build task';
+      return `
+      <div class="exec-glass exec-card mb-2 ${selectedProgramId===p.id?'active':''}" data-program="${p.id}">
+        <div class="d-flex justify-content-between gap-2"><strong>${esc(title.slice(0,40))}</strong><span class="small">${esc(human)}</span></div>
+        <div class="exec-muted">${esc(p.completed_phases)}/${esc(p.total_phases)} phase steps</div>
+      </div>`;
+    }).join('') : '<span class="exec-muted">No programs yet.</span>';
+    document.getElementById('exec-list').innerHTML = listHtml;
+    const simple = document.getElementById('exec-list-simple');
+    if (simple) simple.innerHTML = listHtml;
+    document.querySelectorAll('[data-program]').forEach(el => el.addEventListener('click', () => openProgram(el.getAttribute('data-program'))));
+    if(selectedProgramId) await openProgram(selectedProgramId, false);
+  }
+
+  function mapProgramStatus(st) {
+    const m = { running:'executing', review_pending:'reviewing', validation_pending:'validating', operator_approval:'executing', blocked:'fixing', completed:'ready_for_manual_test', failed:'failed', cancelled:'cancelled', ready:'executing', draft:'planning' };
+    return m[st] || 'executing';
+  }
+
+  function renderOperatorBanner(program) {
+    const banner = document.getElementById('exec-operator-banner');
+    if (!banner || !OM) return;
+    const progress = resolveOperatorProgress(program);
+    const ph = currentPhase(program);
+    const step = progress.currentStep
+      || (ph ? `Current step: ${ph.title}` : 'Select a step to continue.');
+    const buildProgressLine = progress.buildProgress != null
+      ? `Build progress: ${progress.buildProgress}%`
+      : '';
+    banner.style.display = '';
+    banner.innerHTML = `
+      <div class="small text-info text-uppercase mb-1">Operator summary</div>
+      <strong>${esc(program.plan_title || 'Build')}</strong>
+      <div class="mt-1">Status: ${esc(progress.status)}${buildProgressLine ? ` · ${esc(buildProgressLine)}` : ''}</div>
+      <div class="exec-muted small mt-1">${esc(progress.phaseCompletion)}</div>
+      <div class="exec-muted small mt-1">${esc(step)}</div>
+      ${progress.run && progress.run.id ? `<a class="btn btn-outline-primary btn-sm mt-2" href="/ai-coding/builds/${esc(progress.run.id)}">Open in Operator Mode</a>` : ''}
+      <a class="btn btn-outline-secondary btn-sm mt-2 ms-1" href="/ai-coding">← AI Coding Home</a>`;
+  }
+
+  async function openProgram(programId, push=true){
+    selectedProgramId = programId;
+    if(push) history.replaceState({}, '', `/ai-coding/executions/${programId}${ADVANCED_MODE ? '?mode=advanced' : ''}`);
+    await loadBuildRunsForProgress();
+    const program = await dashboardFetchJson(`${API}/execution-programs/${programId}`);
+    currentProgram = program;
+    const progress = resolveOperatorProgress(program);
+    document.getElementById('detail-title').textContent = program.plan_title || 'Build task';
+    document.getElementById('detail-meta').textContent = ADVANCED_MODE
+      ? `${program.status} · program ${program.id}`
+      : `Status: ${progress.status} · ${progress.phaseCompletion.replace('Phase completion: ', '')} phases`;
+    renderOperatorBanner(program);
+    document.getElementById('detail-plan').textContent = `${program.plan_title}: ${program.plan_goal || ''}`;
+    document.getElementById('detail-progress').textContent = progress.phaseCompletion.replace('Phase completion: ', '');
+    document.getElementById('detail-build-progress').textContent = progress.buildProgress != null
+      ? `${progress.buildProgress}%`
+      : '— (link build run for canonical progress)';
+    document.getElementById('detail-blocked').innerHTML = program.blocked_reason ? `<span class="text-danger">Blocked: ${esc(program.blocked_reason)}</span>` : '';
+    renderReviewGate(program);
+    renderTimeline(program);
+    renderCurrentPhase(program);
+    const journal = await dashboardFetchJson(`${API}/execution-programs/${programId}/journal`);
+    currentJournal = journal;
+    renderJournal(journal);
+    updateActions(program);
+    await loadPrograms();
+  }
+
+  function currentPhase(program){
+    if(!program.current_phase_id) return program.phases?.[0] || null;
+    return (program.phases||[]).find(p => p.id === program.current_phase_id) || program.phases?.[0] || null;
+  }
+
+  function phaseTimelineMeta(ph){
+    const st = ph.status;
+    if(st === 'completed') return {icon:'✓', cls:'completed', gate:'Completed'};
+    if(st === 'running') return {icon:'⏳', cls:'running', gate:'Running'};
+    if(st === 'blocked') return {icon:'⚠', cls:'blocked', gate:'Blocked'};
+    if(st === 'failed') return {icon:'✗', cls:'failed', gate:'Failed'};
+    if(st === 'review_pending') return {icon:'👁', cls:'review', gate:'Review required'};
+    if(st === 'validation_pending') return {icon:'🧪', cls:'validation', gate:'Validation required'};
+    if(st === 'operator_approval') return {icon:'🛡', cls:'approval', gate:'Operator approval required'};
+    return {icon:'○', cls:'', gate: st};
+  }
+
+  function renderTimeline(program){
+    document.getElementById('detail-timeline').innerHTML = `
+      <div class="timeline-node completed"><span class="phase-icon">✓</span><strong>Plan</strong><div class="exec-muted">${esc(program.plan_title)}</div></div>` +
+      (program.phases||[]).map(ph => {
+        const meta = phaseTimelineMeta(ph);
+        return `
+        <div class="timeline-node ${meta.cls}">
+          <span class="phase-icon">${meta.icon}</span>
+          <strong>Phase ${ph.phase_number}: ${esc(ph.title)}</strong>
+          <div><span class="gate-badge">${esc(ADVANCED_MODE ? meta.gate : (OM ? OM().humanPhaseStatus(ph.status) : meta.gate))}</span>
+          ${ADVANCED_MODE ? `<span class="gate-badge">review=${esc(ph.review_status||'—')}</span>
+          <span class="gate-badge">validation=${esc(ph.validation_status)}</span>` : ''}</div>
+        </div>`;
+      }).join('');
+  }
+
+  function renderCurrentPhase(program){
+    const ph = currentPhase(program);
+    if(!ph){ document.getElementById('detail-phase').textContent = 'No phase.'; return; }
+    document.getElementById('detail-phase').innerHTML = `
+      <div><strong>${esc(ph.title)}</strong> (${esc(ph.status)})</div>
+      <div class="exec-muted mt-1">Execution: ${esc(ph.execution_id || 'not started')}</div>
+      <div class="mt-2"><strong>Prompt</strong>
+        <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+          <span class="exec-muted small">Generated phase prompt preview</span>
+          <button class="btn btn-outline-secondary btn-sm" id="exec-copy-prompt" type="button"><i class="bi bi-clipboard"></i> Copy Prompt</button>
+        </div>
+        <pre class="bg-dark p-2 rounded small" id="exec-phase-prompt">${esc(ph.generated_prompt || 'Generate by continuing ready phase')}</pre>
+      </div>
+      <div class="mt-2"><strong>Blocked reason</strong><div>${esc(ph.blocked_reason || '—')}</div></div>`;
+    const snap = ph.context_snapshot || {};
+    const ctx = snap.execution_context || {};
+    document.getElementById('detail-memory').innerHTML = `
+      <div class="mb-1"><strong>Constraints</strong><div>${(snap.plan_snapshot?.constraints||[]).map(c=>esc(c)).join(', ') || '—'}</div></div>
+      <div><strong>Memory entries</strong><ul>${(ctx.memory_entries||[]).slice(0,5).map(e=>`<li>${esc(e.title||'entry')}</li>`).join('')||'<li>—</li>'}</ul></div>`;
+    const copyBtn = document.getElementById('exec-copy-prompt');
+    copyBtn.disabled = false;
+    copyBtn.onclick = async () => {
+      try {
+        copyBtn.disabled = true;
+        const promptText = await resolvePhasePrompt(program, ph);
+        if(!promptText) throw new Error('No prompt available yet. Continue the phase to generate one.');
+        await navigator.clipboard.writeText(promptText);
+        alertMsg('Prompt copied to clipboard.', 'success');
+      } catch (err) {
+        alertMsg(err.message || 'Copy failed');
+      } finally {
+        copyBtn.disabled = false;
+      }
+    };
+  }
+
+  async function resolvePhasePrompt(program, ph){
+    if(ph.generated_prompt) return ph.generated_prompt;
+    const journalPrompt = (currentJournal || []).find(j =>
+      j.entry_type === 'generated_prompt' && j.execution_program_phase_id === ph.id
+    );
+    if(journalPrompt?.content?.prompt) return journalPrompt.content.prompt;
+    if(program.plan_id && ph.technical_task_phase_id){
+      const data = await dashboardFetchJson(`${API}/task-plans/${program.plan_id}/phases/${ph.technical_task_phase_id}/prompt`);
+      return data.prompt || '';
+    }
+    return '';
+  }
+
+  function renderJournal(rows){
+    document.getElementById('detail-journal').innerHTML = rows.length ? rows.slice(-12).map(j => `
+      <div class="border-bottom border-secondary py-1"><strong>${esc(j.entry_type)}</strong>
+      <div class="exec-muted">${esc(j.created_at)} · ${esc(j.actor)}</div></div>`).join('') : 'No journal entries yet.';
+  }
+
+  function renderReviewGate(program){
+    const panel = document.getElementById('detail-review-gate');
+    const ph = currentPhase(program);
+    if (!ph || !ph.execution_id) {
+      panel.style.display = 'none';
+      return;
+    }
+    const reviewSt = (ph.review_status || 'pending').toLowerCase();
+    const gateActive = ['review_pending','blocked'].includes(ph.status);
+    const reviewPending = !reviewSt || reviewSt === 'pending';
+    if (!gateActive || !reviewPending) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = '';
+    const execId = ph.execution_id;
+    panel.innerHTML = `
+      <div class="text-warning mb-2"><strong>Waiting for review.</strong> Approve the work review, then click <strong>Continue Phase</strong> to move to testing.</div>
+      <div class="d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-outline-success btn-sm" id="exec-review-approve">Approve execution review</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="exec-review-not-required">Mark not required (dry-run)</button>
+        <a class="btn btn-outline-info btn-sm" href="/ai-coding" id="exec-review-open">Open AI Coding reviews</a>
+      </div>`;
+    document.getElementById('exec-review-approve')?.addEventListener('click', () => submitOperatorReview(execId, 'approved'));
+    document.getElementById('exec-review-not-required')?.addEventListener('click', () => submitOperatorReview(execId, 'not_required'));
+  }
+
+  async function submitOperatorReview(executionId, decision){
+    const summary = prompt(`Review summary (optional) for ${decision}:`) || '';
+    try {
+      await dashboardFetchJson(`${API}/executions/${executionId}/operator-review`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ decision, summary }),
+      });
+      alertMsg(`Execution review marked ${decision}. Click Continue Phase to sync the gate.`, 'success');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    }
+  }
+
+  function updateActions(program){
+    const ph = currentPhase(program);
+    const archived = program.status === 'archived';
+    const terminal = ['completed','cancelled','failed'].includes(program.status);
+    const canContinue = ph && (
+      ['ready','running','review_pending','validation_pending'].includes(ph.status)
+      || ph.status === 'blocked'
+    );
+    document.getElementById('exec-start').disabled = archived || !['draft','ready'].includes(program.status);
+    document.getElementById('exec-cancel').disabled = archived || ['completed','cancelled'].includes(program.status);
+    document.getElementById('exec-continue').disabled = archived || !canContinue;
+    document.getElementById('exec-approve').disabled = archived || !(ph && ph.status === 'operator_approval');
+    document.getElementById('exec-archive').disabled = archived || !terminal;
+    document.getElementById('exec-archive').style.display = archived ? 'none' : '';
+    document.getElementById('exec-restore').style.display = archived ? '' : 'none';
+    document.getElementById('exec-restore').disabled = !archived;
+  }
+
+  document.getElementById('exec-start').addEventListener('click', async () => {
+    if (!selectedProgramId) {
+      alertMsg('Select an execution program first.', 'warning');
+      return;
+    }
+    try {
+      await dashboardFetchJson(`${API}/execution-programs/${selectedProgramId}/start`, { method:'POST' });
+      alertMsg('Program started.', 'success');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    }
+  });
+
+  document.getElementById('exec-continue').addEventListener('click', async () => {
+    const ph = requireProgramAndPhase();
+    if (!ph) return;
+    const btn = document.getElementById('exec-continue');
+    let body = { actor: 'operator' };
+    if (ph.status === 'validation_pending') {
+      body.validation_passed = confirm('Did validation pass for this phase?');
+      body.note = prompt('Validation note (optional):') || '';
+    } else if (ph.status === 'running') {
+      body.note = prompt('Submission note (optional):') || '';
+    }
+    try {
+      btn.disabled = true;
+      const updated = await dashboardFetchJson(
+        `${API}/execution-programs/${selectedProgramId}/phases/${ph.id}/continue`,
+        { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }
+      );
+      currentProgram = updated;
+      const nextPh = currentPhase(updated);
+      const statusMsg = nextPh ? `Phase ${nextPh.phase_number} is now ${nextPh.status}.` : 'Phase updated.';
+      alertMsg(`Continue phase succeeded. ${statusMsg}`, 'success');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    } finally {
+      if (currentProgram) updateActions(currentProgram);
+    }
+  });
+
+  document.getElementById('exec-approve').addEventListener('click', async () => {
+    const ph = requireProgramAndPhase();
+    if (!ph) return;
+    try {
+      await dashboardFetchJson(`${API}/execution-programs/${selectedProgramId}/phases/${ph.id}/approve`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ comment: 'Operator approved phase completion' })
+      });
+      alertMsg('Phase approved.', 'success');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    }
+  });
+
+  document.getElementById('exec-cancel').addEventListener('click', async () => {
+    if (!selectedProgramId) {
+      alertMsg('Select an execution program first.', 'warning');
+      return;
+    }
+    const reason = prompt('Cancellation reason:');
+    if (!reason) return;
+    try {
+      await dashboardFetchJson(`${API}/execution-programs/${selectedProgramId}/cancel`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason })
+      });
+      alertMsg('Program cancelled.', 'warning');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    }
+  });
+
+  document.getElementById('exec-refresh').addEventListener('click', () => {
+    loadPrograms().catch(err => alertMsg(friendlyExecError(err), 'danger'));
+  });
+  document.getElementById('exec-show-archived').addEventListener('change', (e) => {
+    showArchived = e.target.checked;
+    loadPrograms().catch(err => alertMsg(friendlyExecError(err), 'danger'));
+  });
+  document.getElementById('exec-archive').addEventListener('click', async () => {
+    if (!selectedProgramId || !confirm('Archive this execution program? It will be hidden from the default list.')) return;
+    const reason = prompt('Archive reason (optional):') || '';
+    try {
+      await dashboardFetchJson(`${API}/execution-programs/${selectedProgramId}/archive`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason })
+      });
+      alertMsg('Program archived.', 'success');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    }
+  });
+  document.getElementById('exec-restore').addEventListener('click', async () => {
+    if (!selectedProgramId || !confirm('Restore this archived execution program?')) return;
+    try {
+      await dashboardFetchJson(`${API}/execution-programs/${selectedProgramId}/restore`, { method:'POST' });
+      alertMsg('Program restored.', 'success');
+      await openProgram(selectedProgramId, false);
+    } catch (err) {
+      alertMsg(friendlyExecError(err), 'danger');
+    }
+  });
+  if (ADVANCED_MODE) {
+    document.getElementById('exec-advanced-sidebar')?.setAttribute('open', '');
+    document.getElementById('exec-advanced-main')?.setAttribute('open', '');
+  }
+
+  loadPrograms().catch(err => alertMsg(friendlyExecError(err), 'danger'));
+
+  if (window.AiCodingOperatorWizard) {
+    AiCodingOperatorWizard.init({
+      api: API,
+      formatError: friendlyExecError,
+      alertFn: alertMsg,
+      autoRefreshMs: 30000,
+      getContext: async () => ({
+        programId: selectedProgramId,
+        program: currentProgram,
+      }),
+      onRefresh: async () => {
+        await loadPrograms();
+        if (selectedProgramId) await openProgram(selectedProgramId, false);
+      },
+    });
+  }
+})();
+</script>
+{% endblock %}

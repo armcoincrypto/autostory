@@ -1,0 +1,1010 @@
+{% extends "base.html" %}
+{% block title %}AI Coding — STORYFLEET{% endblock %}
+{% block extra_css %}
+<style>
+  .ai-code-glass {
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    backdrop-filter: blur(12px);
+    border-radius: 14px;
+  }
+  .ai-code-kpi { padding: 1rem 1.1rem; }
+  .ai-code-kpi .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; }
+  .ai-code-kpi .value { font-size: 1.6rem; font-weight: 600; color: #f8fafc; }
+  .ai-code-status {
+    padding: 0.85rem 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    align-items: center;
+  }
+  .ai-code-status .stat { min-width: 120px; }
+  .ai-code-status .stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; }
+  .ai-code-status .stat-value { font-size: 0.95rem; font-weight: 600; color: #f8fafc; }
+  .status-dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 0.35rem; vertical-align: middle; }
+  .status-dot.ok { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.55); }
+  .status-dot.bad { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.45); }
+  .status-dot.pending { background: #64748b; }
+  .verdict-badge { display: inline-flex; border-radius: 999px; padding: 0.2rem 0.55rem; font-size: 0.72rem; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
+  .verdict-approve { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.35); }
+  .verdict-warn { background: rgba(245, 158, 11, 0.15); color: #fcd34d; border-color: rgba(245, 158, 11, 0.35); }
+  .verdict-block { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border-color: rgba(239, 68, 68, 0.35); }
+  .verdict-unknown { background: rgba(100, 116, 139, 0.15); color: #cbd5e1; border-color: rgba(100, 116, 139, 0.35); }
+  .risk-badge { display: inline-flex; border-radius: 8px; padding: 0.15rem 0.45rem; font-size: 0.68rem; font-weight: 600; border: 1px solid transparent; }
+  .risk-low { background: rgba(16,185,129,0.12); color: #6ee7b7; border-color: rgba(16,185,129,0.25); }
+  .risk-medium { background: rgba(245,158,11,0.12); color: #fcd34d; border-color: rgba(245,158,11,0.25); }
+  .risk-high { background: rgba(249,115,22,0.12); color: #fdba74; border-color: rgba(249,115,22,0.25); }
+  .risk-critical { background: rgba(239,68,68,0.12); color: #fca5a5; border-color: rgba(239,68,68,0.25); }
+  .risk-unknown { background: rgba(100,116,139,0.12); color: #cbd5e1; border-color: rgba(100,116,139,0.25); }
+  .risk-chip { display: inline-flex; border-radius: 8px; padding: 0.15rem 0.45rem; font-size: 0.68rem; background: rgba(56, 189, 248, 0.12); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.25); margin: 0.15rem 0.2rem 0 0; }
+  .source-badge { display: inline-flex; border-radius: 8px; padding: 0.15rem 0.5rem; font-size: 0.68rem; background: rgba(148,163,184,0.12); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.22); }
+  .ai-code-table-wrap { max-height: min(70vh, 720px); overflow: auto; }
+  .ai-code-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #0f172a;
+    box-shadow: inset 0 -1px 0 rgba(148,163,184,0.15);
+  }
+  .ai-code-table td, .ai-code-table th { vertical-align: middle; }
+  .ai-code-drawer pre { max-height: 240px; overflow: auto; font-size: 0.75rem; background: #020617; border-radius: 10px; padding: 0.75rem; }
+  .ai-code-muted { color: #94a3b8; }
+  .issue-group { border-left: 3px solid rgba(148,163,184,0.35); padding-left: 0.75rem; margin-bottom: 1rem; }
+  .issue-group.blockers { border-left-color: #ef4444; }
+  .issue-group.warnings { border-left-color: #f59e0b; }
+  .issue-group.fixes { border-left-color: #38bdf8; }
+  .legacy-note { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: 10px; padding: 0.65rem 0.75rem; font-size: 0.82rem; color: #fcd34d; }
+  .env-badge { display:inline-flex; border-radius:999px; padding:0.15rem 0.55rem; font-size:0.68rem; background:rgba(99,102,241,0.15); color:#c7d2fe; border:1px solid rgba(99,102,241,0.3); }
+  .active-card { padding:0.85rem; cursor:pointer; transition:transform .15s ease, border-color .15s ease; }
+  .active-card:hover { transform:translateY(-1px); border-color:rgba(56,189,248,0.35); }
+  .duration-pill { display:inline-flex; border-radius:999px; padding:0.12rem 0.45rem; font-size:0.68rem; background:rgba(148,163,184,0.12); color:#cbd5e1; }
+  .timeline-item { border-left:2px solid rgba(148,163,184,0.25); padding-left:0.75rem; margin-bottom:0.85rem; }
+  .timeline-item.error { border-left-color:#ef4444; }
+  .timeline-item.warning { border-left-color:#f59e0b; }
+  .log-section summary { cursor:pointer; }
+  .log-section pre { max-height:180px; overflow:auto; font-size:0.72rem; background:#020617; border-radius:8px; padding:0.65rem; }
+  .ai-code-drawer { width:min(720px, 100vw); }
+  .copied-toast { position:fixed; bottom:1rem; right:1rem; z-index:2000; }
+  .hub-flow-card { background: linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.88)); border: 1px solid rgba(56,189,248,0.28); border-radius: 16px; padding: 1.15rem 1.25rem; backdrop-filter: blur(12px); }
+  .hub-empty-lines { margin-bottom: 0.85rem; }
+  .hub-empty-lines .line1 { font-size: 0.95rem; font-weight: 600; color: #e2e8f0; margin: 0; }
+  .hub-empty-lines .line2 { font-size: 0.82rem; color: #94a3b8; margin: 0.15rem 0 0; }
+  .hub-step { border-top: 1px solid rgba(148,163,184,0.14); padding-top: 0.95rem; margin-top: 0.95rem; }
+  .hub-step:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .hub-step-label { font-size: 0.76rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #7dd3fc; margin-bottom: 0.65rem; }
+  .hub-safety-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .hub-safety-chip { font-size: 0.7rem; padding: 0.22rem 0.55rem; border-radius: 999px; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.22); color: #bae6fd; white-space: nowrap; }
+  @media (max-width: 768px) {
+    .ai-code-hide-sm { display: none !important; }
+    .ai-code-table-wrap { max-height: none; }
+  }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-person-workspace"></i> AI Coding</h2>
+    <p class="ai-code-muted mb-0 small">Tell AI what to build → AI works → you test → approve or send feedback</p>
+  </div>
+  <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/builds">All build tasks</a>
+</div>
+
+<div id="ai-code-alert"></div>
+<div id="ai-operator-home" class="mb-3">
+  <div class="ai-code-muted py-4 text-center small">Loading current build task…</div>
+</div>
+
+<span id="ai-dev-advanced" class="visually-hidden" tabindex="-1" aria-hidden="true"></span>
+<details class="mb-3 op-mode-advanced" id="ai-dev-advanced-panel">
+  <summary class="py-2">Advanced / Developer Tools</summary>
+  <div class="mt-3" id="ai-dev-tools-body">
+
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+  <div>
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+      <span class="env-badge">Developer tools</span>
+      <span class="env-badge" id="ai-code-review-status">Review system: —</span>
+    </div>
+    <p class="ai-code-muted mb-0 small">Diagnostics, review history, AI workflows, release readiness</p>
+  </div>
+  <div class="d-flex flex-wrap align-items-center gap-2">
+    <a class="btn btn-outline-info btn-sm" href="/ai-coding/planner"><i class="bi bi-diagram-2"></i> Advanced Task Planner</a>
+    <a class="btn btn-outline-success btn-sm" href="/ai-coding/executions"><i class="bi bi-bezier2"></i> AI Workflows</a>
+    <a class="btn btn-outline-warning btn-sm" href="/ai-coding/deployments"><i class="bi bi-shield-check"></i> Release readiness</a>
+    <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/audit-coverage"><i class="bi bi-journal-check"></i> Audit</a>
+    <span class="small ai-code-muted" id="ai-code-refreshed">Last synced: —</span>
+    <button type="button" class="btn btn-outline-secondary btn-sm" id="ai-code-copy-diagnostics"><i class="bi bi-clipboard"></i> Copy diagnostics</button>
+    <button type="button" class="btn btn-outline-light btn-sm" id="ai-code-refresh">
+      <span id="ai-code-refresh-label"><i class="bi bi-arrow-clockwise"></i> Refresh</span>
+    </button>
+  </div>
+</div>
+
+<div class="ai-code-glass ai-code-status mb-3" id="ai-code-status">
+  <div class="stat">
+    <div class="stat-label">Upstream API</div>
+    <div class="stat-value" id="ai-code-api-status"><span class="status-dot pending"></span>Checking…</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Last successful fetch</div>
+    <div class="stat-value ai-code-muted" id="ai-code-last-fetch">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Response latency</div>
+    <div class="stat-value ai-code-muted" id="ai-code-latency">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Total reviews</div>
+    <div class="stat-value" id="ai-code-total-reviews">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Active executions</div>
+    <div class="stat-value" id="ai-code-active-count">—</div>
+  </div>
+</div>
+
+<div class="ai-code-glass p-3 mb-3" id="ops-overview">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+    <strong><i class="bi bi-speedometer2"></i> Operations Overview</strong>
+    <span class="small ai-code-muted">Read-only — execution programs, governance, reviews, health</span>
+  </div>
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-4 col-xl-2"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Running</div><div class="value fs-5" id="ops-exec-running">—</div></div></div>
+    <div class="col-6 col-md-4 col-xl-2"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Blocked</div><div class="value fs-5" id="ops-exec-blocked">—</div></div></div>
+    <div class="col-6 col-md-4 col-xl-2"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Awaiting review</div><div class="value fs-5" id="ops-exec-review">—</div></div></div>
+    <div class="col-6 col-md-4 col-xl-2"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Awaiting validation</div><div class="value fs-5" id="ops-exec-validation">—</div></div></div>
+    <div class="col-6 col-md-4 col-xl-2"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Needs approval</div><div class="value fs-5" id="ops-exec-approval">—</div></div></div>
+    <div class="col-6 col-md-4 col-xl-2"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Failed</div><div class="value fs-5" id="ops-exec-failed">—</div></div></div>
+  </div>
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Gov. awaiting approval</div><div class="value fs-5" id="ops-gov-awaiting">—</div></div></div>
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Gov. blocked</div><div class="value fs-5" id="ops-gov-blocked">—</div></div></div>
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Critical risk plans</div><div class="value fs-5" id="ops-gov-critical">—</div></div></div>
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Gov. approved</div><div class="value fs-5" id="ops-gov-approved">—</div></div></div>
+  </div>
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Pending reviews</div><div class="value fs-5" id="ops-review-pending">—</div></div></div>
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Avg review time</div><div class="value fs-5" id="ops-review-avg">—</div></div></div>
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Failed reviews</div><div class="value fs-5" id="ops-review-failed">—</div></div></div>
+    <div class="col-6 col-md-3"><div class="ai-code-glass ai-code-kpi py-2 px-2 text-center"><div class="label">Blocked reviews</div><div class="value fs-5" id="ops-review-blocked">—</div></div></div>
+  </div>
+  <div class="ai-code-glass p-2 small" id="ops-health-panel">
+    <div class="row g-2">
+      <div class="col-md-2"><span class="ai-code-muted">API</span> <span id="ops-health-api">—</span></div>
+      <div class="col-md-2"><span class="ai-code-muted">Database</span> <span id="ops-health-db">—</span></div>
+      <div class="col-md-2"><span class="ai-code-muted">Redis</span> <span id="ops-health-redis">—</span></div>
+      <div class="col-md-2"><span class="ai-code-muted">Queue</span> <span id="ops-health-queue">—</span></div>
+      <div class="col-md-2"><span class="ai-code-muted">Last execution</span> <span id="ops-last-exec">—</span></div>
+      <div class="col-md-2"><span class="ai-code-muted">Last review</span> <span id="ops-last-review">—</span></div>
+    </div>
+  </div>
+  <div class="d-flex flex-wrap gap-2 mt-2">
+    <a class="btn btn-outline-info btn-sm" href="/ai-coding/executions">AI Workflows</a>
+    <a class="btn btn-outline-warning btn-sm" href="/ai-coding/deployments">Release readiness</a>
+    <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/audit-coverage">Audit Coverage</a>
+  </div>
+</div>
+
+<div class="mb-3" id="ai-code-wizard-panel">
+  <div class="small ai-code-muted py-2">Guided Autopilot (v1)</div>
+</div>
+
+<div class="mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <strong><i class="bi bi-lightning-charge"></i> Active executions</strong>
+    <span class="small ai-code-muted" id="ai-code-active-label">Loading…</span>
+  </div>
+  <div class="row g-2" id="ai-code-active-cards">
+    <div class="col-12"><div class="ai-code-glass p-3 ai-code-muted small">Loading active executions…</div></div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header py-2 d-flex justify-content-between align-items-center">
+    <strong><i class="bi bi-hammer"></i> Recent builds</strong>
+    <span class="small ai-code-muted" id="ai-code-builds-count">0 builds</span>
+  </div>
+  <div class="table-responsive ai-code-table-wrap">
+    <table class="table table-dark table-hover ai-code-table mb-0">
+      <thead>
+        <tr class="small text-secondary">
+          <th>Project</th><th>Phase</th><th class="ai-code-hide-sm">Branch</th><th>Build</th><th class="ai-code-hide-sm">Tests</th>
+          <th>Review</th><th class="ai-code-hide-sm">Duration</th><th>Started</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="ai-code-build-rows">
+        <tr><td colspan="9" class="text-center ai-code-muted py-3">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="row g-3 mb-3" id="ai-code-kpis">
+  {% for label in ['Recent Reviews','Approved','Requested Changes','Blocked','Senior Fallback','Average Score'] %}
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="ai-code-glass ai-code-kpi">
+      <div class="label">{{ label }}</div>
+      <div class="value" data-kpi="{{ label }}">—</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card mb-3">
+  <div class="card-body py-3">
+    <div class="row g-2">
+      <div class="col-md-3"><input class="form-control form-control-sm" id="ai-code-search" placeholder="Search execution / branch" /></div>
+      <div class="col-md-2">
+        <select class="form-select form-select-sm" id="ai-code-verdict">
+          <option value="">All verdicts</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select class="form-select form-select-sm" id="ai-code-source">
+          <option value="">All sources</option>
+          <option value="ai_only">AI only</option>
+          <option value="ai_plus_senior">AI + senior</option>
+          <option value="senior_fallback">Senior fallback</option>
+        </select>
+      </div>
+      <div class="col-md-3"><input class="form-control form-control-sm" id="ai-code-project" placeholder="Project ID (optional)" /></div>
+      <div class="col-md-2 d-flex align-items-center gap-2">
+        <a class="btn btn-outline-info btn-sm" id="ai-code-intel-link" href="#" style="display:none;">Intelligence</a>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="ai-code-show-archived" />
+          <label class="form-check-label small" for="ai-code-show-archived">Show archived</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="ai-code-blockers" />
+          <label class="form-check-label small" for="ai-code-blockers">Has blockers</label>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header py-2 d-flex justify-content-between align-items-center">
+    <strong>Review transparency</strong>
+    <span class="small ai-code-muted" id="ai-code-count">0 reviews</span>
+  </div>
+  <div class="table-responsive ai-code-table-wrap">
+    <table class="table table-dark table-hover ai-code-table mb-0">
+      <thead>
+        <tr class="small text-secondary">
+          <th>Time</th><th>Project / Phase</th><th>Execution</th><th>AI</th><th>Senior</th><th>Final</th>
+          <th class="ai-code-hide-sm">Score</th><th>Risk</th><th class="ai-code-hide-sm">B/W</th><th class="ai-code-hide-sm">Source</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="ai-code-rows">
+        <tr><td colspan="11" class="text-center ai-code-muted py-4">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+  </div>
+</details>
+
+<div class="offcanvas offcanvas-end text-bg-dark ai-code-drawer" tabindex="-1" id="ai-code-detail" aria-labelledby="ai-code-detail-label">
+  <div class="offcanvas-header border-bottom border-secondary">
+    <h5 class="offcanvas-title" id="ai-code-detail-label">Execution console</h5>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+  </div>
+  <div class="offcanvas-body" id="ai-code-detail-body">
+    <p class="ai-code-muted">Select a review to inspect AI and senior engineering verdicts.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/ai_coding_operator_mode.js') }}?v={{ ai_coding_static_version }}"></script>
+<script src="{{ url_for('static', filename='js/ai_coding_supervised_build.js') }}?v={{ ai_coding_static_version }}"></script>
+<script src="{{ url_for('static', filename='js/ai_coding_operator_home.js') }}?v={{ ai_coding_static_version }}"></script>
+<script src="{{ url_for('static', filename='js/ai_coding_operator_wizard.js') }}?v={{ ai_coding_static_version }}"></script>
+<script>
+(function () {
+  const API = {{ api_base|tojson }};
+  let devToolsLoaded = false;
+  const ACTIVE_STATUSES = new Set(['queued','running','preparing','cursor_running','reviewing','pushing','in_progress']);
+  let items = [];
+  let executions = [];
+  let builds = [];
+  let totalReviews = null;
+  let activeCount = 0;
+  let lastHealth = null;
+  let lastSuccessfulFetch = null;
+  let loading = false;
+
+  function esc(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+  }
+
+  function friendlyError(err) {
+    const status = err && err.status;
+    const raw = err && err.message ? String(err.message) : '';
+    if (status === 502 || status === 503 || /unavailable|upstream|fetch/i.test(raw)) {
+      return 'AI Coding API unavailable. The review service could not be reached.';
+    }
+    if (status === 401) return 'Session expired. Please sign in again.';
+    if (raw && raw.length < 180) return raw;
+    return 'Unable to load review data right now.';
+  }
+
+  function showAlert(message, tone, withRetry) {
+    const el = document.getElementById('ai-code-alert');
+    const cls = tone === 'danger' ? 'alert-danger' : 'alert-warning';
+    const retry = withRetry
+      ? ' <button type="button" class="btn btn-sm btn-outline-light ms-2" id="ai-code-alert-retry">Retry</button>'
+      : '';
+    const hint = tone === 'danger'
+      ? '<div class="small mt-2 mb-0 ai-code-muted">Operator hint: on the server, check <code>systemctl status autostory-web</code> and AI Factory health at <code>/health</code> on port 8015.</div>'
+      : '';
+    el.innerHTML = `<div class="alert ${cls} py-2 mb-3">${esc(message)}${retry}${hint}</div>`;
+    const retryBtn = document.getElementById('ai-code-alert-retry');
+    if (retryBtn) retryBtn.addEventListener('click', () => refreshAll());
+  }
+
+  function clearAlert() {
+    document.getElementById('ai-code-alert').innerHTML = '';
+  }
+
+  function setLoading(isLoading) {
+    loading = isLoading;
+    const btn = document.getElementById('ai-code-refresh');
+    const label = document.getElementById('ai-code-refresh-label');
+    btn.disabled = isLoading;
+    label.innerHTML = isLoading
+      ? '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Refreshing…'
+      : '<i class="bi bi-arrow-clockwise"></i> Refresh';
+  }
+
+  function verdictClass(v) {
+    const x = String(v || 'UNKNOWN').toUpperCase();
+    if (['APPROVE', 'APPROVED'].includes(x)) return 'verdict-approve';
+    if (['REQUEST_CHANGES', 'WARN', 'REJECTED'].includes(x)) return 'verdict-warn';
+    if (['BLOCK', 'BLOCKED'].includes(x)) return 'verdict-block';
+    return 'verdict-unknown';
+  }
+
+  function riskClass(severity) {
+    const x = String(severity || 'UNKNOWN').toUpperCase();
+    if (x === 'LOW') return 'risk-low';
+    if (x === 'MEDIUM') return 'risk-medium';
+    if (x === 'HIGH') return 'risk-high';
+    if (x === 'CRITICAL') return 'risk-critical';
+    return 'risk-unknown';
+  }
+
+  function badge(v) {
+    return `<span class="verdict-badge ${verdictClass(v)}">${esc(v || 'UNKNOWN')}</span>`;
+  }
+
+  function riskBadge(severity) {
+    const label = severity || 'UNKNOWN';
+    return `<span class="risk-badge ${riskClass(label)}">${esc(label)}</span>`;
+  }
+
+  function sourceLabel(source) {
+    const map = {
+      ai_only: 'AI only',
+      ai_plus_senior: 'AI + Senior',
+      senior_fallback: 'Senior fallback',
+    };
+    return map[source] || source || '—';
+  }
+
+  function sourceBadge(source) {
+    if (!source) return '<span class="ai-code-muted">—</span>';
+    return `<span class="source-badge">${esc(sourceLabel(source))}</span>`;
+  }
+
+  function fmtTime(v) {
+    if (!v) return '—';
+    try { return new Date(v).toLocaleString(); } catch (_) { return esc(v); }
+  }
+
+  function shortId(v) {
+    if (!v) return '—';
+    const s = String(v);
+    return s.length > 10 ? `${esc(s.slice(0, 8))}…` : esc(s);
+  }
+
+  function durationLabel(seconds) {
+    if (seconds == null) return '—';
+    if (seconds < 60) return `${seconds}s`;
+    return `${Math.round(seconds / 60)}m`;
+  }
+
+  function showCopied() {
+    let toast = document.getElementById('ai-code-copied-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'ai-code-copied-toast';
+      toast.className = 'alert alert-success py-2 copied-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = 'Copied';
+    toast.style.display = 'block';
+    setTimeout(() => { toast.style.display = 'none'; }, 1600);
+  }
+
+  async function auditEvent(action, executionId) {
+    try {
+      await dashboardFetchJson(`${API}/audit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, execution_id: executionId || null }),
+      });
+    } catch (_) { /* audit must never block UI */ }
+  }
+
+  async function copyText(text, auditAction, executionId) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showCopied();
+      if (auditAction) await auditEvent(auditAction, executionId);
+    } catch (_) {
+      showAlert('Unable to copy to clipboard.', 'warning', false);
+    }
+  }
+
+  function updateStatusCard(health) {
+    lastHealth = health;
+    const connected = !!(health && health.connected);
+    document.getElementById('ai-code-api-status').innerHTML = connected
+      ? '<span class="status-dot ok"></span>Connected'
+      : '<span class="status-dot bad"></span>Disconnected';
+    document.getElementById('ai-code-latency').textContent =
+      health && typeof health.latency_ms === 'number' ? `${health.latency_ms} ms` : '—';
+    document.getElementById('ai-code-last-fetch').textContent =
+      lastSuccessfulFetch ? fmtTime(lastSuccessfulFetch) : '—';
+    document.getElementById('ai-code-total-reviews').textContent =
+      totalReviews == null ? '—' : String(totalReviews);
+    document.getElementById('ai-code-active-count').textContent =
+      activeCount == null ? '—' : String(activeCount);
+    document.getElementById('ai-code-review-status').textContent =
+      connected ? 'Review system: online' : 'Review system: offline';
+    renderHealthPanel(health);
+  }
+
+  function healthDot(ok) {
+    return ok ? '<span class="status-dot ok"></span>' : '<span class="status-dot bad"></span>';
+  }
+
+  function renderHealthPanel(health) {
+    const services = (health && health.services) || {};
+    const dbOk = String(services.database || '').toLowerCase() === 'ok';
+    const redisOk = String(services.redis || '').toLowerCase() === 'ok';
+    const apiOk = !!(health && health.connected);
+    document.getElementById('ops-health-api').innerHTML = apiOk ? `${healthDot(true)}ok` : `${healthDot(false)}down`;
+    document.getElementById('ops-health-db').innerHTML = services.database
+      ? `${healthDot(dbOk)}${esc(services.database)}` : '—';
+    document.getElementById('ops-health-redis').innerHTML = services.redis
+      ? `${healthDot(redisOk)}${esc(services.redis)}` : '—';
+    const queueStatus = services.queue || services.celery || services.worker;
+    document.getElementById('ops-health-queue').textContent = queueStatus ? String(queueStatus) : 'n/a';
+  }
+
+  function aggregateExecutionPrograms(programs) {
+    const stats = {running:0, blocked:0, review:0, validation:0, approval:0, failed:0};
+    (programs || []).forEach(p => {
+      const st = p.status;
+      if (st === 'running') stats.running++;
+      if (st === 'blocked') stats.blocked++;
+      if (st === 'review_pending') stats.review++;
+      if (st === 'validation_pending') stats.validation++;
+      if (st === 'operator_approval') stats.approval++;
+      if (st === 'failed') stats.failed++;
+    });
+    return stats;
+  }
+
+  function renderOpsExecutionStats(stats) {
+    document.getElementById('ops-exec-running').textContent = stats.running;
+    document.getElementById('ops-exec-blocked').textContent = stats.blocked;
+    document.getElementById('ops-exec-review').textContent = stats.review;
+    document.getElementById('ops-exec-validation').textContent = stats.validation;
+    document.getElementById('ops-exec-approval').textContent = stats.approval;
+    document.getElementById('ops-exec-failed').textContent = stats.failed;
+  }
+
+  function renderOpsGovernanceStats(plans) {
+    const stats = {awaiting:0, blocked:0, critical:0, approved:0};
+    (plans || []).forEach(p => {
+      if (p.status === 'operator_approval_required') stats.awaiting++;
+      if (p.status === 'blocked' || p.recommendation === 'blocked') stats.blocked++;
+      if (p.risk_level === 'critical') stats.critical++;
+      if (p.status === 'approved') stats.approved++;
+    });
+    document.getElementById('ops-gov-awaiting').textContent = stats.awaiting;
+    document.getElementById('ops-gov-blocked').textContent = stats.blocked;
+    document.getElementById('ops-gov-critical').textContent = stats.critical;
+    document.getElementById('ops-gov-approved').textContent = stats.approved;
+  }
+
+  function renderOpsReviewStats(rows) {
+    const pending = rows.filter(r => {
+      const v = String((r.senior_review || {}).verdict || (r.final_review || {}).final_verdict || '').toUpperCase();
+      return !v || v === 'UNKNOWN' || v === 'PENDING';
+    }).length;
+    const failed = rows.filter(r => ['REJECTED','REQUEST_CHANGES'].includes(String((r.senior_review||{}).verdict||'').toUpperCase())).length;
+    const blocked = rows.filter(r => ['BLOCK','BLOCKED'].includes(String((r.senior_review||{}).verdict||'').toUpperCase())).length;
+    const durations = rows.map(r => r.duration_seconds).filter(v => typeof v === 'number' && v > 0);
+    const avg = durations.length ? `${Math.round(durations.reduce((a,b)=>a+b,0)/durations.length)}s` : '—';
+    document.getElementById('ops-review-pending').textContent = pending;
+    document.getElementById('ops-review-avg').textContent = avg;
+    document.getElementById('ops-review-failed').textContent = failed;
+    document.getElementById('ops-review-blocked').textContent = blocked;
+    const lastReview = rows[0];
+    document.getElementById('ops-last-review').textContent = lastReview
+      ? fmtTime((lastReview.metadata || {}).reviewed_at || (lastReview.metadata || {}).updated_at) : '—';
+  }
+
+  async function loadOpsOverview() {
+    let programs = [];
+    let plans = [];
+    try {
+      programs = await dashboardFetchJson(`${API}/execution-programs?limit=50`);
+    } catch (_) { programs = []; }
+    try {
+      plans = await dashboardFetchJson(`${API}/deployment-governance/plans?limit=50`);
+    } catch (_) { plans = []; }
+    renderOpsExecutionStats(aggregateExecutionPrograms(programs));
+    renderOpsGovernanceStats(plans);
+    renderOpsReviewStats(items);
+    const lastExec = executions[0];
+    document.getElementById('ops-last-exec').textContent = lastExec
+      ? fmtTime(lastExec.started_at || lastExec.updated_at) : '—';
+  }
+
+  function computeKpis(rows) {
+    const approved = rows.filter(r => r.final_review && r.final_review.approved).length;
+    const blocked = rows.filter(r => ['BLOCK', 'BLOCKED'].includes((r.senior_review || {}).verdict)).length;
+    const requested = rows.filter(r => (r.senior_review || {}).verdict === 'REQUEST_CHANGES').length;
+    const fallback = rows.filter(r => (r.metadata || {}).source === 'senior_fallback').length;
+    const scores = rows.map(r => (r.senior_review || {}).score).filter(v => typeof v === 'number');
+    const avg = scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length) : 'N/A';
+    const map = {
+      'Recent Reviews': rows.length,
+      'Approved': approved,
+      'Requested Changes': requested,
+      'Blocked': blocked,
+      'Senior Fallback': fallback,
+      'Average Score': avg,
+    };
+    document.querySelectorAll('[data-kpi]').forEach(el => {
+      const key = el.getAttribute('data-kpi');
+      el.textContent = map[key] ?? '—';
+    });
+  }
+
+  function filteredRows() {
+    const q = (document.getElementById('ai-code-search').value || '').trim().toLowerCase();
+    return items.filter(item => {
+      if (!q) return true;
+      const hay = [item.execution_id, item.branch_name, item.phase_name, (item.final_review||{}).final_verdict]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function renderTable() {
+    const rows = filteredRows();
+    const tbody = document.getElementById('ai-code-rows');
+    const hasClientFilter = (document.getElementById('ai-code-search').value || '').trim().length > 0;
+    document.getElementById('ai-code-count').textContent = `${rows.length} shown${totalReviews != null ? ` · ${totalReviews} total` : ''}`;
+    computeKpis(rows);
+    if (!rows.length) {
+      const msg = items.length
+        ? 'No reviews match the current search filter.'
+        : (hasClientFilter ? 'No reviews match the current filters.' : 'No reviews returned for the current server filters.');
+      tbody.innerHTML = `<tr><td colspan="11" class="text-center ai-code-muted py-4">${msg}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(item => {
+      const sr = item.senior_review || {};
+      const fr = item.final_review || {};
+      const md = item.metadata || {};
+      return `<tr>
+        <td class="small">${fmtTime(md.reviewed_at || md.updated_at)}</td>
+        <td><div>${esc(item.phase_name || 'Unknown')}</div><div class="small ai-code-muted">${shortId(item.project_id)}</div></td>
+        <td class="font-monospace small">${shortId(item.execution_id)}</td>
+        <td>${badge((item.ai_review||{}).verdict)}</td>
+        <td>${badge(sr.verdict)}</td>
+        <td>${badge(fr.final_verdict)}</td>
+        <td class="ai-code-hide-sm">${sr.score ?? '—'}</td>
+        <td>${riskBadge(sr.severity)}</td>
+        <td class="ai-code-hide-sm">${(sr.blockers||[]).length}/${(sr.warnings||[]).length}</td>
+        <td class="ai-code-hide-sm">${sourceBadge(md.source)}</td>
+        <td><button class="btn btn-outline-info btn-sm" data-detail="${esc(item.execution_id)}">Details</button></td>
+      </tr>`;
+    }).join('');
+    tbody.querySelectorAll('[data-detail]').forEach(btn => {
+      btn.addEventListener('click', () => openExecutionDrawer(btn.getAttribute('data-detail')));
+    });
+  }
+
+  function renderActiveCards() {
+    const container = document.getElementById('ai-code-active-cards');
+    const active = executions.filter(item => ACTIVE_STATUSES.has(String(item.status || '').toLowerCase()));
+    const failed = executions.filter(item => ['failed','error','rejected'].includes(String(item.status || '').toLowerCase()));
+    const blocked = executions.filter(item => String(item.final_verdict || '').toUpperCase().includes('BLOCK'));
+    document.getElementById('ai-code-active-label').textContent =
+      `${active.length} running · ${failed.length} failed · ${blocked.length} blocked`;
+    const cards = [...active.slice(0, 6), ...failed.slice(0, 2), ...blocked.slice(0, 2)];
+    const unique = [];
+    const seen = new Set();
+    cards.forEach(item => {
+      if (!seen.has(item.execution_id)) { seen.add(item.execution_id); unique.push(item); }
+    });
+    if (!unique.length) {
+      container.innerHTML = '<div class="col-12"><div class="ai-code-glass p-3 ai-code-muted small">No active, failed, or blocked executions in the recent window.</div></div>';
+      return;
+    }
+    container.innerHTML = unique.map(item => `
+      <div class="col-md-6 col-xl-4">
+        <div class="ai-code-glass active-card" data-open-exec="${esc(item.execution_id)}">
+          <div class="d-flex justify-content-between gap-2 mb-1">
+            <strong class="small">${esc(item.project_name || 'Project')}</strong>
+            ${badge(item.final_verdict)}
+          </div>
+          <div class="small">${esc(item.phase_name || 'Phase')}</div>
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            <span class="duration-pill">${durationLabel(item.duration_seconds)}</span>
+            ${riskBadge(item.risk_level)}
+            ${sourceBadge(item.source)}
+            <span class="small ai-code-muted">${esc(item.status)}</span>
+          </div>
+        </div>
+      </div>`).join('');
+    container.querySelectorAll('[data-open-exec]').forEach(el => {
+      el.addEventListener('click', () => openExecutionDrawer(el.getAttribute('data-open-exec')));
+    });
+  }
+
+  function renderBuilds() {
+    const tbody = document.getElementById('ai-code-build-rows');
+    document.getElementById('ai-code-builds-count').textContent = `${builds.length} builds`;
+    if (!builds.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center ai-code-muted py-3">No recent builds returned.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = builds.map(item => `
+      <tr>
+        <td>${esc(item.project_name || shortId(item.project_id))}</td>
+        <td>${esc(item.phase_name || '—')}</td>
+        <td class="ai-code-hide-sm font-monospace small">${esc(item.branch_name || '—')}</td>
+        <td>${badge(item.build_result || item.status)}</td>
+        <td class="ai-code-hide-sm small">${esc(item.test_result || '—')}</td>
+        <td>${badge(item.review_verdict)}</td>
+        <td class="ai-code-hide-sm">${durationLabel(item.duration_seconds)}</td>
+        <td class="small">${fmtTime(item.started_at)}</td>
+        <td>${item.execution_id ? `<button class="btn btn-outline-info btn-sm" data-detail="${esc(item.execution_id)}">Open</button>` : '—'}</td>
+      </tr>`).join('');
+    tbody.querySelectorAll('[data-detail]').forEach(btn => {
+      btn.addEventListener('click', () => openExecutionDrawer(btn.getAttribute('data-detail')));
+    });
+  }
+
+  function issueGroup(title, arr, tone) {
+    if (!arr || !arr.length) {
+      return `<div class="issue-group ${tone}"><div class="ai-code-muted small text-uppercase mb-1">${esc(title)}</div><p class="small ai-code-muted mb-0">None</p></div>`;
+    }
+    return `<div class="issue-group ${tone}"><div class="ai-code-muted small text-uppercase mb-1">${esc(title)} (${arr.length})</div><ul class="small mb-0">${arr.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
+  }
+
+  function legacySeniorNote(sr) {
+    const verdict = String((sr || {}).verdict || 'UNKNOWN').toUpperCase();
+    if (verdict !== 'UNKNOWN') return '';
+    return `<div class="legacy-note mb-3"><strong>Legacy data note:</strong> Senior verdict is UNKNOWN for this execution — likely recorded before the senior review layer was enabled. Final verdict reflects available AI review data only.</div>`;
+  }
+
+  async function openExecutionDrawer(executionId) {
+    const body = document.getElementById('ai-code-detail-body');
+    body.innerHTML = '<p class="ai-code-muted">Loading execution console…</p>';
+    bootstrap.Offcanvas.getOrCreateInstance(document.getElementById('ai-code-detail')).show();
+    try {
+      const [detail, timeline, logs, fixes] = await Promise.all([
+        dashboardFetchJson(`${API}/executions/${executionId}`),
+        dashboardFetchJson(`${API}/executions/${executionId}/timeline`),
+        dashboardFetchJson(`${API}/executions/${executionId}/logs?limit=120`),
+        dashboardFetchJson(`${API}/executions/${executionId}/recommended-fixes`),
+      ]);
+      const sr = detail.senior_review || {};
+      const ar = detail.ai_review || {};
+      const fr = detail.final_review || {};
+      const md = detail.metadata || {};
+      const bc = detail.build_context || {};
+      body.innerHTML = `
+        <div class="ai-code-glass p-3 mb-3">
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            ${badge(fr.final_verdict)}
+            ${sourceBadge(md.source)}
+            <span class="duration-pill">${durationLabel(detail.duration_seconds)}</span>
+            ${riskBadge(sr.severity)}
+          </div>
+          <div class="small ai-code-muted mb-2">${esc(detail.project_name || '')} · ${esc(detail.phase_name || '')}</div>
+          <p class="mb-1">${esc(fr.operator_summary || 'No operator summary available.')}</p>
+          <p class="small ai-code-muted mb-0">${esc(fr.decision_reason || '')}</p>
+          <div class="mt-2 d-flex flex-wrap gap-2">
+            <button class="btn btn-outline-light btn-sm" data-copy-exec="${esc(executionId)}">Copy execution ID</button>
+            <button class="btn btn-outline-light btn-sm" data-copy-dx="${esc(executionId)}">Copy diagnostics</button>
+            <button class="btn btn-outline-secondary btn-sm" data-archive-review="${esc(executionId)}">Archive review</button>
+          </div>
+        </div>
+        ${legacySeniorNote(sr)}
+        <div class="ai-code-glass p-3 mb-3">
+          <div class="small ai-code-muted text-uppercase mb-2">Overview</div>
+          <div class="row g-2 small">
+            <div class="col-6">Status: ${esc(detail.status)}</div>
+            <div class="col-6">Branch: ${esc(detail.branch_name || '—')}</div>
+            <div class="col-6">Commit: ${esc(detail.commit_hash || '—')}</div>
+            <div class="col-6">Cursor: ${esc(detail.cursor_run_status || '—')}</div>
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-md-6"><div class="ai-code-glass p-3"><div class="small ai-code-muted">AI review</div>${badge(ar.verdict)}<p class="small mt-2 mb-0">${esc(ar.summary || '—')}</p></div></div>
+          <div class="col-md-6"><div class="ai-code-glass p-3"><div class="small ai-code-muted">Senior review</div>${badge(sr.verdict)} ${riskBadge(sr.severity)}<p class="small mt-2 mb-0">${esc(sr.changed_files_summary || '—')}</p></div></div>
+        </div>
+        <div class="ai-code-glass p-3 mb-3">
+          <div class="small ai-code-muted text-uppercase mb-2">Build / test results</div>
+          <div class="small">Build: ${esc(bc.build_status || '—')} · Stage: ${esc(bc.autopilot_stage || '—')}</div>
+          <div class="small mt-1">Tests: ${esc(bc.test_result_summary || '—')}</div>
+          <div class="small mt-1">Validation: ${esc(bc.validation_result_summary || '—')}</div>
+        </div>
+        <div class="mb-3">${(sr.risk_signals||[]).map(s => `<span class="risk-chip">${esc(String(s).replaceAll('_',' '))}</span>`).join('') || '<span class="ai-code-muted small">No risk signals</span>'}</div>
+        <div class="ai-code-glass p-3 mb-3">
+          <div class="small ai-code-muted text-uppercase mb-2">Timeline</div>
+          ${(timeline.items || []).map(ev => `
+            <div class="timeline-item ${esc(ev.severity || 'info')}">
+              <div class="small ai-code-muted">${fmtTime(ev.occurred_at)} · ${esc(ev.event_type)}</div>
+              <div class="small">${esc(ev.summary || '')}</div>
+            </div>`).join('') || '<p class="small ai-code-muted mb-0">No timeline events.</p>'}
+        </div>
+        ${issueGroup('Blockers', sr.blockers, 'blockers')}
+        ${issueGroup('Warnings', sr.warnings, 'warnings')}
+        <div class="ai-code-glass p-3 mb-3">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="small ai-code-muted text-uppercase">Recommended fixes</div>
+            <button class="btn btn-outline-light btn-sm" data-copy-fixes="${esc(executionId)}">Copy all</button>
+          </div>
+          ${(fixes.items || []).map((fix, idx) => `
+            <div class="issue-group fixes mb-2">
+              <div class="small"><strong>${esc(fix.title)}</strong> · ${esc(fix.severity)}</div>
+              <div class="small">${esc(fix.description)}</div>
+              <div class="small ai-code-muted">${esc(fix.suggested_action)}</div>
+              <button class="btn btn-link btn-sm p-0" data-copy-fix="${idx}">Copy fix</button>
+            </div>`).join('') || '<p class="small ai-code-muted mb-0">No recommended fixes.</p>'}
+        </div>
+        <div class="ai-code-glass p-3 mb-3">
+          <div class="small ai-code-muted text-uppercase mb-2">Logs (redacted)</div>
+          ${(logs.sections || []).map((section, idx) => `
+            <details class="log-section mb-2" ${idx === 0 ? 'open' : ''}>
+              <summary>${esc(section.name)} (${(section.lines || []).length})</summary>
+              <pre>${esc((section.lines || []).join('\\n'))}</pre>
+            </details>`).join('') || '<p class="small ai-code-muted mb-0">No logs available.</p>'}
+        </div>
+        <details class="mt-2"><summary class="small" style="cursor:pointer">Raw payload (collapsed, redacted)</summary><pre>${esc(JSON.stringify({ execution_id: detail.execution_id, status: detail.status, review: fr.final_verdict }, null, 2))}</pre></details>
+      `;
+      body.querySelector('[data-copy-exec]')?.addEventListener('click', () => copyText(executionId, 'ai_coding_execution_id_copied', executionId));
+      body.querySelector('[data-copy-dx]')?.addEventListener('click', () => {
+        const summary = [
+          `Execution: ${executionId}`,
+          `Project: ${detail.project_name || detail.project_id}`,
+          `Phase: ${detail.phase_name || detail.phase_id}`,
+          `Status: ${detail.status}`,
+          `Final verdict: ${fr.final_verdict}`,
+          `Blockers: ${(sr.blockers || []).length}`,
+          `Warnings: ${(sr.warnings || []).length}`,
+        ].join('\\n');
+        copyText(summary, 'ai_coding_diagnostics_copied', executionId);
+      });
+      body.querySelector('[data-archive-review]')?.addEventListener('click', async () => {
+        if (!confirm('Archive this review? It will be hidden from the default review list.')) return;
+        const reason = prompt('Archive reason (optional):') || '';
+        await dashboardFetchJson(`${API}/reviews/${executionId}/archive`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        showCopied();
+        bootstrap.Offcanvas.getOrCreateInstance(document.getElementById('ai-code-detail')).hide();
+        await refreshAll();
+      });
+      body.querySelector('[data-copy-fixes]')?.addEventListener('click', () => {
+        const mdText = (fixes.items || []).map(fix =>
+          `### ${fix.severity.toUpperCase()} — ${fix.title}\\n${fix.description}\\nSuggested: ${fix.suggested_action}`
+        ).join('\\n\\n');
+        copyText(mdText || 'No fixes', 'ai_coding_fix_copied', executionId);
+      });
+      body.querySelectorAll('[data-copy-fix]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const fix = (fixes.items || [])[Number(btn.getAttribute('data-copy-fix'))];
+          if (!fix) return;
+          copyText(`${fix.title}\\n${fix.description}\\n${fix.suggested_action}`, 'ai_coding_fix_copied', executionId);
+        });
+      });
+    } catch (err) {
+      body.innerHTML = `<div class="alert alert-danger py-2">${esc(friendlyError(err))}</div>`;
+    }
+  }
+
+  async function loadHealth() {
+    try {
+      const health = await dashboardFetchJson(`${API}/health`);
+      updateStatusCard(health);
+      return health;
+    } catch (_) {
+      updateStatusCard({ connected: false });
+      return { connected: false };
+    }
+  }
+
+  async function loadExecutions() {
+    try {
+      const data = await dashboardFetchJson(`${API}/executions/recent?limit=50`);
+      executions = data.items || [];
+      activeCount = typeof data.active_count === 'number' ? data.active_count : executions.filter(e => ACTIVE_STATUSES.has(String(e.status||'').toLowerCase())).length;
+      document.getElementById('ai-code-active-count').textContent = String(activeCount);
+      renderActiveCards();
+      return true;
+    } catch (_) {
+      executions = [];
+      renderActiveCards();
+      return false;
+    }
+  }
+
+  async function loadBuilds() {
+    try {
+      const data = await dashboardFetchJson(`${API}/builds/recent?limit=20`);
+      builds = data.items || [];
+      renderBuilds();
+      return true;
+    } catch (_) {
+      builds = [];
+      renderBuilds();
+      return false;
+    }
+  }
+
+  async function loadReviews() {
+    clearAlert();
+    const params = new URLSearchParams({ limit: '50', offset: '0' });
+    const verdict = document.getElementById('ai-code-verdict').value;
+    const source = document.getElementById('ai-code-source').value;
+    const projectId = document.getElementById('ai-code-project').value.trim();
+    const hasBlockers = document.getElementById('ai-code-blockers').checked;
+    if (verdict) params.set('verdict', verdict);
+    if (source) params.set('source', source);
+    if (projectId) params.set('project_id', projectId);
+    if (hasBlockers) params.set('has_blockers', 'true');
+    if (document.getElementById('ai-code-show-archived').checked) params.set('include_archived', 'true');
+
+    document.getElementById('ai-code-rows').innerHTML = '<tr><td colspan="11" class="text-center ai-code-muted py-4"><span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Loading reviews…</td></tr>';
+    try {
+      const data = await dashboardFetchJson(`${API}/reviews/recent?${params.toString()}`);
+      items = data.items || [];
+      totalReviews = typeof data.total === 'number' ? data.total : items.length;
+      lastSuccessfulFetch = new Date().toISOString();
+      document.getElementById('ai-code-refreshed').textContent = `Last synced: ${new Date().toLocaleString()}`;
+      document.getElementById('ai-code-total-reviews').textContent = String(totalReviews);
+      document.getElementById('ai-code-last-fetch').textContent = fmtTime(lastSuccessfulFetch);
+      renderTable();
+      return true;
+    } catch (err) {
+      showAlert(friendlyError(err), 'danger', true);
+      document.getElementById('ai-code-rows').innerHTML = '<tr><td colspan="11" class="text-center ai-code-muted py-4">Review data unavailable.</td></tr>';
+      computeKpis([]);
+      return false;
+    }
+  }
+
+  async function refreshAll() {
+    if (loading) return;
+    setLoading(true);
+    try {
+      await loadHealth();
+      await Promise.all([loadExecutions(), loadBuilds(), loadReviews()]);
+      await loadOpsOverview();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  document.getElementById('ai-code-copy-diagnostics').addEventListener('click', () => {
+    const summary = [
+      'AI Coding diagnostics',
+      `Upstream connected: ${lastHealth && lastHealth.connected ? 'yes' : 'no'}`,
+      `Latency: ${lastHealth && lastHealth.latency_ms != null ? lastHealth.latency_ms + ' ms' : '—'}`,
+      `Total reviews: ${totalReviews ?? '—'}`,
+      `Active executions: ${activeCount ?? '—'}`,
+      `Last sync: ${lastSuccessfulFetch || '—'}`,
+    ].join('\\n');
+    copyText(summary, 'ai_coding_diagnostics_copied');
+  });
+
+  ['ai-code-search'].forEach(id => document.getElementById(id).addEventListener('input', renderTable));
+  ['ai-code-verdict', 'ai-code-source', 'ai-code-project', 'ai-code-blockers', 'ai-code-show-archived'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+      const pid = document.getElementById('ai-code-project').value.trim();
+      const link = document.getElementById('ai-code-intel-link');
+      if(pid){ link.style.display='inline-block'; link.href = `/ai-coding/projects/${encodeURIComponent(pid)}/intelligence`; }
+      else { link.style.display='none'; }
+      refreshAll();
+    });
+  });
+  document.getElementById('ai-code-project').addEventListener('input', () => {
+    const pid = document.getElementById('ai-code-project').value.trim();
+    const link = document.getElementById('ai-code-intel-link');
+    if(pid){ link.style.display='inline-block'; link.href = `/ai-coding/projects/${encodeURIComponent(pid)}/intelligence`; }
+    else { link.style.display='none'; }
+  });
+  document.getElementById('ai-code-refresh').addEventListener('click', refreshAll);
+
+  function collapseDevAdvanced() {
+    const details = document.getElementById('ai-dev-advanced-panel');
+    if (!details) return;
+    details.removeAttribute('open');
+    details.open = false;
+    const hash = location.hash;
+    if (hash === '#ai-dev-advanced' || hash === '#ai-dev-advanced-panel') {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  function openDevAdvanced() {
+    const details = document.getElementById('ai-dev-advanced-panel');
+    if (!details) return;
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    details.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function loadDevTools() {
+    if (devToolsLoaded) return refreshAll();
+    devToolsLoaded = true;
+    return refreshAll();
+  }
+
+  collapseDevAdvanced();
+  window.openAiCodingDevAdvanced = openDevAdvanced;
+  window.addEventListener('pageshow', () => collapseDevAdvanced());
+  window.addEventListener('hashchange', () => collapseDevAdvanced());
+
+  document.getElementById('ai-dev-advanced-panel')?.addEventListener('toggle', (ev) => {
+    if (ev.target.open) loadDevTools();
+    else if (devToolsLoaded) {
+      /* keep loaded data; panel stays collapsed */
+    }
+  });
+
+  if (window.AiCodingOperatorHome) {
+    AiCodingOperatorHome.init({
+      api: API,
+      panelId: 'ai-operator-home',
+      alertFn: (msg, tone) => showAlert(msg, tone === 'success' ? 'info' : tone, false),
+      autoRefreshMs: 30000,
+    });
+  }
+
+  if (window.AiCodingOperatorWizard) {
+    AiCodingOperatorWizard.init({
+      api: API,
+      panelId: 'ai-code-wizard-panel',
+      formatError: friendlyError,
+      alertFn: (msg, tone) => showAlert(msg, tone === 'success' ? 'warning' : tone, false),
+      autoRefreshMs: 0,
+      onRefresh: () => devToolsLoaded && refreshAll(),
+    });
+  }
+})();
+</script>
+{% endblock %}

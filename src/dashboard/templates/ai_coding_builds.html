@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Build Task — AI Coding{% endblock %}
+{% block extra_css %}
+<style>
+  .build-muted { color: #94a3b8; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-person-workspace"></i> Build Task</h2>
+    <p class="build-muted small mb-0">One task · one status · one primary action</p>
+  </div>
+  <a class="btn btn-outline-secondary btn-sm" href="/ai-coding"><i class="bi bi-arrow-left"></i> Home</a>
+</div>
+
+<div id="build-alert"></div>
+<div id="ai-sb-detail">Loading…</div>
+
+<details class="op-mode-advanced mt-3">
+  <summary>Advanced / Developer Tools</summary>
+  <div class="mt-3">
+    <div id="ai-code-wizard-panel" class="mb-3"></div>
+    <h6 class="text-light small">All build tasks</h6>
+    <div id="ai-sb-list" class="small build-muted">Loading…</div>
+    <p class="small mt-2"><a href="/ai-coding/executions?mode=advanced">AI Workflows (technical)</a> · <a href="/ai-coding/planner">Task planner</a></p>
+  </div>
+</details>
+{% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/ai_coding_operator_mode.js') }}?v={{ ai_coding_static_version }}"></script>
+<script src="{{ url_for('static', filename='js/ai_coding_operator_wizard.js') }}?v={{ ai_coding_static_version }}"></script>
+<script src="{{ url_for('static', filename='js/ai_coding_supervised_build.js') }}?v={{ ai_coding_static_version }}"></script>
+<script>
+(function(){
+  const API = {{ api_base|tojson }};
+  const RUN_ID = {{ run_id|tojson }};
+  function alertMsg(msg, tone='warning') {
+    document.getElementById('build-alert').innerHTML = `<div class="alert alert-${tone} py-2">${String(msg).replaceAll('<','&lt;')}</div>`;
+  }
+  if (window.AiCodingSupervisedBuild) {
+    AiCodingSupervisedBuild.init({
+      api: API,
+      runId: RUN_ID || null,
+      listPanelId: 'ai-sb-list',
+      detailPanelId: 'ai-sb-detail',
+      alertFn: alertMsg,
+      autoRefreshMs: 30000,
+      hideWizard: false,
+    });
+  }
+})();
+</script>
+{% endblock %}
