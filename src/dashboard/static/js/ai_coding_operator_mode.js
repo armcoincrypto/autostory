@@ -85,7 +85,14 @@
     [/test proof/gi, 'Preparing manual test package'],
     [/AI validating/gi, 'AI Working'],
     [/AI fixing/gi, 'AI Working'],
-    [/Planning/gi, 'AI Working'],
+    [/Planning/gi, 'Understanding Idea'],
+    [/Awaiting validation/gi, 'Testing in progress'],
+    [/Pending review/gi, 'AI checking work'],
+    [/Governance approval/gi, 'Release approval'],
+    [/Execution Program/gi, 'Build'],
+    [/Execution program/gi, 'Build'],
+    [/Workflow state/gi, 'Build status'],
+    [/Program overview/gi, 'Build overview'],
     [/AI is working/gi, 'AI Working'],
     [/\s{2,}/g, ' '],
   ];
@@ -179,6 +186,12 @@
 
   function operatorStatusTone(label) {
     const normalized = sanitizeOperatorText(label);
+    if (/understanding idea/i.test(normalized)) return 'planning';
+    if (/checking work/i.test(normalized)) return 'validating';
+    if (/testing in progress/i.test(normalized)) return 'validating';
+    if (/ready for test/i.test(normalized)) return 'ready';
+    if (/^building$/i.test(normalized)) return 'working';
+    if (/^fixing$/i.test(normalized)) return 'fixing';
     if (/planning/i.test(normalized)) return 'planning';
     if (/fixing/i.test(normalized)) return 'fixing';
     if (/validating/i.test(normalized)) return 'validating';
@@ -241,6 +254,77 @@
       </div>
       <div class="op-mode-progress"><div class="bar op-progress-bar-${operatorStatusTone(productionStatus(run))}" style="width:${pct}%"></div></div>
     </div>`;
+  }
+
+  function renderOperatorHomeHero(run) {
+    ensureOperatorStyles();
+    const action = primaryAction(run);
+    const pct = progressPercent(run);
+    const step = field(run, 'current_step', currentWorkSummary(run));
+    const next = field(run, 'operator_next_action', field(run, 'next_after_click_summary', nextAfterClick(run)));
+    return `<section class="op-home-hero" data-current-build="true">
+      <div class="op-home-hero-kicker">Current Build</div>
+      <div class="op-home-hero-title">${esc(run.task_title || 'Build task')}</div>
+      ${renderOperatorStatusBadge(run)}
+      ${renderProgressBarBlock(run, pct)}
+      <div class="op-home-hero-step">
+        <div class="op-home-hero-label">Current step</div>
+        <div class="op-home-hero-value">${esc(step)}</div>
+      </div>
+      <div class="op-home-hero-step">
+        <div class="op-home-hero-label">Next action</div>
+        <div class="op-home-hero-value">${esc(next)}</div>
+      </div>
+      ${renderBlockedCard(run, action)}
+      <a href="/ai-coding/builds/${esc(run.id)}" class="btn btn-primary btn-lg w-100 op-home-open-build">Open Build</a>
+    </section>`;
+  }
+
+  function operatorStatusLabelForRun(run) {
+    if (run && run.operator_status) return productionStatus(run);
+    return humanBuildStatus(String(run?.status || '').toLowerCase());
+  }
+
+  function renderOperatorBuildMiniCard(run) {
+    if (!run || !run.id) return '';
+    const label = sanitizeOperatorText(operatorStatusLabelForRun(run));
+    const tone = operatorStatusTone(label);
+    const badgeClass = tone === 'ready' ? ' op-home-build-card-badge-ready'
+      : (tone === 'blocked' ? ' op-home-build-card-badge-blocked' : '');
+    const pct = run.progress_percent != null ? `${Math.round(Number(run.progress_percent))}%` : '';
+    return `<a href="/ai-coding/builds/${esc(run.id)}" class="op-home-build-card">
+      <div class="op-home-build-card-title">${esc(run.task_title || 'Build task')}</div>
+      <div class="op-home-build-card-meta">
+        <span class="op-home-build-card-badge${badgeClass}">${esc(label)}</span>
+        ${pct ? `<span>${esc(pct)}</span>` : ''}
+      </div>
+    </a>`;
+  }
+
+  function isRealOperatorBlocker(run) {
+    if (!run) return false;
+    const status = String(run.status || '').toLowerCase();
+    const stopType = run.stop_type || null;
+    if (stopType === 'STOP_TYPE_MANUAL_TEST' || status === 'ready_for_manual_test') return false;
+    if (stopType === 'STOP_TYPE_RELEASE') return false;
+    if (stopType === 'STOP_TYPE_REQUIREMENTS') return true;
+    if (TERMINAL_FAILURE.has(status)) return true;
+    if (status === 'operator_declined') return true;
+    if (run.safe_to_continue === false && stopType) return true;
+    return false;
+  }
+
+  function blockedReasonLabel(run) {
+    const raw = sanitizeOperatorText(run.blocker_reason)
+      || sanitizeOperatorText(run.what_ai_needs)
+      || sanitizeOperatorText(run.friendly_message);
+    if (raw) return raw;
+    const status = String(run.status || '').toLowerCase();
+    if (status === 'operator_declined') return 'Needs fixes after manual test';
+    if (status === 'failed') return 'Build stopped — needs attention';
+    if (status === 'cancelled') return 'Build was cancelled';
+    if (run.stop_type === 'STOP_TYPE_REQUIREMENTS') return 'Requirements unclear';
+    return 'Manual decision required';
   }
 
   function renderCurrentBuildCard(run, action) {
@@ -576,6 +660,24 @@
       .op-mtp-approved-note { color: #cbd5e1; font-size: 0.84rem; margin-top: 0.35rem; }
       .op-mtp-final { border-top-color: rgba(110,231,183,0.25); }
       .op-mtp-final p { color: #d1fae5; }
+      .op-mtp-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 0.75rem; background: rgba(2,6,23,0.45); border: 1px solid rgba(148,163,184,0.18); border-radius: 12px; padding: 0.75rem 0.85rem; margin-bottom: 0.85rem; }
+      .op-mtp-summary-item { min-width: 0; }
+      .op-mtp-summary-label { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: #64748b; font-weight: 600; }
+      .op-mtp-summary-value { font-size: 0.9rem; color: #f1f5f9; font-weight: 600; line-height: 1.3; word-break: break-word; }
+      .op-mtp-banner { border-radius: 12px; padding: 0.85rem 1rem; font-size: 1.05rem; font-weight: 700; margin-bottom: 0.85rem; text-align: center; }
+      .op-mtp-banner-pass { background: rgba(6,95,70,0.35); border: 1px solid rgba(110,231,183,0.45); color: #ecfdf5; }
+      .op-mtp-banner-fail { background: rgba(127,29,29,0.28); border: 1px solid rgba(248,113,113,0.45); color: #fecaca; }
+      .op-mtp-checklist { list-style: none; padding: 0; margin: 0; }
+      .op-mtp-checkitem { display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.5rem 0; border-bottom: 1px solid rgba(148,163,184,0.1); font-size: 0.92rem; color: #e2e8f0; line-height: 1.35; }
+      .op-mtp-checkitem:last-child { border-bottom: none; }
+      .op-mtp-checkitem input[type="checkbox"] { width: 1.2rem; height: 1.2rem; margin-top: 0.1rem; flex-shrink: 0; accent-color: #22c55e; cursor: pointer; }
+      .op-mtp-checkitem label { cursor: pointer; flex: 1; }
+      .op-mtp-compact-list { margin: 0; padding-left: 1rem; }
+      .op-mtp-compact-list li { margin-bottom: 0.25rem; color: #e2e8f0; font-size: 0.88rem; line-height: 1.35; }
+      .op-mtp-actions-row { display: flex; flex-direction: column; gap: 0.65rem; margin-top: 0.85rem; }
+      @media (min-width: 480px) { .op-mtp-actions-row { flex-direction: row; } }
+      .op-mtp-actions-row .btn { min-height: 3rem; font-size: 1rem; font-weight: 600; padding: 0.65rem 1rem; flex: 1; }
+      .op-mtp-pass-hint { color: #94a3b8; font-size: 0.82rem; margin-top: 0.5rem; text-align: center; }
       .op-status-badge { display: inline-flex; align-items: center; font-size: 1.05rem; font-weight: 700; padding: 0.35rem 0.85rem; border-radius: 999px; margin: 0.35rem 0 0.65rem; letter-spacing: 0.01em; }
       .op-status-planning { color: #c4b5fd; background: rgba(139,92,246,0.16); border: 1px solid rgba(167,139,250,0.45); }
       .op-status-working { color: #bae6fd; background: rgba(14,165,233,0.18); border: 1px solid rgba(56,189,248,0.45); }
@@ -602,6 +704,25 @@
       .op-blocked-card { background: rgba(127,29,29,0.22); border: 1px solid rgba(248,113,113,0.45); border-radius: 12px; padding: 0.85rem 1rem; margin-bottom: 0.85rem; }
       .op-blocked-title { color: #fecaca; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.4rem; }
       .op-blocked-body { color: #fca5a5; font-size: 0.88rem; line-height: 1.4; }
+      .op-home-dashboard { display: flex; flex-direction: column; gap: 1.15rem; }
+      .op-home-hero { background: linear-gradient(145deg, rgba(15,23,42,0.92), rgba(30,41,59,0.78)); border: 1px solid rgba(56,189,248,0.32); border-radius: 18px; padding: 1.25rem 1.35rem; backdrop-filter: blur(14px); box-shadow: 0 12px 40px rgba(2,6,23,0.45); }
+      .op-home-hero-kicker { font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: #7dd3fc; font-weight: 700; margin-bottom: 0.5rem; }
+      .op-home-hero-title { font-size: 1.25rem; font-weight: 700; color: #f8fafc; line-height: 1.3; margin-bottom: 0.25rem; }
+      .op-home-hero-step { margin-top: 0.75rem; }
+      .op-home-hero-label { font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase; color: #64748b; font-weight: 600; margin-bottom: 0.2rem; }
+      .op-home-hero-value { color: #e2e8f0; font-size: 0.92rem; line-height: 1.4; }
+      .op-home-open-build { min-height: 3rem; font-size: 1.05rem; font-weight: 600; margin-top: 1rem; border-radius: 12px; }
+      .op-home-section { background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.16); border-radius: 14px; padding: 1rem 1.1rem; backdrop-filter: blur(8px); }
+      .op-home-section-title { font-size: 0.95rem; font-weight: 700; color: #e2e8f0; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.4rem; }
+      .op-home-section-empty { color: #64748b; font-size: 0.86rem; margin: 0; }
+      .op-home-build-grid { display: flex; flex-direction: column; gap: 0.65rem; }
+      .op-home-build-card { display: block; text-decoration: none; background: rgba(2,6,23,0.45); border: 1px solid rgba(148,163,184,0.18); border-radius: 12px; padding: 0.85rem 0.95rem; transition: border-color 0.15s ease, transform 0.15s ease; }
+      .op-home-build-card:hover { border-color: rgba(56,189,248,0.4); transform: translateY(-1px); text-decoration: none; }
+      .op-home-build-card-title { font-weight: 600; color: #f1f5f9; font-size: 0.95rem; line-height: 1.35; margin-bottom: 0.35rem; }
+      .op-home-build-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #94a3b8; }
+      .op-home-build-card-badge { font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid rgba(148,163,184,0.25); color: #cbd5e1; }
+      .op-home-build-card-badge-ready { color: #fde68a; border-color: rgba(251,191,36,0.45); background: rgba(245,158,11,0.12); }
+      .op-home-build-card-badge-blocked { color: #fecaca; border-color: rgba(248,113,113,0.45); background: rgba(127,29,29,0.2); }
     `;
     document.head.appendChild(el);
   }
@@ -781,10 +902,10 @@
     const stopType = run?.stop_type || null;
     if (isManualTestFeedbackStatus(run) || stopType === 'STOP_TYPE_MANUAL_TEST') {
       return {
-        link: 'Send feedback after test',
-        submit: 'Send feedback after test',
-        placeholder: 'What failed manual testing? What should AI fix?',
-        label: 'Describe what failed manual testing',
+        link: 'Needs Fixes',
+        submit: 'Send fixes',
+        placeholder: 'What failed? What should AI fix?',
+        label: 'What needs fixing',
       };
     }
     if (stopType === 'STOP_TYPE_REQUIREMENTS') {
@@ -808,11 +929,12 @@
     const pct = computeProgress(run);
     const action = primaryAction(run);
     const isReady = run.status === 'ready_for_manual_test';
-    const showPrimary = action.show !== false;
+    const showPrimary = action.show !== false && !isReady;
     const fb = feedbackUiLabels(run);
-    const showFeedbackLink = isReady
-      || action.id === 'problems'
-      || run.stop_type === 'STOP_TYPE_REQUIREMENTS';
+    const showFeedbackLink = !isReady && (
+      action.id === 'problems'
+      || run.stop_type === 'STOP_TYPE_REQUIREMENTS'
+    );
 
     const clarificationAlert = '';
 
@@ -895,30 +1017,134 @@
     }
   }
 
-  function manualTestPackageSections(checklist) {
-    const testSteps = checklist.test_steps && checklist.test_steps.length
+  function renderCompactBullets(items, limit) {
+    const list = (items || []).slice(0, limit || 2);
+    if (!list.length) return '<p class="op-mode-muted small mb-0">—</p>';
+    return `<ul class="op-mtp-compact-list mb-0">${list.map((item) => `<li>${esc(sanitizeOperatorText(item))}</li>`).join('')}</ul>`;
+  }
+
+  function manualTestStatusLabel(run) {
+    const status = String(run?.status || '').toLowerCase();
+    if (status === 'operator_approved') return 'Passed';
+    if (status === 'operator_declined') return 'Needs fixes';
+    if (status === 'ready_for_manual_test') return 'Your turn';
+    return 'Waiting';
+  }
+
+  function renderManualTestSummaryCard(run) {
+    const pct = progressPercent(run);
+    return `<div class="op-mtp-summary">
+      <div class="op-mtp-summary-item"><div class="op-mtp-summary-label">Task</div><div class="op-mtp-summary-value">${esc(run.task_title || 'Build task')}</div></div>
+      <div class="op-mtp-summary-item"><div class="op-mtp-summary-label">Status</div><div class="op-mtp-summary-value">${esc(productionStatus(run))}</div></div>
+      <div class="op-mtp-summary-item"><div class="op-mtp-summary-label">Build progress</div><div class="op-mtp-summary-value">${pct}%</div></div>
+      <div class="op-mtp-summary-item"><div class="op-mtp-summary-label">Manual test</div><div class="op-mtp-summary-value">${esc(manualTestStatusLabel(run))}</div></div>
+    </div>`;
+  }
+
+  function shortenTestStepLabel(step) {
+    const text = sanitizeOperatorText(step);
+    const lower = text.toLowerCase();
+    if (/open ai coding|\/ai-coding(?![/])/i.test(text) || (lower.includes('ai coding') && lower.includes('menu'))) {
+      return 'Open AI Coding';
+    }
+    if (/build page|\/ai-coding\/builds\//i.test(text)) return 'Open build page';
+    if (/production readiness|current status/i.test(lower)) return 'Verify status';
+    if (/production checklist|manual test package/i.test(lower)) return 'Verify checklist';
+    if (/auto-deploy|auto deploy|no production deploy/i.test(lower)) return 'Verify no auto deploy';
+    if (/auto-send|auto send|no auto-send/i.test(lower)) return 'Verify no auto send';
+    if (/advanced details/i.test(lower)) return 'Advanced Details stays collapsed';
+    if (text.length <= 72) return text;
+    return `${text.slice(0, 69)}…`;
+  }
+
+  function defaultManualTestCheckboxes(run) {
+    const runId = run && run.id ? String(run.id) : '';
+    const steps = ['Open AI Coding', 'Open build page', 'Verify status', 'Verify checklist', 'Verify no auto deploy', 'Verify no auto send'];
+    if (runId) steps[1] = 'Open build page';
+    return steps;
+  }
+
+  function resolveTestCheckboxSteps(checklist, run) {
+    const raw = (checklist.test_steps && checklist.test_steps.length)
       ? checklist.test_steps
-      : checklist.where_to_check;
+      : defaultManualTestCheckboxes(run);
+    const seen = new Set();
+    const out = [];
+    raw.forEach((step) => {
+      const label = shortenTestStepLabel(step);
+      if (label && !seen.has(label)) {
+        seen.add(label);
+        out.push(label);
+      }
+    });
+    return out.length ? out.slice(0, 7) : defaultManualTestCheckboxes(run);
+  }
+
+  function renderTestStepCheckboxes(steps) {
+    if (!steps || !steps.length) return '';
+    return `<ul class="op-mtp-checklist">${steps.map((step, i) => {
+      const id = `mtp-step-${i}`;
+      return `<li class="op-mtp-checkitem"><input type="checkbox" id="${id}" /><label for="${id}">${esc(step)}</label></li>`;
+    }).join('')}</ul>`;
+  }
+
+  function renderManualTestDecisionButtons(show) {
+    if (!show) return '';
+    return `<div class="op-mtp-actions-row">
+      <button type="button" class="btn btn-success" id="mtp-approve">Approve</button>
+      <button type="button" class="btn btn-outline-warning" id="mtp-needs-fixes">Needs Fixes</button>
+    </div>
+    <p class="op-mtp-pass-hint mb-0">Nothing deploys or sends automatically.</p>`;
+  }
+
+  function bindManualTestPackageActions(scope, run, hooks) {
+    const root = scope || document;
+    root.querySelector('#mtp-approve')?.addEventListener('click', () => {
+      if (hooks && hooks.approve) hooks.approve(run);
+    });
+    root.querySelector('#mtp-needs-fixes')?.addEventListener('click', () => {
+      const wrap = root.querySelector('#sb-feedback-wrap, #hub-feedback-wrap');
+      if (wrap) {
+        wrap.style.display = 'block';
+        wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        wrap.querySelector('textarea')?.focus();
+      }
+    });
+    root.querySelectorAll('[data-action="send-feedback"]').forEach((link) => {
+      link.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const wrap = root.querySelector('#sb-feedback-wrap, #hub-feedback-wrap');
+        if (wrap) {
+          wrap.style.display = 'block';
+          wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      });
+    });
+  }
+
+  function manualTestPackageSections(checklist, run, options) {
+    const opts = options || {};
+    const testSteps = resolveTestCheckboxSteps(checklist, run);
     const expected = checklist.expected_result && checklist.expected_result.length
       ? checklist.expected_result
       : checklist.confirm_results;
     const validationNote = sanitizeOperatorText(checklist.validation_evidence);
     const sections = [
-      `<div class="op-mtp-section"><div class="op-mtp-heading">What changed</div>${renderChecklistBullets(checklist.what_changed)}</div>`,
+      `<div class="op-mtp-section"><div class="op-mtp-heading">What changed</div>${renderCompactBullets(checklist.what_changed, 2)}</div>`,
       `<div class="op-mtp-section"><div class="op-mtp-heading">Where to check</div>${renderWhereToCheck(checklist)}</div>`,
-      `<div class="op-mtp-section"><div class="op-mtp-heading">Test steps</div><ol class="op-mtp-steps">${(testSteps || []).map((s) => `<li>${esc(sanitizeOperatorText(s))}</li>`).join('')}</ol></div>`,
-      `<div class="op-mtp-section"><div class="op-mtp-heading">Expected result</div>${renderChecklistBullets(expected)}</div>`,
-      `<div class="op-mtp-section"><div class="op-mtp-heading">Must not happen</div>${renderMustNotHappenChips(checklist.must_not_happen)}</div>`,
-      `<div class="op-mtp-section op-mtp-decision-section"><div class="op-mtp-heading">Pass / fail decision</div><ol class="op-mtp-steps">${(checklist.pass_fail_decision || [
-        'Walk through every test step above.',
-        'If everything matches Expected result and Must not happen, choose Approve after test.',
-        'If something failed, send feedback so AI can fix it.',
-      ]).map((s) => `<li>${esc(sanitizeOperatorText(s))}</li>`).join('')}</ol></div>`,
+      `<div class="op-mtp-section"><div class="op-mtp-heading">Test steps</div>${renderTestStepCheckboxes(testSteps)}</div>`,
+      `<div class="op-mtp-section"><div class="op-mtp-heading">Expected result</div>${renderCompactBullets(expected, 2)}</div>`,
+      `<div class="op-mtp-section"><div class="op-mtp-heading">Must not happen</div>${renderMustNotHappenChips((checklist.must_not_happen || []).slice(0, 4))}</div>`,
     ];
+    if (!opts.hideDecision) {
+      sections.push(
+        `<div class="op-mtp-section op-mtp-decision-section"><div class="op-mtp-heading">Pass / fail decision</div>${renderManualTestDecisionButtons(opts.showActions !== false)}</div>`
+      );
+    }
     if (validationNote && validationNote.includes('not attached')) {
       sections.push(`<div class="op-mtp-section"><p class="op-mtp-note mb-0">${esc(validationNote)}</p></div>`);
     }
-    if (checklist.rollback_note) {
+    if (checklist.rollback_note && !opts.compact) {
       sections.push(
         `<div class="op-mtp-section"><div class="op-mtp-heading">Rollback note</div><p class="small mb-0 op-mode-muted">${esc(sanitizeOperatorText(checklist.rollback_note))}</p></div>`
       );
@@ -926,113 +1152,98 @@
     return sections;
   }
 
-  function renderApprovedSummaryBanner(run, checklist) {
-    const approvedAt = formatApprovalTime(
-      checklist.approval_recorded_at || run.updated_at || run.created_at
-    );
-    const releaseNote = sanitizeOperatorText(
-      checklist.production_release_note
-      || run.production_release_summary
-      || 'Not released automatically — approval is recorded only.'
-    );
-    const comment = sanitizeOperatorText(checklist.approval_comment);
-    return `<div class="op-mtp-approved-banner">
-      <div class="op-mtp-approved-title"><i class="bi bi-patch-check-fill"></i> ${esc(checklist.final_status || 'Approved after manual test')}</div>
-      ${approvedAt ? `<div class="op-mtp-approved-time">Approved ${esc(approvedAt)}</div>` : ''}
-      ${comment ? `<div class="op-mtp-approved-time">Note: ${esc(comment)}</div>` : ''}
-      <p class="op-mtp-approved-note mb-0">${esc(releaseNote)}</p>
-    </div>`;
+  function renderPassBanner(checklist) {
+    const approvedAt = formatApprovalTime(checklist.approval_recorded_at);
+    return `<div class="op-mtp-banner op-mtp-banner-pass">✅ Manual Test Passed</div>
+      ${approvedAt ? `<p class="op-mtp-pass-hint mb-2">Recorded ${esc(approvedAt)}</p>` : ''}`;
+  }
+
+  function renderFailBanner() {
+    return '<div class="op-mtp-banner op-mtp-banner-fail">❌ Needs Fixes</div>';
   }
 
   function renderWhatToTestCard(run, extras) {
     const isApproved = run.status === 'operator_approved';
+    const isDeclined = run.status === 'operator_declined';
     const isReady = run.status === 'ready_for_manual_test' || run.manual_test_required;
-    if (!isReady && !isApproved) {
+    if (!isReady && !isApproved && !isDeclined) {
       return `<div class="op-checklist-card">
         <div class="op-readiness-title">What to test</div>
-        <p class="op-mode-muted small mb-0">AI will show test steps here when the work is ready.</p>
+        <p class="op-mode-muted small mb-0">Test steps appear when AI finishes building.</p>
       </div>`;
     }
 
     const checklist = run.manual_test_checklist || {};
     const missing = sanitizeOperatorText(run.missing_evidence_reason);
+    const header = '<div class="op-mtp-header"><i class="bi bi-clipboard2-check"></i> Manual test package</div>';
 
     if (isApproved) {
-      if (!checklist.what_changed || !checklist.what_changed.length) {
-        return `<div class="op-manual-test-package op-manual-test-approved" id="op-manual-test-panel">
-          <div class="op-mtp-header"><i class="bi bi-clipboard2-check"></i> Manual test package</div>
-          ${renderApprovedSummaryBanner(run, checklist)}
-          <p class="op-mode-muted small mb-0">Approval is recorded. Production release was not automatic.</p>
-        </div>`;
-      }
       return `<div class="op-manual-test-package op-manual-test-approved" id="op-manual-test-panel">
-        <div class="op-mtp-header"><i class="bi bi-clipboard2-check"></i> Manual test package</div>
-        <p class="op-mtp-sub">Record of what you tested before approval. Nothing was deployed or sent automatically.</p>
-        ${renderApprovedSummaryBanner(run, checklist)}
-        ${manualTestPackageSections(checklist).join('')}
-        <div class="op-mtp-decision op-mtp-final">
-          <p class="mb-0"><strong>Final status:</strong> Manual test approved. Production release remains manual — this build was not auto-deployed, auto-sent, or auto-merged.</p>
-        </div>
+        ${header}
+        ${renderManualTestSummaryCard(run)}
+        ${renderPassBanner(checklist)}
+        ${manualTestPackageSections(checklist, run, { hideDecision: true, compact: true }).join('')}
+      </div>`;
+    }
+
+    if (isDeclined) {
+      return `<div class="op-manual-test-package op-manual-test-declined" id="op-manual-test-panel">
+        ${header}
+        ${renderManualTestSummaryCard(run)}
+        ${renderFailBanner()}
+        ${manualTestPackageSections(checklist, run, { hideDecision: true, compact: true }).join('')}
       </div>`;
     }
 
     if (missing && (!checklist.what_changed || !checklist.what_changed.length)) {
       return `<div class="op-manual-test-package" id="op-manual-test-panel">
-        <div class="op-mtp-header"><i class="bi bi-clipboard2-check"></i> Manual test package</div>
-        <p class="op-mtp-sub">Test in your environment before approval. Nothing is deployed or sent automatically.</p>
+        ${header}
+        ${renderManualTestSummaryCard(run)}
         <p class="op-mtp-note">${esc(missing)}</p>
-        <div class="op-mtp-decision">
-          <p class="mb-1">After testing, approve if everything looks good.</p>
-          <a href="#" class="op-mtp-feedback-link" data-action="send-feedback">Send feedback after test</a>
-        </div>
+        ${renderManualTestDecisionButtons(true)}
       </div>`;
     }
 
-    const validationNote = sanitizeOperatorText(checklist.validation_evidence);
-    const sections = manualTestPackageSections(checklist);
-
-    if (validationNote && validationNote.includes('not attached') && !sections.some((s) => s.includes(validationNote))) {
-      sections.push(`<div class="op-mtp-section"><p class="op-mtp-note mb-0">${esc(validationNote)}</p></div>`);
-    }
+    const sections = manualTestPackageSections(checklist, run, { showActions: true });
 
     return `<div class="op-manual-test-package" id="op-manual-test-panel">
-      <div class="op-mtp-header"><i class="bi bi-clipboard2-check"></i> Manual test package</div>
-      <p class="op-mtp-sub">Everything you need to test manually before approval. Nothing is deployed or sent automatically.</p>
+      ${header}
+      ${renderManualTestSummaryCard(run)}
       ${sections.join('')}
-      ${missing ? `<p class="op-mtp-note mb-0">${esc(missing)}</p>` : ''}
-      <div class="op-mtp-decision">
-        <p class="mb-1"><strong>Decision:</strong> Use the Pass / fail checklist above, then choose <strong>Approve after test</strong> or send feedback.</p>
-        <a href="#" class="op-mtp-feedback-link" data-action="send-feedback">Send feedback after test</a> if something needs fixing.
-      </div>
+      ${missing ? `<p class="op-mtp-note mb-0 mt-2">${esc(missing)}</p>` : ''}
     </div>`;
   }
 
   /** @deprecated Advanced details only */
   function humanBuildStatus(status) {
     const map = {
-      draft: 'Planning',
-      planning: 'Planning',
-      plan_ready: 'AI Working',
-      executing: 'AI Working',
-      reviewing: 'AI Validating',
-      validating: 'AI Validating',
-      fixing: 'AI Fixing',
-      ready_for_manual_test: 'Ready For Manual Test',
+      draft: 'Understanding Idea',
+      planning: 'Understanding Idea',
+      plan_ready: 'Building',
+      executing: 'Building',
+      reviewing: 'AI checking work',
+      validating: 'Testing in progress',
+      fixing: 'Fixing',
+      ready_for_manual_test: 'Ready For Test',
       operator_approved: 'Approved',
-      operator_declined: 'AI Fixing',
+      ready_for_release_approval: 'Ready For Release',
+      release_approved: 'Ready For Release',
+      releasing: 'Ready For Release',
+      released: 'Released',
+      operator_declined: 'Fixing',
       failed: 'Blocked',
       cancelled: 'Blocked',
     };
-    return map[status] || 'AI Working';
+    return map[status] || 'Building';
   }
 
   /** Advanced details only — human-readable phase status */
   function humanPhaseStatus(status) {
     const map = {
-      review_pending: 'Internal review',
-      validation_pending: 'Internal validation',
-      operator_approval: 'Awaiting approval',
-      running: 'Running',
+      review_pending: 'AI checking work',
+      validation_pending: 'Testing in progress',
+      operator_approval: 'Release approval',
+      running: 'Building',
       ready: 'Ready',
       waiting: 'Waiting',
       completed: 'Completed',
@@ -1059,6 +1270,11 @@
     sanitizeOperatorText,
     normalizeBlockers,
     ensureOperatorStyles,
+    renderOperatorHomeHero,
+    renderOperatorBuildMiniCard,
+    operatorStatusLabelForRun,
+    isRealOperatorBlocker,
+    blockedReasonLabel,
     renderCurrentBuildCard,
     renderProgressBarBlock,
     progressPercent,
@@ -1087,6 +1303,7 @@
     renderProductionReadinessCard,
     renderWhatToTestCard,
     renderManualTestChecklistCard: renderWhatToTestCard,
+    bindManualTestPackageActions,
     renderOperatorSimplePanel,
     renderAdvancedDetails,
     humanBuildStatus,

@@ -25,9 +25,9 @@
   const DEFAULT_FORBIDDEN =
     'spam, scraping users, hidden sending, auto-send, send-all without approval, bypassing limits, production deploy, secret exposure';
 
-  const EMPTY_HOME_LINE1 = 'No active build.';
-  const EMPTY_HOME_LINE2 = 'Start a supervised AI build below.';
-  const STEP3_NOTE = 'AI works. You test. Then approve or send feedback.';
+  const EMPTY_HOME_LINE1 = 'Create Your First Build';
+  const EMPTY_HOME_LINE2 = 'Describe what you want AI to build.';
+  const STEP3_NOTE = 'AI builds. You test. Then approve or send feedback.';
   const UNAVAILABLE_MSG =
     'AI build service is not available yet. You can still use Advanced Task Planner, or retry.';
   const START_BUILD_UNAVAILABLE_MSG =
@@ -330,6 +330,82 @@
     return extras;
   }
 
+  function sortBuildRows(rows) {
+    return [...(rows || [])].sort(
+      (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+    );
+  }
+
+  function renderHomeSection(title, iconClass, bodyHtml, emptyText, esc) {
+    return `<section class="op-home-section">
+      <div class="op-home-section-title"><i class="bi ${iconClass}"></i> ${esc(title)}</div>
+      ${bodyHtml || `<p class="op-home-section-empty">${esc(emptyText)}</p>`}
+    </section>`;
+  }
+
+  function renderBlockedMiniCard(run, om) {
+    const esc = om.esc;
+    const card = om.renderOperatorBuildMiniCard(run);
+    const reason = om.blockedReasonLabel(run);
+    return card.replace('</a>', `<div class="small mt-1" style="color:#fca5a5">${esc(reason)}</div></a>`);
+  }
+
+  function renderOperatorDashboard(container, ctx, hooks) {
+    const om = OM();
+    if (!om || !om.renderOperatorHomeHero) return false;
+    om.ensureOperatorStyles();
+    const esc = om.esc;
+    const rows = sortBuildRows(ctx.allRows || []);
+    const current = ctx.currentRun || null;
+    const currentId = current && current.id ? String(current.id) : '';
+
+    const readyForTest = rows.filter(
+      (r) => r.status === 'ready_for_manual_test' && String(r.id) !== currentId
+    );
+    const blocked = rows.filter(
+      (r) => om.isRealOperatorBlocker(r) && String(r.id) !== currentId
+    );
+    const recent = rows.slice(0, 5);
+
+    const miniGrid = (list, mapper) => {
+      if (!list.length) return '';
+      const cards = list.map((r) => (mapper ? mapper(r) : om.renderOperatorBuildMiniCard(r))).join('');
+      return `<div class="op-home-build-grid">${cards}</div>`;
+    };
+
+    let html = '<div class="op-home-dashboard" data-operator-home="dashboard">';
+    if (current) {
+      html += om.renderOperatorHomeHero(current);
+    }
+    html += renderHomeSection(
+      'Ready For Test',
+      'bi-clipboard2-check',
+      miniGrid(readyForTest),
+      'No builds waiting for your test.',
+      esc
+    );
+    html += renderHomeSection(
+      'Blocked',
+      'bi-exclamation-octagon',
+      miniGrid(blocked, (r) => renderBlockedMiniCard(r, om)),
+      'Nothing blocked right now.',
+      esc
+    );
+    html += renderHomeSection(
+      'Recent Builds',
+      'bi-clock-history',
+      miniGrid(recent),
+      'No builds yet.',
+      esc
+    );
+    html += '</div>';
+    html += '<p class="text-center mt-2 mb-0"><a href="#" class="small op-mode-muted" data-open-dev-advanced>View advanced / developer tools</a></p>';
+
+    container.innerHTML = html;
+    wireAdvancedToolsLink(container);
+    return true;
+  }
+
   function renderStartCard(container, projects, hooks, options) {
     const om = OM();
     const esc = om.esc;
@@ -386,7 +462,7 @@
         </div>
         <div class="hub-step">
           <div class="hub-step-label">3. Start</div>
-          <button type="button" class="btn btn-primary btn-lg w-100" id="hub-start-build">Start supervised build</button>
+          <button type="button" class="btn btn-primary btn-lg w-100" id="hub-start-build">Start Building</button>
           <p class="op-mode-muted small mt-2 mb-0 text-center">${esc(STEP3_NOTE)}</p>
         </div>
         <details class="op-mode-advanced mt-3">
@@ -502,6 +578,9 @@
       });
     });
     scope.querySelector('#hub-decline-submit, #sb-decline-submit')?.addEventListener('click', () => hooks.submitFeedback(run));
+    if (om && om.bindManualTestPackageActions) {
+      om.bindManualTestPackageActions(scope, run, hooks);
+    }
     scope.querySelector('#hub-refresh, #sb-refresh')?.addEventListener('click', () => hooks.refresh());
     scope.querySelector('#hub-open-builds')?.addEventListener('click', (e) => {
       e.preventDefault();
@@ -535,7 +614,11 @@
       const extras = (cached && cached.extras) || lastGoodExtras;
       if (!run || !run.id) return false;
       rememberGoodRun(run, extras);
-      if (!renderTaskDetail(panel, run, hooks, extras)) return false;
+      if (!renderOperatorDashboard(panel, {
+        currentRun: run,
+        allRows: lastBuildRows.length ? lastBuildRows : [runToSummary(run)],
+        extras,
+      }, hooks)) return false;
       return true;
     }
 
@@ -563,8 +646,12 @@
         const withRelease = await attachReleaseStatus(run, extras);
         if (seq !== refreshSeq) return;
         rememberGoodRun(run, withRelease);
-        if (panel.querySelector('[data-operator-mode="true"]')) {
-          renderTaskDetail(panel, run, hooks, withRelease);
+        if (panel.querySelector('[data-operator-home="dashboard"]')) {
+          renderOperatorDashboard(panel, {
+            currentRun: run,
+            allRows: lastBuildRows.length ? lastBuildRows : [runToSummary(run)],
+            extras: withRelease,
+          }, hooks);
           setRefreshStatusNote(panel, null);
         }
       } catch (_) {
@@ -591,34 +678,44 @@
       }
 
       let summary = pickCurrentRun(rows, cachedRun);
-      if (!summary) {
+      if (!summary && (!rows || !rows.length)) {
         if (listErr && !cachedRun) throw listErr;
         await showEmptyStart(null, rows);
         return;
       }
 
-      let run;
-      try {
-        run = await fetchJsonTimed(api, `/build-runs/${summary.id}`, null, DETAIL_TIMEOUT_MS);
-      } catch (detailErr) {
-        if (cachedRun && String(cachedRun.id) === String(summary.id)) {
-          run = cachedRun;
-        } else if (isNotFoundError(detailErr)) {
-          run = summary;
-        } else {
-          throw detailErr;
+      let run = null;
+      if (summary) {
+        try {
+          run = await fetchJsonTimed(api, `/build-runs/${summary.id}`, null, DETAIL_TIMEOUT_MS);
+        } catch (detailErr) {
+          if (cachedRun && String(cachedRun.id) === String(summary.id)) {
+            run = cachedRun;
+          } else if (isNotFoundError(detailErr)) {
+            run = summary;
+          } else {
+            throw detailErr;
+          }
         }
+        rememberGoodRun(run, lastGoodExtras);
       }
 
-      rememberGoodRun(run, lastGoodExtras);
       let extras = { journal: [], program: null };
-      extras = await attachReleaseStatus(run, extras);
-      if (!renderTaskDetail(panel, run, hooks, extras)) {
-        global.location.href = `/ai-coding/builds/${run.id}`;
+      if (run) {
+        extras = await attachReleaseStatus(run, extras);
+      }
+      if (!renderOperatorDashboard(panel, {
+        currentRun: run,
+        allRows: rows,
+        extras,
+      }, hooks)) {
+        if (run && run.id) {
+          global.location.href = `/ai-coding/builds/${run.id}`;
+        }
         return;
       }
       setRefreshStatusNote(panel, null);
-      enrichRunInBackground(run, seq);
+      if (run) enrichRunInBackground(run, seq);
     }
 
     async function handleRefreshFailure(err, seq) {
@@ -673,7 +770,7 @@
       showMsg: (msg, tone) => options.alertFn && options.alertFn(msg, tone),
       async refresh() {
         const seq = ++refreshSeq;
-        const hasPanel = !!panel.querySelector('[data-operator-mode="true"]');
+        const hasPanel = !!panel.querySelector('[data-operator-home="dashboard"], [data-operator-home="start"]');
         if (!hasPanel && !loadCachedBuild() && !lastGoodRun) {
           panel.innerHTML =
             '<div class="op-mode-muted py-4 text-center"><span class="spinner-border spinner-border-sm"></span> Loading current task…</div>';
@@ -701,7 +798,7 @@
           hooks.showMsg('Choose a project for this supervised build.', 'warning');
           return;
         }
-        if (!global.confirm('Start supervised build? AI will prepare the work. You test manually before anything goes live.')) return;
+        if (!global.confirm('Start building? AI will prepare the work. You test manually before anything goes live.')) return;
         const forbidden = (document.getElementById('hub-forbidden')?.value || DEFAULT_FORBIDDEN)
           .split(',').map((s) => s.trim()).filter(Boolean);
         try {
@@ -891,6 +988,8 @@
     projectIdOf,
     projectLabelOf,
     hintProjectIdFromRows,
+    renderOperatorDashboard,
+    sortBuildRows,
     CACHE_KEY,
     ACTIVE_BUILD,
     FETCH_TIMEOUT_MS,
