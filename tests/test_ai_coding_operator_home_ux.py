@@ -46,6 +46,8 @@ def test_operator_home_dashboard_sections() -> None:
     assert "Blocked" in text
     assert "Create Your First Build" in text
     assert "Start Building" in text
+    assert "Workspace Safety" not in text
+    assert "renderWorkspaceSafetyCard" not in text
 
 
 def test_operator_mode_home_hero_exports() -> None:

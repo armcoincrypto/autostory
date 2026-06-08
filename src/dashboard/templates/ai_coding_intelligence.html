@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Project Intelligence — AI Coding{% endblock %}
+{% block extra_css %}
+<style>
+  .intel-glass { background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.18); backdrop-filter: blur(12px); border-radius: 14px; }
+  .intel-muted { color: #94a3b8; }
+  .sev-info { color:#93c5fd; } .sev-warning { color:#fcd34d; } .sev-high { color:#fb923c; } .sev-critical { color:#f87171; }
+  .constraint-badge { display:inline-flex; border-radius:999px; padding:0.15rem 0.55rem; font-size:0.68rem; background:rgba(239,68,68,0.12); color:#fca5a5; border:1px solid rgba(239,68,68,0.25); margin:0.15rem 0.2rem 0 0; }
+  .pattern-badge { display:inline-flex; border-radius:999px; padding:0.15rem 0.55rem; font-size:0.68rem; background:rgba(56,189,248,0.12); color:#7dd3fc; border:1px solid rgba(56,189,248,0.25); margin:0.15rem 0.2rem 0 0; }
+  .timeline-item { border-left:2px solid rgba(148,163,184,0.25); padding-left:0.75rem; margin-bottom:0.85rem; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+  <div>
+    <h2 class="mb-1"><i class="bi bi-diagram-3"></i> Project Intelligence</h2>
+    <p class="intel-muted small mb-0">Engineering memory, constraints, and execution context — Phase 9A</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-light btn-sm" href="/ai-coding"><i class="bi bi-arrow-left"></i> AI Coding</a>
+    <button class="btn btn-outline-info btn-sm" id="intel-refresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+  </div>
+</div>
+<div id="intel-alert"></div>
+<div class="intel-glass p-3 mb-3">
+  <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+    <div><strong id="intel-project-name">Project</strong><div class="intel-muted small" id="intel-project-id">{{ project_id }}</div></div>
+    <span class="badge bg-secondary" id="intel-risk">Risk: —</span>
+  </div>
+  <div class="row g-3">
+    <div class="col-lg-6"><h6>Architecture</h6><div id="intel-architecture" class="small intel-muted">Loading…</div></div>
+    <div class="col-lg-6"><h6>Deployment</h6><div id="intel-deployment" class="small intel-muted">Loading…</div></div>
+  </div>
+  <div class="mt-3"><h6>Known constraints</h6><div id="intel-constraints"></div></div>
+  <div class="mt-2"><h6>Dangerous / forbidden areas</h6><div id="intel-forbidden"></div></div>
+  <div class="mt-2"><h6>Preferred patterns</h6><div id="intel-patterns" class="small intel-muted"></div></div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-7">
+    <div class="intel-glass p-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Memory Explorer</h5>
+        <div class="form-check form-switch small">
+          <input class="form-check-input" type="checkbox" id="intel-show-archived" />
+          <label class="form-check-label" for="intel-show-archived">Archived</label>
+        </div>
+      </div>
+      <div class="row g-2 mb-2">
+        <div class="col-md-4"><input id="intel-search" class="form-control form-control-sm" placeholder="Search memory" /></div>
+        <div class="col-md-3"><select id="intel-category" class="form-select form-select-sm"><option value="">All categories</option></select></div>
+        <div class="col-md-3"><select id="intel-severity" class="form-select form-select-sm"><option value="">All severities</option><option>INFO</option><option>WARNING</option><option>HIGH</option><option>CRITICAL</option></select></div>
+        <div class="col-md-2"><button class="btn btn-outline-light btn-sm w-100" id="intel-search-btn">Search</button></div>
+      </div>
+      <div id="intel-memory-list" class="small">Loading…</div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="intel-glass p-3 mb-3">
+      <h5 class="mb-2">Execution Context Preview</h5>
+      <p class="intel-muted small">Relevant memory injected before execution — not full history.</p>
+      <button class="btn btn-outline-info btn-sm mb-2" id="intel-load-context">Generate context</button>
+      <div id="intel-context" class="small intel-muted">No context generated yet.</div>
+    </div>
+    <div class="intel-glass p-3">
+      <h5 class="mb-2">Incident Timeline</h5>
+      <div id="intel-incidents" class="timeline small intel-muted">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<div class="intel-glass p-3">
+  <h5 class="mb-2">Add operator memory note</h5>
+  <div class="row g-2">
+    <div class="col-md-3"><input id="intel-m-title" class="form-control form-control-sm" placeholder="Title" /></div>
+    <div class="col-md-2"><select id="intel-m-category" class="form-select form-select-sm"><option value="operational_rule">operational_rule</option><option value="production_constraint">production_constraint</option><option value="architecture">architecture</option><option value="deployment">deployment</option><option value="preferred_pattern">preferred_pattern</option><option value="forbidden_pattern">forbidden_pattern</option></select></div>
+    <div class="col-md-2"><select id="intel-m-severity" class="form-select form-select-sm"><option>INFO</option><option>WARNING</option><option>HIGH</option><option>CRITICAL</option></select></div>
+    <div class="col-md-5"><input id="intel-m-tags" class="form-control form-control-sm" placeholder="tags comma-separated" /></div>
+    <div class="col-12"><textarea id="intel-m-content" class="form-control form-control-sm" rows="3" placeholder="Memory content (no secrets)"></textarea></div>
+    <div class="col-12"><button class="btn btn-primary btn-sm" id="intel-m-save">Save memory</button></div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+(function(){
+  const API = {{ api_base|tojson }};
+  const PROJECT_ID = {{ project_id|tojson }};
+  function esc(v){ return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+  function sevClass(s){ return {INFO:'sev-info',WARNING:'sev-warning',HIGH:'sev-high',CRITICAL:'sev-critical'}[s]||'intel-muted'; }
+  function alertMsg(msg, tone='warning'){ document.getElementById('intel-alert').innerHTML = `<div class="alert alert-${tone} py-2">${esc(msg)}</div>`; }
+
+  async function loadSummary(){
+    const data = await dashboardFetchJson(`${API}/projects/${PROJECT_ID}/intelligence-summary`);
+    const p = data.profile || {};
+    document.getElementById('intel-project-name').textContent = p.project_name || 'Project';
+    document.getElementById('intel-risk').textContent = `Risk: ${p.production_risk_level || 'medium'}`;
+    document.getElementById('intel-architecture').textContent = data.architecture_summary || p.architecture_summary || '—';
+    document.getElementById('intel-deployment').textContent = data.deployment_summary || p.deployment_summary || '—';
+    document.getElementById('intel-patterns').textContent = data.preferred_patterns || p.preferred_patterns || '—';
+    document.getElementById('intel-constraints').innerHTML = (data.known_constraints||[]).map(c => `<span class="constraint-badge">${esc(c)}</span>`).join('') || '<span class="intel-muted">None recorded.</span>';
+    document.getElementById('intel-forbidden').innerHTML = (data.forbidden_areas||[]).map(c => `<span class="constraint-badge">${esc(c)}</span>`).join('') || '<span class="intel-muted">None recorded.</span>';
+    renderMemory(data.recent_memory || []);
+    renderIncidents(data.recent_incidents || []);
+  }
+
+  function renderMemory(rows){
+    document.getElementById('intel-memory-list').innerHTML = rows.length ? rows.map(m => `
+      <div class="border-bottom border-secondary py-2">
+        <div class="d-flex justify-content-between gap-2"><strong>${esc(m.title)}</strong><span class="${sevClass(m.severity)}">${esc(m.severity)}</span></div>
+        <div class="intel-muted">${esc(m.category)} · ${esc(m.source)} · pinned=${m.pinned?'yes':'no'} · archived=${m.archived?'yes':'no'}</div>
+        <div>${esc(m.content)}</div>
+        <div class="mt-1">
+          <button class="btn btn-link btn-sm p-0" data-pin="${m.id}" data-pinned="${m.pinned}">${m.pinned?'Unpin':'Pin'}</button>
+          <button class="btn btn-link btn-sm p-0 text-warning" data-archive="${m.id}">Archive</button>
+        </div>
+      </div>`).join('') : '<span class="intel-muted">No memory entries.</span>';
+    document.querySelectorAll('[data-pin]').forEach(btn => btn.addEventListener('click', async () => {
+      await dashboardFetchJson(`${API}/memory/${btn.getAttribute('data-pin')}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ pinned: btn.getAttribute('data-pinned') !== 'true' }) });
+      await searchMemory();
+    }));
+    document.querySelectorAll('[data-archive]').forEach(btn => btn.addEventListener('click', async () => {
+      if(!confirm('Archive this memory entry?')) return;
+      await dashboardFetchJson(`${API}/memory/${btn.getAttribute('data-archive')}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ archived: true }) });
+      await searchMemory();
+    }));
+  }
+
+  function renderIncidents(rows){
+    document.getElementById('intel-incidents').innerHTML = rows.length ? rows.map(i => `
+      <div class="timeline-item"><strong>${esc(i.incident_title)}</strong><div class="intel-muted">${esc(i.created_at)}</div><div>${esc(i.lessons_learned || i.fix_summary || '')}</div></div>`).join('') : 'No incidents recorded.';
+  }
+
+  async function searchMemory(){
+    const params = new URLSearchParams({ project_id: PROJECT_ID, limit: '50' });
+    const q = document.getElementById('intel-search').value.trim();
+    const category = document.getElementById('intel-category').value;
+    const severity = document.getElementById('intel-severity').value;
+    if(q) params.set('q', q);
+    if(category) params.set('category', category);
+    if(severity) params.set('severity', severity);
+    if(document.getElementById('intel-show-archived').checked) params.set('include_archived', 'true');
+    const rows = await dashboardFetchJson(`${API}/engineering-memory/search?${params.toString()}`);
+    renderMemory(rows);
+  }
+
+  document.getElementById('intel-load-context').addEventListener('click', async () => {
+    const ctx = await dashboardFetchJson(`${API}/projects/${PROJECT_ID}/execution-context?limit=8`);
+    document.getElementById('intel-context').innerHTML =
+      `<div class="mb-2"><strong>Token estimate:</strong> ${ctx.token_estimate}</div>` +
+      (ctx.warnings||[]).map(w => `<div class="text-warning">${esc(w)}</div>`).join('') +
+      (ctx.memory_entries||[]).map(m => `<div class="mb-2 p-2 rounded" style="background:#020617;"><strong>${esc(m.title)}</strong><div class="intel-muted">${esc(m.category)} · score ${m.relevance_score||'—'}</div><div>${esc(m.content)}</div></div>`).join('') ||
+      '<span class="intel-muted">No relevant memory selected.</span>';
+  });
+
+  document.getElementById('intel-m-save').addEventListener('click', async () => {
+    try {
+      await dashboardFetchJson(`${API}/projects/${PROJECT_ID}/memory`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          category: document.getElementById('intel-m-category').value,
+          title: document.getElementById('intel-m-title').value.trim(),
+          content: document.getElementById('intel-m-content').value.trim(),
+          severity: document.getElementById('intel-m-severity').value,
+          source: 'operator_note',
+          tags: document.getElementById('intel-m-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+        }),
+      });
+      alertMsg('Memory saved.', 'success');
+      await searchMemory();
+      await loadSummary();
+    } catch(e){ alertMsg(e.message || 'Save failed', 'danger'); }
+  });
+
+  document.getElementById('intel-search-btn').addEventListener('click', searchMemory);
+  document.getElementById('intel-refresh').addEventListener('click', async () => { await loadSummary(); await searchMemory(); });
+  document.getElementById('intel-show-archived').addEventListener('change', searchMemory);
+  loadSummary().then(searchMemory);
+})();
+</script>
+{% endblock %}

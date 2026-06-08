@@ -130,6 +130,10 @@
 
     document.getElementById('sb-decline-submit')?.addEventListener('click', () => hooks.submitFeedback(run));
 
+    if (om && om.bindManualTestPackageActions) {
+      om.bindManualTestPackageActions(panel || document, run, hooks);
+    }
+
     document.getElementById('sb-refresh')?.addEventListener('click', () => hooks.loadRun(run.id));
   }
 
@@ -152,6 +156,19 @@
       extras.releaseStatus = await om.fetchReleaseStatus(api, run);
       if (extras.releaseStatus) run.release_status = extras.releaseStatus;
     }
+    if (om && om.fetchBackgroundJobs) {
+      extras.backgroundJobs = await om.fetchBackgroundJobs(api, run.id);
+    }
+    if (om && om.fetchWorkerHealth) {
+      extras.workerHealth = await om.fetchWorkerHealth(api);
+    }
+    if (om && om.fetchProjectPlatform && run.project_id) {
+      extras.projectPlatform = await om.fetchProjectPlatform(api, run.project_id);
+      extras.projectHealth = await om.fetchProjectHealth(api, run.project_id);
+      extras.projectJobs = await om.fetchProjectJobs(api, run.project_id);
+      if (om.fetchProjectReleasePolicy) {
+        extras.projectReleasePolicy = await om.fetchProjectReleasePolicy(api, run.project_id);
+      }
     return extras;
   }
 
@@ -452,6 +469,31 @@
           const extras = await enrichRun(api, updated);
           renderDetail(detailEl, updated, hooks, extras);
           hooks.showMsg('Dry-run release completed.', 'success');
+        } catch (err) {
+          hooks.showMsg(formatError(err), 'danger');
+        }
+      },
+      async executeControlledRelease(run) {
+        const planId = run.release_status && run.release_status.plan && run.release_status.plan.id;
+        if (!planId) {
+          hooks.showMsg('Release plan required.', 'warning');
+          return;
+        }
+        if (!global.confirm('Execute controlled release? All gates must pass.')) return;
+        try {
+          await fetchJson(api, `/release-runs/${planId}/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              actor: 'operator',
+              idempotency_key: `controlled-${planId}-${Date.now()}`,
+              adapter: 'local_script',
+            }),
+          });
+          const updated = await fetchJson(api, `/build-runs/${run.id}`);
+          const extras = await enrichRun(api, updated);
+          renderDetail(detailEl, updated, hooks, extras);
+          hooks.showMsg('Controlled release request completed.', 'info');
         } catch (err) {
           hooks.showMsg(formatError(err), 'danger');
         }

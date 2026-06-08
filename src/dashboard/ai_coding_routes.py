@@ -196,6 +196,43 @@ def execution_recommended_fixes(execution_id: str):
     )
 
 
+@ai_coding_api.route("/projects/platform", methods=["GET"])
+def projects_platform_list():
+    return _proxy_get("/api/v1/projects/platform", action="projects_platform_list")
+
+
+@ai_coding_api.route("/projects/<project_id>/platform", methods=["GET"])
+def project_platform_detail(project_id: str):
+    return _proxy_get(
+        f"/api/v1/projects/{project_id}/platform",
+        action="project_platform_detail",
+    )
+
+
+@ai_coding_api.route("/projects/<project_id>/health", methods=["GET"])
+def project_health(project_id: str):
+    return _proxy_get(
+        f"/api/v1/projects/{project_id}/health",
+        action="project_health",
+    )
+
+
+@ai_coding_api.route("/projects/<project_id>/jobs", methods=["GET"])
+def project_jobs(project_id: str):
+    return _proxy_get(
+        f"/api/v1/projects/{project_id}/jobs",
+        action="project_jobs",
+    )
+
+
+@ai_coding_api.route("/projects/<project_id>/release-policy", methods=["GET"])
+def project_release_policy(project_id: str):
+    return _proxy_get(
+        f"/api/v1/projects/{project_id}/release-policy",
+        action="project_release_policy",
+    )
+
+
 @ai_coding_api.route("/projects/summary", methods=["GET"])
 def projects_summary():
     query = {"limit": request.args.get("limit", "50")}
@@ -895,6 +932,146 @@ def build_run_journal(run_id: str):
     return _proxy_get(
         f"/api/v1/build-runs/{run_id}/journal",
         action="build_run_journal_viewed",
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/workspace/prepare", methods=["POST"])
+def build_run_prepare_workspace(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/workspace/prepare",
+        action="build_run_prepare_workspace",
+        json_body=body,
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/execute", methods=["POST"])
+def build_run_execute(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/execute",
+        action="build_run_execute",
+        json_body=body,
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/jobs/execute", methods=["POST"])
+def build_run_jobs_execute(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/jobs/execute",
+        action="build_run_jobs_execute",
+        json_body=body,
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/jobs/auto-fix", methods=["POST"])
+def build_run_jobs_auto_fix(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/jobs/auto-fix",
+        action="build_run_jobs_auto_fix",
+        json_body=body,
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/jobs/dry-run-package", methods=["POST"])
+def build_run_jobs_dry_run_package(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/jobs/dry-run-package",
+        action="build_run_jobs_dry_run_package",
+        json_body=body,
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/jobs", methods=["GET"])
+def build_run_jobs_list(run_id: str):
+    return _proxy_get(
+        f"/api/v1/build-runs/{run_id}/jobs",
+        action="build_run_jobs_list",
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/jobs/worker-health", methods=["GET"])
+def background_job_worker_health():
+    return _proxy_get(
+        "/api/v1/jobs/worker-health",
+        action="background_job_worker_health",
+    )
+
+
+@ai_coding_api.route("/jobs/<job_id>", methods=["GET"])
+def background_job_status(job_id: str):
+    return _proxy_get(
+        f"/api/v1/jobs/{job_id}",
+        action="background_job_status",
+    )
+
+
+@ai_coding_api.route("/release-runs/<release_plan_id>/jobs/execute", methods=["POST"])
+def release_run_jobs_execute(release_plan_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/release-runs/{release_plan_id}/jobs/execute",
+        action="release_run_jobs_execute",
+        json_body=body,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/auto-fix", methods=["POST"])
+def build_run_auto_fix(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/auto-fix",
+        action="build_run_auto_fix",
+        json_body=body,
+        run_id=run_id,
+    )
+
+
+@ai_coding_api.route("/release-runs/<release_plan_id>/execute", methods=["POST"])
+def release_run_execute(release_plan_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/release-runs/{release_plan_id}/execute",
+        action="release_run_execute",
+        json_body=body,
+    )
+
+
+@ai_coding_api.route("/build-runs/<run_id>/dry-run-package", methods=["POST"])
+def build_run_dry_run_package(run_id: str):
+    body = request.get_json(silent=True) or {}
+    body.setdefault("actor", _actor_label())
+    return _proxy_write(
+        "POST",
+        f"/api/v1/build-runs/{run_id}/dry-run-package",
+        action="build_run_dry_run_package",
+        json_body=body,
         run_id=run_id,
     )
 

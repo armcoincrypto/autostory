@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+{% block title %}Deployment Governance — AI Coding{% endblock %}
+{% block extra_css %}
+<style>
+  .dep-glass { background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.18); backdrop-filter: blur(12px); border-radius: 14px; }
+  .dep-muted { color: #94a3b8; }
+  .dep-card { padding: 0.85rem; cursor: pointer; transition: border-color .15s ease; }
+  .dep-card:hover, .dep-card.active { border-color: rgba(56,189,248,0.35); }
+  .risk-pill { display:inline-flex; border-radius:999px; padding:0.12rem 0.45rem; font-size:0.68rem; font-weight:600; }
+  .risk-low { background:rgba(16,185,129,0.12); color:#6ee7b7; }
+  .risk-medium { background:rgba(245,158,11,0.12); color:#fcd34d; }
+  .risk-high { background:rgba(249,115,22,0.12); color:#fdba74; }
+  .risk-critical { background:rgba(239,68,68,0.12); color:#fca5a5; }
+  .status-draft { color:#cbd5e1; } .status-generated { color:#7dd3fc; }
+  .status-operator_approval_required { color:#fcd34d; } .status-approved { color:#6ee7b7; }
+  .status-blocked { color:#fca5a5; } .status-rejected { color:#fca5a5; }
+  .rec-ready { color:#6ee7b7; } .rec-ready_with_warnings { color:#fcd34d; }
+  .rec-blocked { color:#fca5a5; } .rec-requires_manual_review { color:#fdba74; }
+  .check-passed { color:#6ee7b7; } .check-unknown { color:#fcd34d; } .check-failed { color:#fca5a5; }
+  .audit-node { border-left: 3px solid rgba(56,189,248,0.35); padding-left: 0.75rem; margin-bottom: 0.65rem; }
+  .score-ring { font-size: 2rem; font-weight: 700; color: #7dd3fc; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+  <div>
+    <h2 class="mb-1"><i class="bi bi-shield-check"></i> Deployment Governance</h2>
+    <p class="dep-muted small mb-0">Phase 9D — readiness scoring and operator approval. No auto-deploy, merge, or release.</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-light btn-sm" href="/ai-coding"><i class="bi bi-arrow-left"></i> AI Coding</a>
+    <a class="btn btn-outline-info btn-sm" href="/ai-coding/executions"><i class="bi bi-bezier2"></i> Executions</a>
+    <a class="btn btn-outline-info btn-sm" href="/ai-coding/planner"><i class="bi bi-diagram-2"></i> Planner</a>
+    <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/audit-coverage"><i class="bi bi-journal-check"></i> Audit</a>
+    <button class="btn btn-outline-info btn-sm" id="dep-refresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+  </div>
+</div>
+<div id="dep-alert"></div>
+<div class="mb-3" id="ai-code-wizard-panel"><div class="small dep-muted py-2">Loading Operator Autopilot…</div></div>
+
+<div class="row g-3">
+  <div class="col-lg-4">
+    <div class="dep-glass p-3 mb-3">
+      <h6 class="mb-2">Governance Dashboard</h6>
+      <div class="row g-2 text-center small">
+        <div class="col-4"><div class="dep-glass dep-card"><div class="dep-muted">Total</div><div id="stat-total">0</div></div></div>
+        <div class="col-4"><div class="dep-glass dep-card"><div class="dep-muted">Approved</div><div id="stat-approved">0</div></div></div>
+        <div class="col-4"><div class="dep-glass dep-card"><div class="dep-muted">Blocked</div><div id="stat-blocked">0</div></div></div>
+        <div class="col-6"><div class="dep-glass dep-card"><div class="dep-muted">Critical risk</div><div id="stat-critical">0</div></div></div>
+        <div class="col-6"><div class="dep-glass dep-card"><div class="dep-muted">Awaiting approval</div><div id="stat-awaiting">0</div></div></div>
+      </div>
+      <div id="dep-list" class="small mt-3">Loading plans…</div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="dep-glass p-3 mb-3" id="dep-detail">
+      <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+        <div>
+          <h5 class="mb-0" id="detail-title">Select a governance plan</h5>
+          <div class="dep-muted small" id="detail-meta">—</div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          <button class="btn btn-outline-info btn-sm" id="dep-generate" disabled>Generate / Refresh</button>
+          <button class="btn btn-outline-success btn-sm" id="dep-approve" disabled>Approve</button>
+          <button class="btn btn-outline-danger btn-sm" id="dep-reject" disabled>Reject</button>
+          <button class="btn btn-outline-secondary btn-sm" id="dep-cancel" disabled>Cancel</button>
+        </div>
+      </div>
+      <div id="detail-summary" class="small dep-muted mb-2">—</div>
+      <div class="row g-3 mb-2">
+        <div class="col-md-4">
+          <div class="dep-glass p-3 text-center">
+            <div class="dep-muted small">Readiness Score</div>
+            <div class="score-ring" id="detail-score">—</div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="dep-glass p-3 text-center">
+            <div class="dep-muted small">Risk Level</div>
+            <div class="mt-2" id="detail-risk">—</div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="dep-glass p-3 text-center">
+            <div class="dep-muted small">Recommendation</div>
+            <div class="mt-2" id="detail-recommendation">—</div>
+          </div>
+        </div>
+      </div>
+      <div class="row g-3 mb-2" id="detail-explain-row" style="display:none;">
+        <div class="col-md-6">
+          <div class="dep-glass p-3">
+            <h6 class="mb-2">Score Explanation</h6>
+            <div id="detail-score-explain" class="small dep-muted">Generate assessment to see breakdown.</div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="dep-glass p-3">
+            <h6 class="mb-2">Risk &amp; Approval Explanation</h6>
+            <div id="detail-risk-explain" class="small dep-muted">—</div>
+            <div id="detail-approval-explain" class="small text-warning mt-2"></div>
+          </div>
+        </div>
+      </div>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <h6>Blockers</h6>
+          <ul id="detail-blockers" class="small dep-muted"></ul>
+        </div>
+        <div class="col-md-6">
+          <h6>Warnings</h6>
+          <ul id="detail-warnings" class="small dep-muted"></ul>
+        </div>
+        <div class="col-12">
+          <h6>Impacted Systems</h6>
+          <div id="detail-systems" class="small dep-muted">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-lg-6">
+        <div class="dep-glass p-3">
+          <h5 class="mb-2">Validation Checklist</h5>
+          <div id="detail-validation" class="small dep-muted">—</div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="dep-glass p-3">
+          <h5 class="mb-2">Rollback Checklist</h5>
+          <div id="detail-rollback" class="small dep-muted">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-lg-6">
+        <div class="dep-glass p-3">
+          <h5 class="mb-2">Evidence</h5>
+          <div id="detail-evidence" class="small dep-muted">—</div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="dep-glass p-3">
+          <h5 class="mb-2">Audit Timeline</h5>
+          <div id="detail-audit" class="small dep-muted">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/ai_coding_operator_wizard.js') }}"></script>
+<script>
+(function(){
+  const API = {{ api_base|tojson }};
+  const INITIAL_PLAN_ID = {{ plan_id|tojson }};
+  let selectedPlanId = INITIAL_PLAN_ID || null;
+  let currentPlan = null;
+
+  function esc(v){ return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+  function alertMsg(msg, tone='warning'){ document.getElementById('dep-alert').innerHTML = `<div class="alert alert-${tone} py-2">${esc(msg)}</div>`; }
+  function riskClass(level){ return {low:'risk-low',medium:'risk-medium',high:'risk-high',critical:'risk-critical'}[level]||'risk-medium'; }
+  function recClass(rec){ return {ready:'rec-ready',ready_with_warnings:'rec-ready_with_warnings',blocked:'rec-blocked',requires_manual_review:'rec-requires_manual_review'}[rec]||''; }
+
+  function renderChecklist(items){
+    if(!items || !items.length) return '<span class="dep-muted">No checklist items.</span>';
+    return items.map(item => `
+      <div class="border-bottom border-secondary py-1">
+        <div><span class="check-${esc(item.status)}">${esc(item.status)}</span> — ${esc(item.label)}</div>
+        ${item.requires_operator_input ? '<div class="dep-muted">Requires operator input</div>' : ''}
+        ${item.notes ? `<div class="dep-muted">${esc(item.notes)}</div>` : ''}
+      </div>`).join('');
+  }
+
+  async function loadPlans(){
+    const rows = await dashboardFetchJson(`${API}/deployment-governance/plans?limit=50`);
+    const stats = {total: rows.length, approved:0, blocked:0, critical:0, awaiting:0};
+    rows.forEach(p => {
+      if(p.status === 'approved') stats.approved++;
+      if(p.status === 'blocked' || p.recommendation === 'blocked') stats.blocked++;
+      if(p.risk_level === 'critical') stats.critical++;
+      if(p.status === 'operator_approval_required') stats.awaiting++;
+    });
+    document.getElementById('stat-total').textContent = stats.total;
+    document.getElementById('stat-approved').textContent = stats.approved;
+    document.getElementById('stat-blocked').textContent = stats.blocked;
+    document.getElementById('stat-critical').textContent = stats.critical;
+    document.getElementById('stat-awaiting').textContent = stats.awaiting;
+    document.getElementById('dep-list').innerHTML = rows.length ? rows.map(p => `
+      <div class="dep-glass dep-card mb-2 ${selectedPlanId===p.id?'active':''}" data-plan="${p.id}">
+        <div class="d-flex justify-content-between gap-2">
+          <strong>${esc(p.project_id?.slice(0,8) || '—')}…</strong>
+          <span class="status-${p.status}">${esc(p.status)}</span>
+        </div>
+        <div class="dep-muted">exec ${esc(p.execution_program_id?.slice(0,8) || '—')}… · score ${p.readiness_score}</div>
+        <div><span class="risk-pill ${riskClass(p.risk_level)}">${esc(p.risk_level)}</span>
+        <span class="${recClass(p.recommendation)} small">${esc(p.recommendation)}</span></div>
+      </div>`).join('') : '<span class="dep-muted">No governance plans yet. Create one from a completed execution program via API.</span>';
+    document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', () => openPlan(el.getAttribute('data-plan'))));
+    if(selectedPlanId) await openPlan(selectedPlanId, false);
+  }
+
+  function renderScoreExplanation(plan){
+    const env = plan.environment_readiness || {};
+    const breakdown = env.score_breakdown || [];
+    const row = document.getElementById('detail-explain-row');
+    if(!breakdown.length && plan.status === 'draft'){
+      row.style.display = 'none';
+      return;
+    }
+    row.style.display = '';
+    const start = env.starting_score ?? 100;
+    let html = `<div class="mb-1">Starting score: <strong>${start}</strong></div>`;
+    if(breakdown.length){
+      html += '<ul class="mb-0 ps-3">' + breakdown.map(b =>
+        `<li>${esc(b.reason)} <span class="dep-muted">(${b.delta})</span></li>`
+      ).join('') + '</ul>';
+      html += `<div class="mt-1">Final: <strong>${plan.readiness_score}/100</strong></div>`;
+    } else {
+      html += '<div class="dep-muted">No deductions recorded. Generate assessment for breakdown.</div>';
+    }
+    document.getElementById('detail-score-explain').innerHTML = html;
+
+    const riskLines = env.risk_explanation || [];
+    document.getElementById('detail-risk-explain').innerHTML = riskLines.length
+      ? '<ul class="mb-0 ps-3">' + riskLines.map(l => `<li>${esc(l)}</li>`).join('') + '</ul>'
+      : `<div>Risk level <strong>${esc(plan.risk_level)}</strong> from score ${plan.readiness_score}/100</div>`;
+
+    const approvalEl = document.getElementById('detail-approval-explain');
+    if(plan.can_approve){
+      approvalEl.innerHTML = '<span class="text-success">All approval gates satisfied.</span>';
+    } else if(plan.approval_blockers?.length){
+      approvalEl.innerHTML = '<strong>Approval blocked:</strong><ul class="mb-0 ps-3">'
+        + plan.approval_blockers.map(b => `<li>${esc(b)}</li>`).join('') + '</ul>';
+    } else {
+      approvalEl.textContent = 'Generate assessment before approval.';
+    }
+  }
+
+  function updateActions(plan){
+    const terminal = ['approved','rejected','cancelled'].includes(plan.status);
+    document.getElementById('dep-generate').disabled = terminal;
+    document.getElementById('dep-approve').disabled = !plan.can_approve;
+    document.getElementById('dep-reject').disabled = terminal;
+    document.getElementById('dep-cancel').disabled = terminal;
+    renderScoreExplanation(plan);
+  }
+
+  async function openPlan(planId, push=true){
+    selectedPlanId = planId;
+    if(push) history.replaceState({}, '', `/ai-coding/deployments/${planId}`);
+    const plan = await dashboardFetchJson(`${API}/deployment-governance/plans/${planId}`);
+    currentPlan = plan;
+    document.getElementById('detail-title').textContent = `Governance Plan ${plan.id.slice(0,8)}…`;
+    document.getElementById('detail-meta').textContent = `${plan.status} · program ${plan.execution_program_id}`;
+    document.getElementById('detail-summary').textContent = plan.summary || '—';
+    document.getElementById('detail-score').textContent = plan.readiness_score ?? '—';
+    document.getElementById('detail-risk').innerHTML = `<span class="risk-pill ${riskClass(plan.risk_level)}">${esc(plan.risk_level)}</span>`;
+    document.getElementById('detail-recommendation').innerHTML = `<span class="${recClass(plan.recommendation)}">${esc(plan.recommendation)}</span>`;
+    document.getElementById('detail-blockers').innerHTML = (plan.blockers||[]).length
+      ? plan.blockers.map(b => `<li>${esc(b)}</li>`).join('') : '<li class="dep-muted">None</li>';
+    document.getElementById('detail-warnings').innerHTML = (plan.warnings||[]).length
+      ? plan.warnings.map(w => `<li>${esc(w)}</li>`).join('') : '<li class="dep-muted">None</li>';
+    document.getElementById('detail-systems').textContent = (plan.impacted_systems||[]).join(', ') || '—';
+    document.getElementById('detail-validation').innerHTML = renderChecklist(plan.validation_checklist);
+    document.getElementById('detail-rollback').innerHTML = renderChecklist(plan.rollback_checklist);
+    document.getElementById('detail-evidence').innerHTML = (plan.evidence||[]).length
+      ? plan.evidence.map(e => `<div class="mb-1"><strong>${esc(e.type)}</strong> <span class="dep-muted">${esc(JSON.stringify(e))}</span></div>`).join('')
+      : '—';
+    const audit = await dashboardFetchJson(`${API}/deployment-governance/plans/${planId}/audit`);
+    document.getElementById('detail-audit').innerHTML = audit.length
+      ? audit.map(a => `<div class="audit-node"><strong>${esc(a.event_type)}</strong><div class="dep-muted">${esc(a.created_at)} · ${esc(a.actor)}</div></div>`).join('')
+      : 'No audit events yet.';
+    updateActions(plan);
+    await loadPlans();
+  }
+
+  function friendlyDepError(err) {
+    const raw = err && err.message ? String(err.message) : '';
+    if (err && err.status === 401) return 'Session expired. Please sign in again.';
+    if (raw && raw.length < 280) return raw;
+    return 'Deployment governance action failed.';
+  }
+
+  document.getElementById('dep-generate').addEventListener('click', async () => {
+    if(!selectedPlanId) { alertMsg('Select a governance plan first.', 'warning'); return; }
+    try {
+      await dashboardFetchJson(`${API}/deployment-governance/plans/${selectedPlanId}/generate`, { method:'POST' });
+      alertMsg('Assessment generated.', 'success');
+      await openPlan(selectedPlanId, false);
+    } catch(err) { alertMsg(friendlyDepError(err), 'danger'); }
+  });
+
+  document.getElementById('dep-approve').addEventListener('click', async () => {
+    if(!selectedPlanId) { alertMsg('Select a governance plan first.', 'warning'); return; }
+    if(!currentPlan?.can_approve) { alertMsg('This plan cannot be approved in its current state.', 'warning'); return; }
+    if(!confirm('Approve this deployment governance plan? This does NOT deploy anything.')) return;
+    try {
+      await dashboardFetchJson(`${API}/deployment-governance/plans/${selectedPlanId}/approve`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ comment: 'Operator approved deployment readiness' })
+      });
+      alertMsg('Plan approved (governance only — no deployment performed).', 'success');
+      await openPlan(selectedPlanId, false);
+    } catch(err) { alertMsg(friendlyDepError(err), 'danger'); }
+  });
+
+  document.getElementById('dep-reject').addEventListener('click', async () => {
+    if(!selectedPlanId) { alertMsg('Select a governance plan first.', 'warning'); return; }
+    const reason = prompt('Rejection reason (required):');
+    if(!reason) return;
+    try {
+      await dashboardFetchJson(`${API}/deployment-governance/plans/${selectedPlanId}/reject`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason })
+      });
+      alertMsg('Plan rejected.', 'info');
+      await openPlan(selectedPlanId, false);
+    } catch(err) { alertMsg(friendlyDepError(err), 'danger'); }
+  });
+
+  document.getElementById('dep-cancel').addEventListener('click', async () => {
+    if(!selectedPlanId) { alertMsg('Select a governance plan first.', 'warning'); return; }
+    if(!confirm('Cancel this governance plan?')) return;
+    const reason = prompt('Cancellation reason (required):');
+    if(!reason) return;
+    try {
+      await dashboardFetchJson(`${API}/deployment-governance/plans/${selectedPlanId}/cancel`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason })
+      });
+      alertMsg('Plan cancelled.', 'info');
+      await openPlan(selectedPlanId, false);
+    } catch(err) { alertMsg(friendlyDepError(err), 'danger'); }
+  });
+
+  document.getElementById('dep-refresh').addEventListener('click', () => {
+    loadPlans().catch(err => alertMsg(friendlyDepError(err), 'danger'));
+  });
+  loadPlans().catch(err => alertMsg(friendlyDepError(err), 'danger'));
+
+  if (window.AiCodingOperatorWizard) {
+    AiCodingOperatorWizard.init({
+      api: API,
+      alertFn: alertMsg,
+      formatError: (err) => (err && err.message) || 'Action failed',
+      autoRefreshMs: 30000,
+      getContext: async () => ({
+        govPlanId: selectedPlanId,
+        governance: currentPlan,
+      }),
+      onRefresh: async () => {
+        await loadPlans();
+        if (selectedPlanId) await openPlan(selectedPlanId, false);
+      },
+    });
+  }
+})();
+</script>
+{% endblock %}

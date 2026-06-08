@@ -469,6 +469,22 @@
     const stopType = run?.stop_type || null;
     const release = run.release_status || null;
     if (RELEASE_FLOW_STATUSES.has(status) || stopType === 'STOP_TYPE_RELEASE') {
+      const readiness = release && release.release_readiness;
+      if (readiness && readiness.release_primary_action && readiness.release_primary_action_label) {
+        const map = {
+          prepare: { id: 'release_prepare', tone: 'primary' },
+          approve: { id: 'release_approve', tone: 'success' },
+          dry_run: { id: 'release_run', tone: 'primary' },
+          view_package: { id: 'none', tone: 'secondary' },
+        };
+        const meta = map[readiness.release_primary_action] || { id: 'none', tone: 'primary' };
+        return {
+          id: meta.id,
+          label: readiness.release_primary_action_label,
+          tone: meta.tone,
+          show: meta.id !== 'none',
+        };
+      }
       const label = release && release.primary_release_action;
       if (label === 'Prepare release plan') {
         return { id: 'release_prepare', label, tone: 'primary', show: true };
@@ -723,6 +739,42 @@
       .op-home-build-card-badge { font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid rgba(148,163,184,0.25); color: #cbd5e1; }
       .op-home-build-card-badge-ready { color: #fde68a; border-color: rgba(251,191,36,0.45); background: rgba(245,158,11,0.12); }
       .op-home-build-card-badge-blocked { color: #fecaca; border-color: rgba(248,113,113,0.45); background: rgba(127,29,29,0.2); }
+      .op-release-card-v5 { background: linear-gradient(145deg, rgba(15,23,42,0.96), rgba(6,78,59,0.15)); border: 1px solid rgba(52,211,153,0.32); border-radius: 16px; padding: 1rem 1.1rem; margin-bottom: 0.85rem; }
+      .op-release-card-v5.locked { border-color: rgba(148,163,184,0.25); background: rgba(15,23,42,0.75); }
+      .op-release-card-title { font-size: 1.05rem; font-weight: 700; color: #ecfdf5; margin-bottom: 0.65rem; }
+      .op-release-row { display: grid; grid-template-columns: minmax(6.5rem, 34%) 1fr; gap: 0.25rem 0.65rem; padding: 0.28rem 0; font-size: 0.88rem; }
+      .op-release-row-label { color: #64748b; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+      .op-release-row-value { color: #e2e8f0; line-height: 1.35; }
+      .op-release-progress-mini { height: 8px; background: rgba(2,6,23,0.55); border-radius: 999px; overflow: hidden; border: 1px solid rgba(148,163,184,0.18); margin: 0.35rem 0 0.65rem; }
+      .op-release-progress-mini .bar { height: 100%; background: linear-gradient(90deg, #22c55e, #6ee7b7); transition: width 0.35s ease; }
+      .op-release-cta { min-height: 2.75rem; font-size: 0.95rem; font-weight: 600; border-radius: 10px; }
+      .op-release-locked-note { color: #fcd34d; font-size: 0.86rem; margin: 0.5rem 0 0; }
+      .op-release-package { margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid rgba(148,163,184,0.14); }
+      .op-release-pkg-heading { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #a7f3d0; margin-bottom: 0.35rem; }
+      .op-release-chip { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.7rem; font-weight: 600; padding: 0.18rem 0.5rem; border-radius: 999px; margin: 0.15rem 0.25rem 0 0; border: 1px solid rgba(148,163,184,0.25); color: #cbd5e1; }
+      .op-release-chip.pass { color: #bbf7d0; border-color: rgba(74,222,128,0.35); background: rgba(34,197,94,0.12); }
+      .op-release-chip.pending { color: #94a3b8; border-color: rgba(148,163,184,0.25); }
+      .op-release-pkg-list { margin: 0; padding-left: 1rem; }
+      .op-release-pkg-list li { color: #e2e8f0; font-size: 0.84rem; margin-bottom: 0.2rem; line-height: 1.35; }
+      .op-workspace-card { background: rgba(15,23,42,0.72); border: 1px solid rgba(56,189,248,0.28); border-radius: 14px; padding: 0.9rem 1rem; margin-bottom: 0.85rem; }
+      .op-workspace-card.warn { border-color: rgba(251,191,36,0.45); background: rgba(120,53,15,0.18); }
+      .op-workspace-card.blocked { border-color: rgba(248,113,113,0.45); background: rgba(127,29,29,0.22); }
+      .op-workspace-title { font-size: 0.98rem; font-weight: 700; color: #e0f2fe; margin-bottom: 0.55rem; }
+      .op-workspace-summary { color: #cbd5e1; font-size: 0.86rem; line-height: 1.4; margin-bottom: 0.45rem; }
+      .op-workspace-row { display: grid; grid-template-columns: minmax(5.5rem, 32%) 1fr; gap: 0.2rem 0.55rem; font-size: 0.84rem; padding: 0.15rem 0; }
+      .op-workspace-label { color: #64748b; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+      .op-workspace-value { color: #e2e8f0; line-height: 1.35; word-break: break-all; }
+      .op-execution-card { background: rgba(15,23,42,0.72); border: 1px solid rgba(52,211,153,0.28); border-radius: 14px; padding: 0.9rem 1rem; margin-bottom: 0.85rem; }
+      .op-execution-card.failed { border-color: rgba(251,191,36,0.45); background: rgba(120,53,15,0.18); }
+      .op-execution-card.blocked { border-color: rgba(248,113,113,0.45); background: rgba(127,29,29,0.22); }
+      .op-execution-card.running { border-color: rgba(56,189,248,0.45); background: rgba(12,74,110,0.22); }
+      .op-execution-title { font-size: 0.98rem; font-weight: 700; color: #ecfdf5; margin-bottom: 0.55rem; }
+      .op-execution-summary { color: #cbd5e1; font-size: 0.86rem; line-height: 1.4; margin-bottom: 0.45rem; }
+      .op-autofix-card { background: rgba(15,23,42,0.72); border: 1px solid rgba(167,139,250,0.32); border-radius: 14px; padding: 0.9rem 1rem; margin-bottom: 0.85rem; }
+      .op-autofix-card.blocked { border-color: rgba(248,113,113,0.45); background: rgba(127,29,29,0.22); }
+      .op-autofix-card.validated { border-color: rgba(52,211,153,0.45); background: rgba(6,78,59,0.18); }
+      .op-autofix-title { font-size: 0.98rem; font-weight: 700; color: #ede9fe; margin-bottom: 0.55rem; }
+      .op-autofix-summary { color: #cbd5e1; font-size: 0.86rem; line-height: 1.4; margin-bottom: 0.45rem; }
     `;
     document.head.appendChild(el);
   }
@@ -772,6 +824,12 @@
           <div class="tech">Review: ${esc(run.review_status || '—')} · Validation: ${esc(run.validation_status || '—')}</div>
           ${blockersHtml}
           ${phasesHtml ? `<div class="mt-2"><strong class="text-secondary">Phases</strong>${phasesHtml}</div>` : ''}
+          ${renderReleaseAdvancedDetails((extras && extras.releaseStatus) || run.release_status)}
+          ${renderWorkspaceAdvancedDetails(run)}
+          ${renderExecutionAdvancedDetails(run, extras)}
+          ${renderAutoFixAdvancedDetails(run)}
+          ${renderBackgroundActivityAdvancedDetails(extras)}
+          ${renderProjectPlatformAdvancedDetails(extras)}
           <div class="mt-2"><strong class="text-secondary">Journal</strong>${journalHtml}</div>
           <div class="mt-2 d-flex flex-wrap gap-2">
             ${run.execution_program_id ? `<a href="/ai-coding/executions/${esc(run.execution_program_id)}?mode=advanced" class="btn btn-outline-secondary btn-sm">Technical executions view</a>` : ''}
@@ -779,6 +837,136 @@
           </div>
         </div>
       </details>`;
+  }
+
+  function resolveReleaseReadiness(release) {
+    return (release && release.release_readiness) || null;
+  }
+
+  function operatorReleaseStatusLabel(readiness) {
+    if (!readiness) return 'Not Started';
+    const map = {
+      not_started: 'Not Started',
+      preparing_release: 'Preparing Release',
+      release_review: 'Release Review',
+      dry_run_ready: 'Dry Run Ready',
+      dry_run_passed: 'Dry Run Passed',
+      ready_for_release: 'Ready For Release',
+      releasing: 'Releasing',
+      verifying: 'Verifying',
+      released: 'Released',
+      release_failed: 'Release Failed',
+      rolled_back: 'Rolled Back',
+      blocked: 'Blocked',
+    };
+    return map[readiness.release_status] || 'Not Started';
+  }
+
+  function verificationStatusLabel(status) {
+    const s = String(status || '').toUpperCase();
+    if (s === 'PASS') return 'Verification passed';
+    if (s === 'FAIL') return 'Verification failed';
+    if (s === 'BLOCKED') return 'Verification blocked';
+    return 'Verification pending';
+  }
+
+  function renderControlledReleaseSection(readiness, release) {
+    if (!readiness) return '';
+    const verify = readiness.verification_status;
+    const rollback = readiness.rollback_status_label;
+    const adapter = readiness.release_adapter || 'local_script';
+    const ctrlStatus = readiness.controlled_release_status || readiness.release_status;
+    const auditCount = ((release && release.audit_log) || []).length;
+    const verifyChip = verify
+      ? `<span class="op-release-chip ${verify === 'PASS' ? 'pass' : 'pending'}">${esc(verificationStatusLabel(verify))}</span>`
+      : '';
+    const rollbackChip = rollback
+      ? `<span class="op-release-chip ${rollback === 'completed' ? 'pass' : 'pending'}">Rollback ${esc(String(rollback))}</span>`
+      : (readiness.dry_run_rollback_ready
+        ? '<span class="op-release-chip pass">Rollback supported</span>'
+        : '<span class="op-release-chip pending">Rollback needs review</span>');
+    return `<div class="op-release-controlled mt-2 pt-2 border-top border-secondary-subtle">
+      <div class="op-release-pkg-heading">Controlled Release</div>
+      <div class="op-release-row"><div class="op-release-row-label">Lifecycle</div><div class="op-release-row-value">${esc(String(ctrlStatus || '—'))}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Verification</div><div class="op-release-row-value">${verifyChip || '—'}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Rollback</div><div class="op-release-row-value">${rollbackChip}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Adapter</div><div class="op-release-row-value"><span class="op-release-chip pass">${esc(adapter)}</span></div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Audit</div><div class="op-release-row-value">${auditCount ? `${auditCount} event(s) recorded` : 'No audit yet'}</div></div>
+    </div>`;
+  }
+
+  function renderControlledReleaseAdvancedDetails(release) {
+    const report = (release && release.controlled_release_report) || null;
+    if (!report) return '';
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Controlled release (advanced)</strong>
+      ${report.release_run_id ? `<div class="tech">Release run: ${esc(report.release_run_id)}</div>` : ''}
+      ${report.audit_reference ? `<div class="tech">Audit ref: ${esc(report.audit_reference)}</div>` : ''}
+      ${report.verification_report ? `<div class="tech small mt-1">Verification: ${esc(JSON.stringify(report.verification_report))}</div>` : ''}
+      ${report.rollback_report ? `<div class="tech small mt-1">Rollback: ${esc(JSON.stringify(report.rollback_report))}</div>` : ''}
+      ${report.adapter_result ? `<div class="tech small mt-1">Adapter: ${esc(JSON.stringify(report.adapter_result))}</div>` : ''}
+    </div>`;
+  }
+
+  function renderReleaseChipList(items, limit) {
+    const list = (items || []).slice(0, limit || 3);
+    if (!list.length) return '<span class="op-mode-muted small">—</span>';
+    return `<ul class="op-release-pkg-list mb-0">${list.map((item) => `<li>${esc(sanitizeOperatorText(item))}</li>`).join('')}</ul>`;
+  }
+
+  function renderReleaseSafetyGates(gates) {
+    if (!gates || !gates.length) return '';
+    return `<div class="op-release-pkg-heading mt-2">Safety gates</div><div>${gates.map((g) => {
+      const cls = g.passed ? 'pass' : 'pending';
+      const icon = g.passed ? '✓' : '○';
+      return `<span class="op-release-chip ${cls}">${icon} ${esc(sanitizeOperatorText(g.label))}</span>`;
+    }).join('')}</div>`;
+  }
+
+  function renderReleasePackageSection(readiness) {
+    const pkg = (readiness && readiness.release_package) || {};
+    if (!pkg || !readiness) return '';
+    const hasContent = (pkg.what_will_change && pkg.what_will_change.length)
+      || (pkg.safety_gates && pkg.safety_gates.length)
+      || pkg.dry_run_package_ready;
+    if (!hasContent && readiness.release_status === 'not_started') return '';
+    const dryRunBadge = pkg.dry_run_package_ready
+      ? '<span class="op-release-chip pass">✓ Dry-run package ready</span>'
+      : '';
+    const rollbackBadge = pkg.rollback_needs_review
+      ? '<span class="op-release-chip pending">Rollback needs review</span>'
+      : (pkg.rollback_available ? '<span class="op-release-chip pass">✓ Rollback ready</span>' : '');
+    const sensitiveNote = pkg.sensitive_config_changed
+      ? '<p class="op-mode-muted small mb-1">Sensitive config changed — review required</p>'
+      : '';
+    return `<div class="op-release-package" id="op-release-package">
+      <div class="op-release-pkg-heading">Dry-run Package</div>
+      ${dryRunBadge}${rollbackBadge ? ` ${rollbackBadge}` : ''}
+      ${sensitiveNote}
+      <div class="op-release-row"><div class="op-release-row-label">What would change</div><div class="op-release-row-value">${renderReleaseChipList(pkg.what_will_change, 3)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Validation plan</div><div class="op-release-row-value">${renderReleaseChipList(pkg.validation_evidence, 2)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Deploy plan</div><div class="op-release-row-value">${renderReleaseChipList(pkg.deploy_plan, 2)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Rollback plan</div><div class="op-release-row-value">${renderReleaseChipList(pkg.rollback_plan, 2)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Dry-run result</div><div class="op-release-row-value">${renderReleaseChipList(pkg.dry_run_result, 2)}</div></div>
+      ${renderReleaseSafetyGates(pkg.safety_gates)}
+    </div>`;
+  }
+
+  function renderDryRunPackageAdvancedDetails(release) {
+    const pkg = (release && release.dry_run_package) || null;
+    if (!pkg) return '';
+    const diff = pkg.diff_summary || {};
+    const files = [].concat(diff.changed_files || [], diff.added_files || [], diff.deleted_files || []).slice(0, 20);
+    const fileList = files.length
+      ? `<ul class="small mb-2 ps-3">${files.map((f) => `<li><code>${esc(f)}</code></li>`).join('')}</ul>`
+      : '';
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Dry-run package (advanced)</strong>
+      <div class="tech small mt-1">Package: ${esc(pkg.package_id || '—')}</div>
+      <div class="tech small">Branch: ${esc(pkg.source_branch || '—')} · Base: <code>${esc(shortCommit(pkg.base_commit))}</code></div>
+      ${fileList ? `<div class="mt-2"><strong class="text-secondary small">Full file list</strong>${fileList}</div>` : ''}
+      ${diff.migration_files && diff.migration_files.length ? `<div class="tech small mt-1">Migrations: ${esc(String(diff.migration_files.length))}</div>` : ''}
+    </div>`;
   }
 
   function renderReleaseActionList(actions) {
@@ -793,48 +981,395 @@
       .join('')}</ul>`;
   }
 
+  function backgroundJobStatusLabel(status) {
+    const map = {
+      queued: 'Queued',
+      running: 'Running',
+      retry_scheduled: 'Retry scheduled',
+      succeeded: 'Finished',
+      failed: 'Failed',
+      blocked: 'Blocked',
+      cancelled: 'Cancelled',
+    };
+    return map[String(status || '').toLowerCase()] || 'Queued';
+  }
+
+  function pickActiveBackgroundJob(jobs) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    const activeStatuses = new Set(['queued', 'running', 'retry_scheduled']);
+    return list.find((j) => j && activeStatuses.has(String(j.status || '').toLowerCase()))
+      || list[0]
+      || null;
+  }
+
+  function renderBackgroundActivityCard(run, extras) {
+    const jobs = (extras && extras.backgroundJobs) || run.background_jobs || [];
+    const job = pickActiveBackgroundJob(jobs);
+    if (!job && !jobs.length) return '';
+    const current = job || {};
+    const status = backgroundJobStatusLabel(current.status);
+    const progress = Number(current.progress_percent || 0);
+    const step = sanitizeOperatorText(current.current_step || current.result_summary || '—');
+    const lastResult = sanitizeOperatorText(current.result_summary || current.last_error || '—');
+    const retryBtn = current.status === 'blocked'
+      ? '<button type="button" class="btn btn-outline-warning btn-sm mt-2" data-bg-job-retry>Retry if unblocked</button>'
+      : '';
+    return `<div class="op-workspace-card" id="op-background-activity-panel">
+      <div class="op-workspace-title">Background Activity</div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Current job</div><div class="op-workspace-value">${esc(sanitizeOperatorText(current.job_type || '—'))}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Status</div><div class="op-workspace-value">${esc(status)}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Progress</div><div class="op-workspace-value">${esc(String(progress))}%</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Current step</div><div class="op-workspace-value">${esc(step)}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Last result</div><div class="op-workspace-value">${esc(lastResult)}</div></div>
+      ${retryBtn}
+    </div>`;
+  }
+
+  function renderBackgroundActivityAdvancedDetails(extras) {
+    const jobs = (extras && extras.backgroundJobs) || [];
+    const job = pickActiveBackgroundJob(jobs);
+    const health = (extras && extras.workerHealth) || null;
+    if (!job && !health) return '';
+    const jobHtml = job
+      ? `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Background job (advanced)</strong>
+      <div class="tech small mt-1">Job: ${esc(job.job_id || '—')}</div>
+      <div class="tech small">Idempotency: ${esc(job.idempotency_key || '—')}</div>
+      <div class="tech small">Handler: ${esc(job.handler_name || '—')}</div>
+      <div class="tech small">Worker: ${esc(job.worker_id || '—')}</div>
+      <div class="tech small">Heartbeat: ${esc(job.heartbeat_at || '—')}</div>
+      <div class="tech small">Attempts: ${esc(String(job.attempts || 0))} / ${esc(String(job.max_attempts || 0))}</div>
+      <div class="tech small">Next retry: ${esc(job.next_run_at || '—')}</div>
+      ${job.last_error ? `<div class="tech small mt-1">Error: ${esc(sanitizeOperatorText(job.last_error))}</div>` : ''}
+    </div>`
+      : '';
+    const healthHtml = health
+      ? `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Worker health (advanced)</strong>
+      <div class="tech small mt-1">Mode: ${esc(health.worker_mode || 'daemon')}${health.inline_mode_enabled ? ' (inline enabled)' : ''}</div>
+      <div class="tech small">Queued: ${esc(String(health.queued_count || 0))} · Running: ${esc(String(health.running_count || 0))} · Retry scheduled: ${esc(String(health.retry_scheduled_count || 0))}</div>
+      <div class="tech small">Stale running: ${esc(String(health.stale_running_count || 0))} · Oldest queued (sec): ${esc(String(health.oldest_queued_age_sec ?? '—'))}</div>
+      <div class="tech small">Last worker heartbeat: ${esc(health.last_worker_heartbeat || '—')}</div>
+    </div>`
+      : '';
+    return `${jobHtml}${healthHtml}`;
+  }
+
+  function isBackgroundJobActive(jobs) {
+    const active = new Set(['queued', 'running', 'retry_scheduled']);
+    return (jobs || []).some((j) => j && active.has(String(j.status || '').toLowerCase()));
+  }
+
+  async function fetchWorkerHealth(api) {
+    if (!api) return null;
+    try {
+      return await fetchJson(api, '/jobs/worker-health');
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  async function fetchProjectHealth(api, projectId) {
+    if (!api || !projectId) return null;
+    try {
+      return await fetchJson(api, `/projects/${projectId}/health`);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  async function fetchProjectJobs(api, projectId) {
+    if (!api || !projectId) return null;
+    try {
+      return await fetchJson(api, `/projects/${projectId}/jobs`);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  async function fetchProjectPlatform(api, projectId) {
+    if (!api || !projectId) return null;
+    try {
+      return await fetchJson(api, `/projects/${projectId}/platform`);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  async function fetchProjectReleasePolicy(api, projectId) {
+    if (!api || !projectId) return null;
+    try {
+      return await fetchJson(api, `/projects/${projectId}/release-policy`);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function renderProjectPlatformAdvancedDetails(extras) {
+    const platform = (extras && extras.projectPlatform) || null;
+    const policy = (extras && extras.projectReleasePolicy) || null;
+    const profile = (extras && extras.projectValidationProfile) || null;
+    if (!platform && !policy && !profile) return '';
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Project platform (advanced)</strong>
+      ${platform ? `<div class="tech small mt-1">Repository: ${esc(platform.repository_path || '—')}</div>
+      <div class="tech small">Branch: ${esc(platform.default_branch || '—')}</div>
+      <div class="tech small">Type: ${esc(platform.project_type || '—')}</div>
+      <div class="tech small">Validation profile: ${esc((profile && profile.profile_type) || platform.project_type || '—')}</div>` : ''}
+      ${policy ? `<div class="tech small">Release policy: dry-run=${esc(String(policy.dry_run_required))}, adapters=${esc((policy.allowed_adapters || []).join(', '))}</div>` : ''}
+    </div>`;
+  }
+
+  async function fetchBackgroundJobs(api, runId) {
+    if (!api || !runId) return [];
+    try {
+      return await fetchJson(api, `/build-runs/${runId}/jobs`);
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function startBackgroundJobPolling(api, run, hooks, intervalMs) {
+    if (!run || !run.id) return null;
+    const ms = intervalMs || 4000;
+    return global.setInterval(async () => {
+      const jobs = await fetchBackgroundJobs(api, run.id);
+      if (hooks && hooks.onBackgroundJobs) hooks.onBackgroundJobs(jobs);
+      if (!isBackgroundJobActive(jobs) && hooks && hooks.refresh) {
+        await hooks.refresh();
+      }
+    }, ms);
+  }
+
+  function renderWorkspaceAdvancedDetails(run) {
+    const cleanup = run.workspace_cleanup_command;
+    if (!cleanup) return '';
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Workspace cleanup</strong>
+      <pre class="tech small mb-0 mt-1">${esc(cleanup)}</pre>
+    </div>`;
+  }
+
+  function shortCommit(hash) {
+    const value = String(hash || '').trim();
+    if (!value) return '—';
+    return value.slice(0, 8);
+  }
+
+  function renderWorkspaceSafetyCard(run) {
+    const status = String(run.workspace_status || 'not_prepared').toLowerCase();
+    if (status === 'not_prepared') return '';
+
+    let cardClass = 'op-workspace-card';
+    let title = 'Workspace Safety';
+    let summary = 'Clean isolated workspace';
+
+    if (status === 'blocked') {
+      cardClass = 'op-workspace-card blocked';
+      summary = sanitizeOperatorText(run.workspace_blocker_reason || 'Workspace blocked');
+    } else if (run.workspace_dirty_source_detected) {
+      cardClass = 'op-workspace-card warn';
+      summary = 'Source repo had unrelated changes — this build used clean HEAD only';
+    }
+
+    const dirtyNote = run.workspace_dirty_source_detected
+      ? `<p class="op-workspace-summary mb-1"><i class="bi bi-exclamation-triangle"></i> ${esc(sanitizeOperatorText(run.workspace_dirty_source_summary || 'Unrelated local changes detected in source repo'))}</p>`
+      : '';
+
+    return `<div class="${cardClass}" id="op-workspace-safety-panel">
+      <div class="op-workspace-title">${esc(title)}</div>
+      <p class="op-workspace-summary mb-2">${esc(summary)}</p>
+      ${dirtyNote}
+      <div class="op-workspace-row"><div class="op-workspace-label">Branch</div><div class="op-workspace-value">${esc(run.workspace_branch || '—')}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Base commit</div><div class="op-workspace-value"><code>${esc(shortCommit(run.workspace_base_commit))}</code></div></div>
+    </div>`;
+  }
+
+  function executionStatusLabel(status) {
+    const map = {
+      healthy: 'Healthy',
+      running: 'Running',
+      blocked: 'Blocked',
+      failed: 'Failed',
+    };
+    return map[String(status || '').toLowerCase()] || 'Not run';
+  }
+
+  function renderExecutionAdvancedDetails(run, extras) {
+    const commands = (extras && extras.executionCommands) || run.execution_commands || [];
+    const artifacts = (extras && extras.executionArtifacts) || run.execution_artifacts || [];
+    const reportPath = run.execution_report_path;
+    if (!reportPath && !commands.length && !artifacts.length) return '';
+
+    const commandHtml = commands.length
+      ? `<ul class="small mb-2 ps-3">${commands
+        .map((cmd) => {
+          const argv = Array.isArray(cmd.argv) ? cmd.argv.join(' ') : String(cmd.command || '');
+          return `<li><code>${esc(argv)}</code> → exit ${esc(String(cmd.exit_code ?? '—'))}</li>`;
+        })
+        .join('')}</ul>`
+      : '';
+
+    const artifactHtml = artifacts.length
+      ? `<ul class="small mb-2 ps-3">${artifacts
+        .map((item) => `<li>${esc(item.name || 'artifact')} (${esc(String(item.size_bytes || 0))} bytes)</li>`)
+        .join('')}</ul>`
+      : '';
+
+    const logExcerpt = commands
+      .map((cmd) => [cmd.stdout_excerpt, cmd.stderr_excerpt].filter(Boolean).join('\n'))
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((chunk) => `<pre class="tech small mb-1">${esc(chunk)}</pre>`)
+      .join('');
+
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Execution diagnostics</strong>
+      ${reportPath ? `<div class="tech small mt-1">Report: ${esc(reportPath)}</div>` : ''}
+      ${commandHtml ? `<div class="mt-2"><strong class="text-secondary small">Command log</strong>${commandHtml}</div>` : ''}
+      ${artifactHtml ? `<div class="mt-2"><strong class="text-secondary small">Artifacts</strong>${artifactHtml}</div>` : ''}
+      ${logExcerpt ? `<div class="mt-2"><strong class="text-secondary small">Output excerpts</strong>${logExcerpt}</div>` : ''}
+    </div>`;
+  }
+
+  function renderExecutionHealthCard(run) {
+    const status = String(run.execution_status || 'not_run').toLowerCase();
+    if (status === 'not_run') return '';
+
+    let cardClass = 'op-execution-card';
+    let summary = 'Build commands completed successfully';
+
+    if (status === 'blocked') {
+      cardClass = 'op-execution-card blocked';
+      summary = sanitizeOperatorText(run.execution_blocker_reason || 'Execution blocked');
+    } else if (status === 'failed') {
+      cardClass = 'op-execution-card failed';
+      summary = sanitizeOperatorText(
+        run.execution_failure_classification
+          ? `Failed: ${run.execution_failure_classification}`
+          : 'Execution failed'
+      );
+    } else if (status === 'running') {
+      cardClass = 'op-execution-card running';
+      summary = 'Build commands are running';
+    }
+
+    const duration = run.execution_duration_sec != null
+      ? `${Number(run.execution_duration_sec).toFixed(1)}s`
+      : '—';
+
+    return `<div class="${cardClass}" id="op-execution-health-panel">
+      <div class="op-execution-title">Execution Health</div>
+      <p class="op-execution-summary mb-2">${esc(summary)}</p>
+      <div class="op-workspace-row"><div class="op-workspace-label">Status</div><div class="op-workspace-value">${esc(executionStatusLabel(status))}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Duration</div><div class="op-workspace-value">${esc(duration)}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Commands</div><div class="op-workspace-value">${esc(String(run.execution_command_count ?? '—'))}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Artifacts</div><div class="op-workspace-value">${esc(String(run.execution_artifact_count ?? '—'))}</div></div>
+      ${run.execution_failure_classification ? `<div class="op-workspace-row"><div class="op-workspace-label">Failure</div><div class="op-workspace-value">${esc(sanitizeOperatorText(run.execution_failure_classification))}</div></div>` : ''}
+      ${run.execution_next_action ? `<div class="op-workspace-row"><div class="op-workspace-label">Next action</div><div class="op-workspace-value">${esc(sanitizeOperatorText(run.execution_next_action))}</div></div>` : ''}
+    </div>`;
+  }
+
+  function autoFixStatusLabel(status) {
+    const map = {
+      fixing: 'Fixing',
+      retrying: 'Retrying',
+      validated: 'Validated',
+      blocked: 'Blocked',
+      not_started: 'Not started',
+    };
+    return map[String(status || '').toLowerCase()] || 'Fixing';
+  }
+
+  function renderAutoFixAdvancedDetails(run) {
+    const attempts = Array.isArray(run.auto_fix_attempts) ? run.auto_fix_attempts : [];
+    if (!attempts.length && !run.auto_fix_patch_summary) return '';
+
+    const historyHtml = attempts.length
+      ? `<ul class="small mb-2 ps-3">${attempts
+        .map((item) => {
+          const num = item.attempt_number || '?';
+          const cls = item.failure_classification || '—';
+          const conf = item.confidence_score != null ? `${item.confidence_score}` : '—';
+          const st = item.auto_fix_status || item.status || '—';
+          return `<li>Attempt ${esc(String(num))}: ${esc(cls)} · confidence ${esc(conf)} · ${esc(st)}</li>`;
+        })
+        .join('')}</ul>`
+      : '';
+
+    const patch = run.auto_fix_patch_summary
+      ? `<div class="tech small mb-1">Patch summary: ${esc(sanitizeOperatorText(run.auto_fix_patch_summary))}</div>`
+      : '';
+
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Auto-fix diagnostics</strong>
+      ${patch}
+      ${historyHtml ? `<div class="mt-2"><strong class="text-secondary small">Retry history</strong>${historyHtml}</div>` : ''}
+    </div>`;
+  }
+
+  function renderAutoFixCard(run) {
+    const status = String(run.auto_fix_status || 'not_started').toLowerCase();
+    if (status === 'not_started') return '';
+
+    let cardClass = 'op-autofix-card';
+    let summary = 'AI fixing issue';
+
+    if (status === 'blocked') {
+      cardClass = 'op-autofix-card blocked';
+      summary = sanitizeOperatorText(run.auto_fix_block_reason || 'Auto-fix blocked');
+    } else if (status === 'validated') {
+      cardClass = 'op-autofix-card validated';
+      summary = 'Fix validated — continuing build';
+    } else if (status === 'retrying') {
+      summary = 'Retrying after fix attempt';
+    }
+
+    const attemptNum = run.auto_fix_attempt_number || 1;
+    const maxAttempts = run.auto_fix_max_attempts || 3;
+    const confidence = run.auto_fix_confidence_label || '—';
+    const issue = run.auto_fix_current_issue || '—';
+    const nextAction = run.auto_fix_next_action || 'Re-running validation';
+
+    return `<div class="${cardClass}" id="op-auto-fix-panel">
+      <div class="op-autofix-title">Auto Fix</div>
+      <p class="op-autofix-summary mb-2">${esc(summary)}</p>
+      <div class="op-workspace-row"><div class="op-workspace-label">Status</div><div class="op-workspace-value">${esc(autoFixStatusLabel(status))}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Attempts</div><div class="op-workspace-value">${esc(String(attemptNum))} of ${esc(String(maxAttempts))}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Confidence</div><div class="op-workspace-value">${esc(confidence)}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Current issue</div><div class="op-workspace-value">${esc(sanitizeOperatorText(issue))}</div></div>
+      <div class="op-workspace-row"><div class="op-workspace-label">Next action</div><div class="op-workspace-value">${esc(sanitizeOperatorText(nextAction))}</div></div>
+    </div>`;
+  }
+
   function renderProductionReleaseCard(run, extras) {
     const release = (extras && extras.releaseStatus) || run.release_status || null;
+    const readiness = resolveReleaseReadiness(release);
     const status = String(run.status || '').toLowerCase();
-    const showCard = RELEASE_FLOW_STATUSES.has(status) || (release && release.manual_test_approved);
-    if (!showCard) return '';
+    const showCard = (readiness && readiness.show_release_card)
+      || status === 'operator_approved'
+      || RELEASE_FLOW_STATUSES.has(status);
+    if (!showCard || status === 'ready_for_manual_test') return '';
 
-    const enabled = release && release.release_agent_enabled;
-    const label = (release && release.release_ready_label) || 'Not ready for release';
-    const plan = release && release.plan;
-    const notReady = label === 'Not ready for release' || !enabled;
-    const cardClass = notReady ? 'op-release-card not-ready' : 'op-release-card';
+    const locked = (readiness && readiness.live_release_locked)
+      || (release && !release.release_agent_enabled);
+    const cardClass = locked ? 'op-release-card-v5 locked' : 'op-release-card-v5';
+    const statusLabel = readiness
+      ? operatorReleaseStatusLabel(readiness)
+      : sanitizeOperatorText(release?.release_ready_label || 'Not Started');
+    const progress = readiness ? Number(readiness.release_progress_percent || 0) : 0;
+    const nextAction = readiness
+      ? sanitizeOperatorText(readiness.release_next_action || readiness.release_primary_action_label || '—')
+      : sanitizeOperatorText(release?.primary_release_action || '—');
+    const summary = readiness
+      ? sanitizeOperatorText(readiness.release_summary || '')
+      : sanitizeOperatorText(release?.blocked_reason || 'Release is not automatic.');
+    const safetyLine = readiness && readiness.live_release_locked
+      ? 'Release locked by safety settings'
+      : 'No auto deploy · No auto merge · No auto send';
+    const rollbackLine = readiness && readiness.rollback_available ? 'Rollback plan attached' : 'Rollback plan pending';
 
-    let body = '';
-    if (status === 'operator_approved' || status === 'ready_for_release_approval' || status === 'release_approved') {
-      body += `<p class="op-mode-muted small mb-2">AI has finished the build. You approved manual testing. Production release is not automatic.</p>`;
-    }
-    if (!enabled) {
-      body += `<p class="op-mode-muted small mb-0">${esc(release?.blocked_reason || 'Release agent is disabled on the server.')}</p>`;
-    } else if (plan) {
-      body += `<div class="op-release-section"><div class="op-release-heading">What will be released</div><p class="small mb-0">${esc(plan.what_will_be_released || '')}</p></div>`;
-      body += `<div class="op-release-section"><div class="op-release-heading">Target environment</div><p class="small mb-0">${esc(plan.target_environment || '—')}</p></div>`;
-      body += `<div class="op-release-section"><div class="op-release-heading">Branch / build</div><p class="small mb-0">${esc(plan.branch_name || '—')} · ${esc(plan.build_reference || run.id || '')}</p></div>`;
-      body += `<div class="op-release-section"><div class="op-release-heading">Actions AI will run</div>${renderReleaseActionList(plan.planned_actions)}</div>`;
-      if (plan.rollback_plan && plan.rollback_plan.notes) {
-        body += `<div class="op-release-section"><div class="op-release-heading">Rollback plan</div><p class="small mb-0">${esc(plan.rollback_plan.notes)}</p></div>`;
-      }
-      if (plan.risk_summary && plan.risk_summary.length) {
-        body += `<div class="op-release-section"><div class="op-release-heading">Risk summary</div><ul class="small mb-0 ps-3">${plan.risk_summary.map((r) => `<li>${esc(sanitizeOperatorText(r))}</li>`).join('')}</ul></div>`;
-      }
-      if (release.dry_run_required) {
-        body += `<p class="small text-info mb-0 mt-2"><i class="bi bi-shield-check"></i> Dry run required — no real merge, deploy, or send in Phase 1.</p>`;
-      }
-    } else if (release && release.manual_test_approved) {
-      body += `<p class="op-mode-muted small mb-0">Review the release plan before allowing AI to run it.</p>`;
-    }
-
-    const latest = release && release.latest_execution;
-    if (latest) {
-      body += `<div class="op-release-progress mt-2">Latest execution: ${esc(latest.execution_mode)} · ${esc(latest.status)}</div>`;
-    }
-
-    const approveBlock = plan && plan.status === 'ready_for_approval'
+    const approveBlock = readiness && readiness.can_request_release_approval
       ? `<div class="form-check mt-2" id="sb-release-confirm-wrap">
           <input class="form-check-input" type="checkbox" id="sb-release-confirm" />
           <label class="form-check-label small" for="sb-release-confirm">I approve this production release.</label>
@@ -842,25 +1377,55 @@
       : '';
 
     const buttons = [];
-    if (enabled && release && release.primary_release_action === 'Prepare release plan') {
-      buttons.push('<button type="button" class="btn btn-primary btn-sm" data-release-action="prepare">Prepare release plan</button>');
+    if (readiness && readiness.release_primary_action === 'prepare' && readiness.can_prepare_release) {
+      buttons.push('<button type="button" class="btn btn-primary op-release-cta w-100 w-md-auto" data-release-action="prepare">Prepare Release</button>');
     }
-    if (enabled && release && release.primary_release_action === 'Approve production release') {
-      buttons.push('<button type="button" class="btn btn-success btn-sm" data-release-action="approve">Approve production release</button>');
+    if (readiness && readiness.release_primary_action === 'approve' && readiness.can_request_release_approval) {
+      buttons.push('<button type="button" class="btn btn-success op-release-cta w-100 w-md-auto" data-release-action="approve">Request Release Approval</button>');
     }
-    if (enabled && release && release.primary_release_action === 'Run approved release') {
-      buttons.push('<button type="button" class="btn btn-primary btn-sm" data-release-action="run">Run approved release</button>');
+    if (readiness && readiness.release_primary_action === 'dry_run' && readiness.can_run_dry_run) {
+      buttons.push('<button type="button" class="btn btn-primary op-release-cta w-100 w-md-auto" data-release-action="run">Run Dry Run</button>');
     }
-    if (enabled && release && release.primary_release_action === 'Rollback release') {
-      buttons.push('<button type="button" class="btn btn-outline-warning btn-sm" data-release-action="rollback">Rollback release</button>');
+    if (readiness && readiness.release_primary_action === 'execute' && readiness.can_execute_controlled_release) {
+      buttons.push('<button type="button" class="btn btn-warning op-release-cta w-100 w-md-auto" data-release-action="execute">Execute Release</button>');
+    }
+    if (readiness && readiness.release_primary_action === 'view_package') {
+      buttons.push('<button type="button" class="btn btn-outline-light op-release-cta w-100 w-md-auto" data-release-action="view-package">View Release Package</button>');
+    }
+    if (!readiness) {
+      if (release && release.primary_release_action === 'Prepare release plan') {
+        buttons.push('<button type="button" class="btn btn-primary op-release-cta w-100 w-md-auto" data-release-action="prepare">Prepare Release</button>');
+      }
+      if (release && release.primary_release_action === 'Approve production release') {
+        buttons.push('<button type="button" class="btn btn-success op-release-cta w-100 w-md-auto" data-release-action="approve">Request Release Approval</button>');
+      }
+      if (release && release.primary_release_action === 'Run approved release') {
+        buttons.push('<button type="button" class="btn btn-primary op-release-cta w-100 w-md-auto" data-release-action="run">Run Dry Run</button>');
+      }
     }
 
+    const lockedNote = (readiness && readiness.live_release_locked && !readiness.can_release)
+      ? '<p class="op-release-locked-note mb-0"><i class="bi bi-lock-fill"></i> Release locked by safety settings</p>'
+      : '';
+    const blockerNote = readiness && readiness.release_blocker_reason && readiness.release_status === 'blocked'
+      ? `<p class="op-release-locked-note mb-0">${esc(readiness.release_blocker_reason)}</p>`
+      : '';
+
     return `<div class="${cardClass}" id="op-production-release-panel">
-      <div class="op-release-kicker">Production release</div>
-      <div class="op-release-title mt-1">${esc(label)}</div>
-      ${body}
+      <div class="op-release-card-title">Release</div>
+      <div class="op-release-row"><div class="op-release-row-label">Status</div><div class="op-release-row-value">${esc(statusLabel)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Release progress</div><div class="op-release-row-value">${progress}%</div></div>
+      <div class="op-release-progress-mini"><div class="bar" style="width:${progress}%"></div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Next action</div><div class="op-release-row-value">${esc(nextAction)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Safety</div><div class="op-release-row-value">${esc(safetyLine)}</div></div>
+      <div class="op-release-row"><div class="op-release-row-label">Rollback</div><div class="op-release-row-value">${esc(rollbackLine)}</div></div>
+      ${summary ? `<p class="op-mode-muted small mt-2 mb-0">${esc(summary)}</p>` : ''}
+      ${lockedNote}
+      ${blockerNote}
       ${approveBlock}
-      <div class="op-release-actions">${buttons.join('')}</div>
+      ${buttons.length ? `<div class="op-release-actions mt-2 d-flex flex-wrap gap-2">${buttons.join('')}</div>` : ''}
+      ${renderReleasePackageSection(readiness)}
+      ${renderControlledReleaseSection(readiness, release)}
     </div>`;
   }
 
@@ -878,11 +1443,34 @@
     scope.querySelector('[data-release-action="rollback"]')?.addEventListener('click', () => {
       if (hooks.rollbackRelease) hooks.rollbackRelease(run);
     });
+    scope.querySelector('[data-release-action="execute"]')?.addEventListener('click', () => {
+      if (hooks.executeControlledRelease) hooks.executeControlledRelease(run);
+    });
+    scope.querySelector('[data-release-action="view-package"]')?.addEventListener('click', () => {
+      scope.querySelector('#op-release-package')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
+
+  function renderReleaseAdvancedDetails(release) {
+    if (!release) return '';
+    const plan = release.plan;
+    const latest = release.latest_execution;
+    return `<div class="mt-2 pt-2 border-top border-secondary">
+      <strong class="text-secondary small">Release (advanced)</strong>
+      ${plan && plan.id ? `<div class="tech">Release plan: ${esc(plan.id)}</div>` : ''}
+      ${latest && latest.id ? `<div class="tech">Release run: ${esc(latest.id)}</div>` : ''}
+      <div class="tech">Policy: release_agent=${esc(String(release.release_agent_enabled))} · live_adapters=${esc(String(release.live_adapters_enabled))}</div>
+      ${release.blocked_reason ? `<div class="tech">Blocked: ${esc(release.blocked_reason)}</div>` : ''}
+      ${plan ? `<div class="tech">Raw plan status: ${esc(plan.status)}</div>` : ''}
+      ${renderDryRunPackageAdvancedDetails(release)}
+      ${renderControlledReleaseAdvancedDetails(release)}
+    </div>`;
   }
 
   function shouldFetchReleaseStatus(run) {
     if (!run || !run.id) return false;
-    return RELEASE_FLOW_STATUSES.has(String(run.status || '').toLowerCase());
+    const status = String(run.status || '').toLowerCase();
+    return RELEASE_FLOW_STATUSES.has(status) || status === 'operator_approved';
   }
 
   async function fetchReleaseStatus(api, run) {
@@ -962,6 +1550,10 @@
         <div class="op-mode-kicker"><i class="bi bi-person-workspace"></i> Simple Operator Mode</div>
         ${renderCurrentBuildCard(run, action)}
         ${run.show_manual_test_package !== false ? renderWhatToTestCard(run, extras || {}) : ''}
+        ${renderWorkspaceSafetyCard(run)}
+        ${renderExecutionHealthCard(run)}
+        ${renderAutoFixCard(run)}
+        ${renderBackgroundActivityCard(run, extras || {})}
         ${run.show_release_action ? renderProductionReleaseCard(run, extras || {}) : ''}
         ${friendlyAlert}
         <details class="op-mode-advanced mt-3" id="op-more-details">
@@ -1293,8 +1885,35 @@
     isTerminalApprovedStatus,
     bindReleaseActions,
     fetchReleaseStatus,
+    resolveReleaseReadiness,
+    operatorReleaseStatusLabel,
+    renderReleasePackageSection,
+    renderDryRunPackageAdvancedDetails,
+    renderControlledReleaseSection,
+    renderControlledReleaseAdvancedDetails,
     shouldFetchReleaseStatus,
     renderProductionReleaseCard,
+    renderWorkspaceSafetyCard,
+    renderWorkspaceAdvancedDetails,
+    renderExecutionHealthCard,
+    renderExecutionAdvancedDetails,
+    executionStatusLabel,
+    renderAutoFixCard,
+    renderAutoFixAdvancedDetails,
+    autoFixStatusLabel,
+    backgroundJobStatusLabel,
+    renderBackgroundActivityCard,
+    renderBackgroundActivityAdvancedDetails,
+    fetchBackgroundJobs,
+    fetchWorkerHealth,
+    fetchProjectHealth,
+    fetchProjectJobs,
+    fetchProjectPlatform,
+    fetchProjectReleasePolicy,
+    renderProjectPlatformAdvancedDetails,
+    startBackgroundJobPolling,
+    isBackgroundJobActive,
+    pickActiveBackgroundJob,
     isManualTestFeedbackStatus,
     feedbackUiLabels,
     RELEASE_FLOW_STATUSES,

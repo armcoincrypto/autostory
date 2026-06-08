@@ -21,6 +21,14 @@
     'ready_for_manual_test',
     'operator_declined',
   ]);
+  const READY_FOR_RELEASE_STATUSES = new Set([
+    'operator_approved',
+    'ready_for_release_approval',
+    'release_approved',
+    'released',
+    'release_failed',
+    'rollback_available',
+  ]);
   const REFRESH_STATUS_MSG = 'Refreshing status…';
   const DEFAULT_FORBIDDEN =
     'spam, scraping users, hidden sending, auto-send, send-all without approval, bypassing limits, production deploy, secret exposure';
@@ -330,6 +338,60 @@
     return extras;
   }
 
+  function isReadyForReleaseRow(run) {
+    return READY_FOR_RELEASE_STATUSES.has(String(run?.status || '').toLowerCase());
+  }
+
+  function releaseHomeMeta(run, om) {
+    const readiness = run.release_status && run.release_status.release_readiness;
+    if (readiness && om && om.operatorReleaseStatusLabel) {
+      const extras = [];
+      if (readiness.dry_run_package_ready) extras.push('Dry-run package ready');
+      if (readiness.dry_run_rollback_ready) extras.push('Rollback ready');
+      else if (readiness.dry_run_rollback_needs_review) extras.push('Rollback needs review');
+      if (readiness.live_release_locked) extras.push('Safety locked');
+      else if (readiness.can_request_release_approval) extras.push('Ready for approval');
+      const suffix = extras.length ? ` · ${extras.slice(0, 2).join(' · ')}` : '';
+      return {
+        status: om.operatorReleaseStatusLabel(readiness),
+        next: (readiness.release_next_action || readiness.release_primary_action_label || 'Open Build') + suffix,
+      };
+    }
+    const status = String(run.status || '').toLowerCase();
+    if (status === 'operator_approved') return { status: 'Not Started', next: 'Prepare Release' };
+    if (status === 'ready_for_release_approval') return { status: 'Release Review', next: 'Request Release Approval' };
+    if (status === 'release_approved') return { status: 'Dry Run Ready', next: 'Run Dry Run' };
+    if (status === 'released') return { status: 'Released', next: 'View Release Package' };
+    if (status === 'release_failed') return { status: 'Blocked', next: 'Open Build' };
+    return { status: 'Ready For Release', next: 'Open Build' };
+  }
+
+  function renderReadyForReleaseCard(run, om) {
+    const esc = om.esc;
+    const meta = releaseHomeMeta(run, om);
+    const currentId = run._skipHero ? '' : '';
+    return `<a href="/ai-coding/builds/${esc(run.id)}" class="op-home-build-card">
+      <div class="op-home-build-card-title">${esc(run.task_title || 'Build task')}</div>
+      <div class="op-home-build-card-meta">
+        <span class="op-home-build-card-badge op-home-build-card-badge-ready">${esc(meta.status)}</span>
+        <span>${esc(meta.next)}</span>
+      </div>
+    </a>`;
+  }
+
+  async function enrichReleaseSummaries(api, rows) {
+    const om = OM();
+    if (!om || !om.fetchReleaseStatus) return rows;
+    const candidates = rows.filter((r) => isReadyForReleaseRow(r)).slice(0, 8);
+    await Promise.all(candidates.map(async (run) => {
+      try {
+        const status = await fetchJsonTimed(api, `/build-runs/${run.id}/release-status`, null, 5000);
+        if (status) run.release_status = status;
+      } catch (_) {}
+    }));
+    return rows;
+  }
+
   function sortBuildRows(rows) {
     return [...(rows || [])].sort(
       (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
@@ -350,6 +412,35 @@
     return card.replace('</a>', `<div class="small mt-1" style="color:#fca5a5">${esc(reason)}</div></a>`);
   }
 
+  async function fetchProjectsPlatform(api) {
+    try {
+      return await fetchJsonTimed(api, '/projects/platform', null, LIST_TIMEOUT_MS);
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function renderProjectOverviewCard(projectRow, extras, esc) {
+    if (!projectRow) return '';
+    const health = (extras && extras.projectHealth) || {};
+    const jobs = (extras && extras.projectJobs) || {};
+    const release = (extras && extras.releaseStatus) || {};
+    const healthLabel = health.status || projectRow.health_status || 'unknown';
+    const queued = jobs.queued_count != null ? jobs.queued_count : '—';
+    const releaseLabel = release.release_readiness
+      ? (release.release_readiness.release_status || 'not_started')
+      : 'not_started';
+    return `<div class="op-home-section mt-2">
+      <h6><i class="bi bi-folder2-open"></i> Project</h6>
+      <div class="small op-mode-muted">${esc(projectRow.project_name || 'Project')}</div>
+      <div class="d-flex flex-wrap gap-2 mt-2">
+        <span class="op-home-build-card-badge">Queued: ${esc(String(queued))}</span>
+        <span class="op-home-build-card-badge">Release: ${esc(String(releaseLabel).replace(/_/g, ' '))}</span>
+        <span class="op-home-build-card-badge">Health: ${esc(healthLabel)}</span>
+      </div>
+    </div>`;
+  }
+
   function renderOperatorDashboard(container, ctx, hooks) {
     const om = OM();
     if (!om || !om.renderOperatorHomeHero) return false;
@@ -367,6 +458,10 @@
     );
     const recent = rows.slice(0, 5);
 
+    const readyForRelease = rows.filter(
+      (r) => isReadyForReleaseRow(r) && String(r.id) !== currentId
+    );
+
     const miniGrid = (list, mapper) => {
       if (!list.length) return '';
       const cards = list.map((r) => (mapper ? mapper(r) : om.renderOperatorBuildMiniCard(r))).join('');
@@ -376,12 +471,25 @@
     let html = '<div class="op-home-dashboard" data-operator-home="dashboard">';
     if (current) {
       html += om.renderOperatorHomeHero(current);
+      const platformRow = (ctx.platformProjects || []).find(
+        (p) => String(p.project_id) === String(current.project_id)
+      );
+      html += renderProjectOverviewCard(platformRow, ctx.extras || {}, esc);
     }
     html += renderHomeSection(
       'Ready For Test',
       'bi-clipboard2-check',
       miniGrid(readyForTest),
       'No builds waiting for your test.',
+      esc
+    );
+    html += renderHomeSection(
+      'Ready For Release',
+      'bi-rocket-takeoff',
+      readyForRelease.length
+        ? `<div class="op-home-build-grid">${readyForRelease.map((r) => renderReadyForReleaseCard(r, om)).join('')}</div>`
+        : '',
+      'No builds ready for release yet.',
       esc
     );
     html += renderHomeSection(
@@ -640,17 +748,33 @@
       return Object.assign({}, extras || {}, { releaseStatus });
     }
 
+    async function attachProjectContext(run, extras) {
+      const out = Object.assign({}, extras || {});
+      try {
+        out.platformProjects = await fetchProjectsPlatform(api);
+      } catch (_) {
+        out.platformProjects = [];
+      }
+      if (run && run.project_id && om && om.fetchProjectHealth) {
+        out.projectHealth = await om.fetchProjectHealth(api, run.project_id);
+        out.projectJobs = await om.fetchProjectJobs(api, run.project_id);
+      }
+      return out;
+    }
+
     async function enrichRunInBackground(run, seq) {
       try {
         const extras = await enrichRun(api, run);
         const withRelease = await attachReleaseStatus(run, extras);
+        const withProject = await attachProjectContext(run, withRelease);
         if (seq !== refreshSeq) return;
-        rememberGoodRun(run, withRelease);
+        rememberGoodRun(run, withProject);
         if (panel.querySelector('[data-operator-home="dashboard"]')) {
           renderOperatorDashboard(panel, {
             currentRun: run,
             allRows: lastBuildRows.length ? lastBuildRows : [runToSummary(run)],
-            extras: withRelease,
+            extras: withProject,
+            platformProjects: withProject.platformProjects || [],
           }, hooks);
           setRefreshStatusNote(panel, null);
         }
@@ -668,6 +792,8 @@
       let listErr = null;
       try {
         rows = await fetchBuildRuns(api);
+        lastBuildRows = rows;
+        rows = await enrichReleaseSummaries(api, rows);
         lastBuildRows = rows;
       } catch (err) {
         listErr = err;
@@ -944,6 +1070,36 @@
           hooks.showMsg(formatError(err), 'danger');
         }
       },
+      async executeControlledRelease(run) {
+        const planId = run.release_status && run.release_status.plan && run.release_status.plan.id;
+        if (!planId) {
+          hooks.showMsg('Release plan required before controlled release.', 'warning');
+          return;
+        }
+        if (!global.confirm('Execute controlled release? Requires all safety gates and flags to be enabled.')) return;
+        try {
+          const key = `controlled-${planId}-${Date.now()}`;
+          const resp = await fetchJson(api, `/release-runs/${planId}/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ actor: 'operator', idempotency_key: key, adapter: 'local_script' }),
+          });
+          if (resp.status === 'blocked') {
+            hooks.showMsg(resp.block_reason || 'Release blocked by safety gates.', 'warning');
+          } else if (resp.status === 'released') {
+            hooks.showMsg('Release completed and verified.', 'success');
+          } else if (resp.status === 'release_failed' || resp.status === 'failed') {
+            hooks.showMsg('Release failed — see audit for details.', 'danger');
+          } else if (resp.status === 'rolled_back') {
+            hooks.showMsg('Release rolled back after verification failure.', 'info');
+          } else {
+            hooks.showMsg(`Release status: ${resp.status}`, 'info');
+          }
+          await hooks.refresh();
+        } catch (err) {
+          hooks.showMsg(formatError(err), 'danger');
+        }
+      },
       async rollbackRelease(run) {
         const reason = global.prompt('Why roll back this release?') || '';
         if (!reason.trim()) {
@@ -992,6 +1148,9 @@
     sortBuildRows,
     CACHE_KEY,
     ACTIVE_BUILD,
+    READY_FOR_RELEASE_STATUSES,
+    isReadyForReleaseRow,
+    enrichReleaseSummaries,
     FETCH_TIMEOUT_MS,
     LIST_TIMEOUT_MS,
     DETAIL_TIMEOUT_MS,

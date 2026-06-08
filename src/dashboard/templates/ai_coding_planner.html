@@ -1,0 +1,423 @@
+{% extends "base.html" %}
+{% block title %}Advanced Task Planner — AI Coding{% endblock %}
+{% block extra_css %}
+<style>
+  .planner-glass { background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.18); backdrop-filter: blur(12px); border-radius: 14px; }
+  .planner-muted { color: #94a3b8; }
+  .planner-card { padding: 0.85rem; cursor: pointer; transition: border-color .15s ease; }
+  .planner-card:hover, .planner-card.active { border-color: rgba(56,189,248,0.35); }
+  .risk-pill { display:inline-flex; border-radius:999px; padding:0.12rem 0.45rem; font-size:0.68rem; font-weight:600; }
+  .risk-low { background:rgba(16,185,129,0.12); color:#6ee7b7; }
+  .risk-medium { background:rgba(245,158,11,0.12); color:#fcd34d; }
+  .risk-high { background:rgba(249,115,22,0.12); color:#fdba74; }
+  .risk-critical { background:rgba(239,68,68,0.12); color:#fca5a5; }
+  .status-draft { color:#cbd5e1; } .status-generated { color:#7dd3fc; } .status-approved { color:#6ee7b7; } .status-rejected { color:#fca5a5; }
+  .matrix-cell { border:1px solid rgba(148,163,184,0.15); border-radius:8px; padding:0.45rem; min-height:48px; font-size:0.72rem; }
+  .matrix-cell.has-risk { background:rgba(249,115,22,0.08); border-color:rgba(249,115,22,0.25); }
+  .phase-card { border-left:3px solid rgba(56,189,248,0.35); padding-left:0.75rem; margin-bottom:1rem; }
+  .constraint-badge { display:inline-flex; border-radius:999px; padding:0.15rem 0.55rem; font-size:0.68rem; background:rgba(239,68,68,0.12); color:#fca5a5; border:1px solid rgba(239,68,68,0.25); margin:0.15rem 0.2rem 0 0; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="alert alert-warning border-warning py-2 mb-3" role="status">
+  <strong>Advanced developer tool.</strong> Most operators should use <a href="/ai-coding" class="alert-link">Simple AI Coding Home</a>.
+</div>
+<div class="mb-3">
+  <a class="btn btn-primary" href="/ai-coding"><i class="bi bi-house-door"></i> Back to Simple AI Coding Home</a>
+</div>
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+  <div>
+    <h2 class="mb-1"><i class="bi bi-diagram-2"></i> Advanced Task Planner</h2>
+    <p class="planner-muted small mb-1">For debugging and manual planning only. Normal build flow starts from AI Coding Home.</p>
+    <p class="planner-muted small mb-0">Phase 9B — planning only. No auto-execution.</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-success btn-sm" href="/ai-coding/executions"><i class="bi bi-bezier2"></i> Executions</a>
+    <a class="btn btn-outline-warning btn-sm" href="/ai-coding/deployments"><i class="bi bi-shield-check"></i> Deployments</a>
+    <button class="btn btn-outline-info btn-sm" id="planner-refresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    <label class="form-check-label small planner-muted ms-2"><input type="checkbox" class="form-check-input" id="planner-show-archived"> Show archived</label>
+  </div>
+</div>
+<div id="planner-alert"></div>
+<details class="mb-3 planner-glass" id="planner-advanced-details">
+  <summary class="py-2 px-2 small">Advanced details — Operator Autopilot v1</summary>
+  <div class="px-2 pb-2" id="ai-code-wizard-panel"><div class="small planner-muted py-2">Loading Operator Autopilot…</div></div>
+</details>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4">
+    <div class="planner-glass p-3 mb-3">
+      <h5 class="mb-2">Create Plan</h5>
+      <div class="mb-2"><label class="form-label small">Project ID</label><input id="planner-project-id" class="form-control form-control-sm" placeholder="UUID" /></div>
+      <div class="mb-2"><label class="form-label small">Title</label><input id="planner-title" class="form-control form-control-sm" placeholder="Mobile UX improvement" /></div>
+      <div class="mb-2"><label class="form-label small">High-level goal</label><textarea id="planner-goal" class="form-control form-control-sm" rows="3" placeholder="Improve Swaperex mobile UX"></textarea></div>
+      <div class="mb-2"><label class="form-label small">Priority</label><select id="planner-priority" class="form-select form-select-sm"><option>low</option><option selected>medium</option><option>high</option></select></div>
+      <div class="mb-2"><label class="form-label small">Forbidden scope (comma-separated)</label><input id="planner-forbidden" class="form-control form-control-sm" placeholder="payment, auth bypass" /></div>
+      <div class="mb-2"><label class="form-label small">Operator notes</label><textarea id="planner-notes" class="form-control form-control-sm" rows="2"></textarea></div>
+      <button class="btn btn-primary btn-sm" id="planner-create">Create draft</button>
+    </div>
+    <div class="planner-glass p-3">
+      <h6 class="mb-2">Plan Dashboard</h6>
+      <div class="row g-2 text-center small" id="planner-stats">
+        <div class="col-4"><div class="planner-glass planner-card"><div class="planner-muted">Draft</div><div id="stat-draft">0</div></div></div>
+        <div class="col-4"><div class="planner-glass planner-card"><div class="planner-muted">Generated</div><div id="stat-generated">0</div></div></div>
+        <div class="col-4"><div class="planner-glass planner-card"><div class="planner-muted">Approved</div><div id="stat-approved">0</div></div></div>
+        <div class="col-4"><div class="planner-glass planner-card"><div class="planner-muted">Rejected</div><div id="stat-rejected">0</div></div></div>
+        <div class="col-4"><div class="planner-glass planner-card"><div class="planner-muted">High Risk</div><div id="stat-high-risk">0</div></div></div>
+        <div class="col-4"><div class="planner-glass planner-card"><div class="planner-muted">Ready*</div><div id="stat-ready">0</div></div></div>
+      </div>
+      <div class="planner-muted small mt-2">*Approved plans awaiting Phase 9C execution handoff</div>
+      <div id="planner-list" class="small mt-3">Loading plans…</div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="planner-glass p-3 mb-3" id="planner-detail">
+      <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+        <div><h5 class="mb-0" id="detail-title">Select a plan</h5><div class="planner-muted small" id="detail-meta">—</div></div>
+        <div class="d-flex flex-wrap gap-2">
+          <button class="btn btn-outline-info btn-sm" id="planner-generate" disabled>Generate Plan</button>
+          <button class="btn btn-outline-success btn-sm" id="planner-approve" disabled>Approve</button>
+          <button class="btn btn-outline-danger btn-sm" id="planner-reject" disabled>Reject</button>
+          <button class="btn btn-outline-secondary btn-sm" id="planner-export-md" disabled>Download MD</button>
+          <button class="btn btn-outline-secondary btn-sm" id="planner-export-json" disabled>Download JSON</button>
+          <button class="btn btn-outline-warning btn-sm" id="planner-create-exec" disabled title="Requires approved plan + TASK_PLAN_EXECUTION_ENABLED">Create Execution Program</button>
+          <button class="btn btn-outline-secondary btn-sm" id="planner-archive" disabled>Archive</button>
+          <button class="btn btn-outline-secondary btn-sm" id="planner-restore" disabled style="display:none">Restore</button>
+        </div>
+      </div>
+      <div id="detail-policy" class="small mb-2"></div>
+      <div class="row g-3">
+        <div class="col-md-6"><h6>Goal interpretation</h6><div id="detail-goal" class="small planner-muted">—</div></div>
+        <div class="col-md-6"><h6>Summary</h6><div id="detail-summary" class="small planner-muted">—</div></div>
+        <div class="col-md-6"><h6>Assumptions</h6><ul id="detail-assumptions" class="small planner-muted"></ul></div>
+        <div class="col-md-6"><h6>Constraints</h6><div id="detail-constraints"></div></div>
+        <div class="col-md-6"><h6>Validation strategy</h6><pre id="detail-validation" class="small bg-dark p-2 rounded">—</pre></div>
+        <div class="col-md-6"><h6>Rollback strategy</h6><pre id="detail-rollback" class="small bg-dark p-2 rounded">—</pre></div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-lg-7">
+        <div class="planner-glass p-3">
+          <h5 class="mb-2">Phase Breakdown</h5>
+          <div id="detail-phases" class="small planner-muted">No phases yet.</div>
+        </div>
+      </div>
+      <div class="col-lg-5">
+        <div class="planner-glass p-3 mb-3">
+          <h5 class="mb-2">Risk Matrix</h5>
+          <div class="row g-2" id="detail-risk-matrix"></div>
+        </div>
+        <div class="planner-glass p-3">
+          <h5 class="mb-2">Memory Context</h5>
+          <div id="detail-memory" class="small planner-muted">No memory context attached.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/ai_coding_operator_wizard.js') }}"></script>
+<script>
+(function(){
+  const API = {{ api_base|tojson }};
+  const INITIAL_PLAN_ID = {{ plan_id|tojson }};
+  let selectedPlanId = INITIAL_PLAN_ID || null;
+  let plansCache = [];
+  let showArchived = false;
+
+  function esc(v){ return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+  function alertMsg(msg, tone='warning'){ document.getElementById('planner-alert').innerHTML = `<div class="alert alert-${tone} py-2">${esc(msg)}</div>`; }
+  function riskClass(level){ return {LOW:'risk-low',MEDIUM:'risk-medium',HIGH:'risk-high',CRITICAL:'risk-critical'}[level]||'risk-medium'; }
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  function friendlyPlannerError(err) {
+    const status = err && err.status;
+    const raw = err && err.message ? String(err.message) : '';
+    if (status === 502 || status === 503 || /unavailable|upstream/i.test(raw)) {
+      return 'AI Coding API unavailable. Check that the API service on port 8015 is running.';
+    }
+    if (status === 401) return 'Session expired. Please sign in again.';
+    if (status === 422 && /project_id/i.test(raw)) {
+      return 'Project ID must be a valid UUID from an existing project (see AI Coding → Operations Overview or /api/v1/ai-coding/projects/summary).';
+    }
+    if (status === 400 && /project not found/i.test(raw)) {
+      return 'Project not found. Use a valid project UUID from the projects summary API.';
+    }
+    if (raw && raw.length < 240) return raw;
+    return 'Planner request failed. Check the form fields and try again.';
+  }
+  async function loadProjectDefault() {
+    try {
+      const data = await dashboardFetchJson(`${API}/projects/summary`);
+      const items = data.items || [];
+      const field = document.getElementById('planner-project-id');
+      if (!field.value.trim() && items.length === 1) {
+        field.value = items[0].project_id;
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  async function loadPlans(){
+    const qs = showArchived ? '?limit=50&include_archived=true' : '?limit=50';
+    const rows = await dashboardFetchJson(`${API}/task-plans${qs}`);
+    plansCache = rows;
+    const stats = {draft:0, generated:0, approved:0, rejected:0, high:0, ready:0};
+    rows.forEach(p => {
+      if(p.status==='draft') stats.draft++;
+      if(p.status==='generated' || p.status==='reviewed') stats.generated++;
+      if(p.status==='approved'){ stats.approved++; stats.ready++; }
+      if(p.status==='rejected') stats.rejected++;
+      if(['HIGH','CRITICAL'].includes(p.risk_level)) stats.high++;
+    });
+    document.getElementById('stat-draft').textContent = stats.draft;
+    document.getElementById('stat-generated').textContent = stats.generated;
+    document.getElementById('stat-approved').textContent = stats.approved;
+    document.getElementById('stat-rejected').textContent = stats.rejected;
+    document.getElementById('stat-high-risk').textContent = stats.high;
+    document.getElementById('stat-ready').textContent = stats.ready;
+    document.getElementById('planner-list').innerHTML = rows.length ? rows.map(p => `
+      <div class="planner-glass planner-card mb-2 ${selectedPlanId===p.id?'active':''}" data-plan="${p.id}">
+        <div class="d-flex justify-content-between gap-2"><strong>${esc(p.title)}</strong><span class="${riskClass(p.risk_level)} risk-pill">${esc(p.risk_level)}</span></div>
+        <div class="planner-muted">status=<span class="status-${p.status}">${esc(p.status)}</span> · ${esc(p.priority)}</div>
+      </div>`).join('') : '<span class="planner-muted">No plans yet.</span>';
+    document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', () => openPlan(el.getAttribute('data-plan'))));
+    if(selectedPlanId) await openPlan(selectedPlanId, false);
+  }
+
+  async function openPlan(planId, push=true){
+    selectedPlanId = planId;
+    if(push) history.replaceState({}, '', `/ai-coding/planner/${planId}`);
+    const plan = await dashboardFetchJson(`${API}/task-plans/${planId}`);
+    document.getElementById('detail-title').textContent = plan.title;
+    document.getElementById('detail-meta').textContent = `${plan.status} · risk ${plan.risk_level} · project ${plan.project_id}`;
+    document.getElementById('detail-goal').textContent = plan.goal;
+    document.getElementById('detail-summary').textContent = plan.generated_summary || 'Generate plan to produce summary.';
+    document.getElementById('detail-assumptions').innerHTML = (plan.assumptions||[]).map(a => `<li>${esc(a)}</li>`).join('') || '<li>None</li>';
+    document.getElementById('detail-constraints').innerHTML = (plan.constraints||[]).map(c => `<span class="constraint-badge">${esc(c)}</span>`).join('') || '<span class="planner-muted">None</span>';
+    document.getElementById('detail-validation').textContent = plan.validation_strategy || '—';
+    document.getElementById('detail-rollback').textContent = plan.rollback_strategy || '—';
+    const policy = plan.policy_result || {};
+    document.getElementById('detail-policy').innerHTML = policy.allowed_to_approve
+      ? `<span class="text-success">Policy: allowed to approve</span>`
+      : `<span class="text-danger">Policy blocked:</span> ${(policy.blocking_reasons||[]).map(esc).join('; ') || 'Generate plan first'}`;
+    renderPhases(plan);
+    renderRiskMatrix(plan.risks||[]);
+    renderMemory(plan.memory_context_snapshot||{});
+    const hasPlan = !!plan.phases?.length;
+    document.getElementById('planner-generate').disabled = ['approved','archived'].includes(plan.status);
+    document.getElementById('planner-approve').disabled = !(hasPlan && policy.allowed_to_approve && ['generated','reviewed'].includes(plan.status));
+    document.getElementById('planner-reject').disabled = !hasPlan || plan.status==='rejected';
+    document.getElementById('planner-export-md').disabled = !hasPlan;
+    document.getElementById('planner-export-json').disabled = !hasPlan;
+    document.getElementById('planner-create-exec').disabled = plan.status !== 'approved';
+    const archived = plan.status === 'archived';
+    document.getElementById('planner-archive').disabled = archived;
+    document.getElementById('planner-archive').style.display = archived ? 'none' : '';
+    document.getElementById('planner-restore').style.display = archived ? '' : 'none';
+    document.getElementById('planner-restore').disabled = !archived;
+    await loadPlans();
+  }
+
+  function renderPhases(plan){
+    const phases = plan.phases||[];
+    document.getElementById('detail-phases').innerHTML = phases.length ? phases.map(ph => `
+      <div class="phase-card">
+        <div class="d-flex justify-content-between gap-2"><strong>${ph.order_index}. ${esc(ph.title)}</strong><span class="${riskClass(ph.risk_level)} risk-pill">${esc(ph.risk_level)}</span></div>
+        <div class="planner-muted">${esc(ph.objective)}</div>
+        <div class="mt-1"><strong>Scope:</strong> ${esc(ph.scope)}</div>
+        <div><strong>Non-goals:</strong> ${esc(ph.non_goals)}</div>
+        <div class="mt-1"><strong>Investigation</strong><ul>${(ph.investigation_steps||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div>
+        <div><strong>Implementation</strong><ul>${(ph.implementation_steps||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div>
+        <div><strong>Validation</strong><ul>${(ph.validation_commands||[]).map(s=>`<li><code>${esc(s)}</code></li>`).join('')}</ul></div>
+        <div><strong>Rollback</strong><ul>${(ph.rollback_steps||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div>
+        <div class="mt-2 d-flex gap-2">
+          <button class="btn btn-outline-light btn-sm" data-copy-prompt="${ph.id}">Copy Cursor prompt</button>
+          ${plan.status==='approved' ? `<button class="btn btn-outline-success btn-sm" data-approve-phase="${ph.id}">Approve phase</button>` : ''}
+        </div>
+      </div>`).join('') : 'No phases yet — click Generate Plan.';
+    document.querySelectorAll('[data-copy-prompt]').forEach(btn => btn.addEventListener('click', async () => {
+      const data = await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/phases/${btn.getAttribute('data-copy-prompt')}/prompt`);
+      await navigator.clipboard.writeText(data.prompt || '');
+      alertMsg('Cursor prompt copied to clipboard.', 'success');
+    }));
+    document.querySelectorAll('[data-approve-phase]').forEach(btn => btn.addEventListener('click', async () => {
+      await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/phases/${btn.getAttribute('data-approve-phase')}/approve`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({}) });
+      await openPlan(selectedPlanId, false);
+    }));
+  }
+
+  function renderRiskMatrix(risks){
+    const categories = ['production','security','database','frontend','backend','deployment','auth_session'];
+    const byCat = {};
+    risks.forEach(r => { byCat[r.category] = (byCat[r.category]||[]).concat(r); });
+    document.getElementById('detail-risk-matrix').innerHTML = categories.map(cat => {
+      const items = byCat[cat]||[];
+      return `<div class="col-6"><div class="matrix-cell ${items.length?'has-risk':''}"><strong>${cat}</strong><div>${items.map(i=>`${esc(i.severity)}: ${esc(i.description.slice(0,80))}`).join('<br>')||'—'}</div></div></div>`;
+    }).join('');
+  }
+
+  function renderMemory(snapshot){
+    const intel = snapshot.intelligence_summary || {};
+    const ctx = snapshot.execution_context || {};
+    const entries = ctx.memory_entries || intel.recent_memory || [];
+    document.getElementById('detail-memory').innerHTML = `
+      <div class="mb-2"><strong>Architecture:</strong> ${esc(intel.architecture_summary||'—')}</div>
+      <div class="mb-2"><strong>Forbidden areas:</strong> ${(intel.forbidden_areas||[]).map(a=>`<span class="constraint-badge">${esc(a)}</span>`).join('')||'—'}</div>
+      <div><strong>Relevant memories (${entries.length})</strong><ul>${entries.slice(0,6).map(e=>`<li>${esc(e.title||e.category||'entry')}: ${esc((e.content||'').slice(0,120))}</li>`).join('')||'<li>None</li>'}</ul></div>`;
+  }
+
+  document.getElementById('planner-create').addEventListener('click', async () => {
+    try {
+      const projectId = document.getElementById('planner-project-id').value.trim();
+      const title = document.getElementById('planner-title').value.trim();
+      const goal = document.getElementById('planner-goal').value.trim();
+      if (!projectId) {
+        alertMsg('Project ID is required. Paste a project UUID from AI Coding projects summary.', 'danger');
+        return;
+      }
+      if (!UUID_RE.test(projectId)) {
+        alertMsg('Project ID must be a valid UUID (not a project name).', 'danger');
+        return;
+      }
+      if (!title || !goal) {
+        alertMsg('Title and high-level goal are required.', 'danger');
+        return;
+      }
+      const forbidden = document.getElementById('planner-forbidden').value.split(',').map(s=>s.trim()).filter(Boolean);
+      const payload = {
+        project_id: projectId,
+        title,
+        goal,
+        priority: document.getElementById('planner-priority').value,
+        forbidden_scope: forbidden,
+        operator_notes: document.getElementById('planner-notes').value.trim() || null,
+      };
+      const plan = await dashboardFetchJson(`${API}/task-plans`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      alertMsg('Draft plan created.', 'success');
+      await openPlan(plan.id);
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+
+  document.getElementById('planner-generate').addEventListener('click', async () => {
+    if(!selectedPlanId) {
+      alertMsg('Select a plan from the list before generating.', 'warning');
+      return;
+    }
+    try {
+      await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/generate`, { method:'POST' });
+      await openPlan(selectedPlanId, false);
+      alertMsg('Plan generated with memory context.', 'success');
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+
+  document.getElementById('planner-approve').addEventListener('click', async () => {
+    if(!selectedPlanId) {
+      alertMsg('Select a plan from the list first.', 'warning');
+      return;
+    }
+    try {
+      await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/approve`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({}) });
+      await openPlan(selectedPlanId, false);
+      alertMsg('Plan approved.', 'success');
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+
+  document.getElementById('planner-reject').addEventListener('click', async () => {
+    if(!selectedPlanId) {
+      alertMsg('Select a plan from the list first.', 'warning');
+      return;
+    }
+    const reason = prompt('Rejection reason:');
+    if(!reason) return;
+    try {
+      await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/reject`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason }) });
+      await openPlan(selectedPlanId, false);
+      alertMsg('Plan rejected.', 'warning');
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+
+  document.getElementById('planner-export-md').addEventListener('click', () => {
+    if(selectedPlanId) window.open(`${API}/task-plans/${selectedPlanId}/export?fmt=markdown`, '_blank');
+  });
+  document.getElementById('planner-export-json').addEventListener('click', () => {
+    if(selectedPlanId) window.open(`${API}/task-plans/${selectedPlanId}/export?fmt=json`, '_blank');
+  });
+  document.getElementById('planner-create-exec').addEventListener('click', async () => {
+    if(!selectedPlanId) {
+      alertMsg('Select an approved plan first.', 'warning');
+      return;
+    }
+    try {
+      const resp = await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/create-execution`, { method:'POST' });
+      alertMsg(`Execution program created: ${resp.execution_program_id}`, 'success');
+      window.location.href = `/ai-coding/executions/${resp.execution_program_id}`;
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+
+  document.getElementById('planner-refresh').addEventListener('click', () => {
+    loadPlans().catch(err => alertMsg(friendlyPlannerError(err), 'danger'));
+  });
+  document.getElementById('planner-show-archived').addEventListener('change', (e) => {
+    showArchived = e.target.checked;
+    loadPlans().catch(err => alertMsg(friendlyPlannerError(err), 'danger'));
+  });
+  document.getElementById('planner-archive').addEventListener('click', async () => {
+    if(!selectedPlanId || !confirm('Archive this technical plan?')) return;
+    const reason = prompt('Archive reason (optional):') || '';
+    try {
+      await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/archive`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason })
+      });
+      alertMsg('Plan archived.', 'success');
+      await openPlan(selectedPlanId, false);
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+  document.getElementById('planner-restore').addEventListener('click', async () => {
+    if(!selectedPlanId || !confirm('Restore this archived plan?')) return;
+    try {
+      await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}/restore`, { method:'POST' });
+      alertMsg('Plan restored.', 'success');
+      await openPlan(selectedPlanId, false);
+    } catch (err) {
+      alertMsg(friendlyPlannerError(err), 'danger');
+    }
+  });
+  loadProjectDefault().then(() => loadPlans()).catch(err => alertMsg(friendlyPlannerError(err), 'danger'));
+
+  if (window.AiCodingOperatorWizard) {
+    AiCodingOperatorWizard.init({
+      api: API,
+      formatError: friendlyPlannerError,
+      alertFn: alertMsg,
+      autoRefreshMs: 30000,
+      getContext: async () => {
+        if (!selectedPlanId) return {};
+        try {
+          const plan = await dashboardFetchJson(`${API}/task-plans/${selectedPlanId}`);
+          return { planId: selectedPlanId, plan };
+        } catch (_) {
+          return { planId: selectedPlanId, plan: plansCache.find((p) => p.id === selectedPlanId) || null };
+        }
+      },
+      onRefresh: async () => {
+        await loadPlans();
+        if (selectedPlanId) await openPlan(selectedPlanId, false);
+      },
+    });
+  }
+})();
+</script>
+{% endblock %}

@@ -676,8 +676,13 @@ def test_ai_coding_builds_page_operator_mode(app) -> None:
     assert "sb-primary" in js
     assert "sb-decline-feedback" in js
     assert "Send feedback" in om_js
-    assert "prepare-release" in (root / "src/dashboard/ai_coding_routes.py").read_text(encoding="utf-8")
-    assert "/build-runs/<run_id>/feedback" in (root / "src/dashboard/ai_coding_routes.py").read_text(encoding="utf-8")
+    routes_text = (root / "src/dashboard/ai_coding_routes.py").read_text(encoding="utf-8")
+    assert "prepare-release" in routes_text
+    assert "dry-run-package" in routes_text
+    assert "release-runs/<release_plan_id>/execute" in routes_text
+    assert "jobs/execute" in routes_text
+    assert "/jobs/<job_id>" in routes_text
+    assert "/build-runs/<run_id>/feedback" in routes_text
     assert 'id="sb-approve"' not in js or "sb-primary" in js  # single primary, not dual approve buttons in template
 
 
