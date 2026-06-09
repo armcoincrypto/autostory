@@ -41,7 +41,7 @@ def test_operator_home_dashboard_has_no_workflow_engine_language() -> None:
 
 def test_operator_home_dashboard_sections() -> None:
     text = HOME_JS.read_text(encoding="utf-8")
-    assert "Ready For Test" in text
+    assert "Ready For Test" in text or "Ready For Manual Test" in text
     assert "Recent Builds" in text
     assert "Blocked" in text
     assert "Create Your First Build" in text
@@ -67,3 +67,16 @@ def test_ai_coding_page_operator_area_not_advanced_noise() -> None:
     assert "Review transparency" not in operator_area
     assert "Operations Overview" not in operator_area
     assert "Idea → Build → Test → Approve → Release" in operator_area
+
+
+def test_operator_home_start_build_uses_auto_pipeline() -> None:
+    text = HOME_JS.read_text(encoding="utf-8")
+    assert "auto_start: true" in text
+    assert "hub-priority" in text
+
+
+def test_operator_home_has_notification_inbox() -> None:
+    text = HOME_JS.read_text(encoding="utf-8")
+    assert "renderNotificationInbox" in text
+    assert "Ready for test" in text
+    assert "ai-notification-inbox" in text

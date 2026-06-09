@@ -1816,7 +1816,7 @@
       reviewing: 'AI checking work',
       validating: 'Testing in progress',
       fixing: 'Fixing',
-      ready_for_manual_test: 'Ready For Test',
+      ready_for_manual_test: 'Ready For Manual Test',
       operator_approved: 'Approved',
       ready_for_release_approval: 'Ready For Release',
       release_approved: 'Ready For Release',

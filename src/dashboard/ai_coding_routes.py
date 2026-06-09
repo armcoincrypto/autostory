@@ -55,6 +55,7 @@ def _page_auth():
         "ai_coding.ai_coding_executions_page",
         "ai_coding.ai_coding_deployments_page",
         "ai_coding.ai_coding_audit_coverage_page",
+        "ai_coding.ai_coding_factory_analytics_page",
         "ai_coding.ai_coding_builds_page",
     }:
         if not dashboard_api_authorized():
@@ -317,6 +318,15 @@ def ai_coding_audit_coverage_page():
     _audit("ai_coding_audit_coverage_viewed")
     return render_template(
         "ai_coding_audit_coverage.html",
+        api_base="/api/v1/ai-coding",
+    )
+
+
+@ai_coding_bp.route("/ai-coding/factory-analytics", methods=["GET"])
+def ai_coding_factory_analytics_page():
+    _audit("ai_coding_factory_analytics_viewed")
+    return render_template(
+        "ai_coding_factory_analytics.html",
         api_base="/api/v1/ai-coding",
     )
 
@@ -1135,3 +1145,50 @@ def build_run_release_status(run_id: str):
         action="build_run_release_status",
         run_id=run_id,
     )
+
+
+@ai_coding_api.route("/notifications", methods=["GET"])
+def ai_coding_notifications_list():
+    unread = request.args.get("unread_only", "false").lower() == "true"
+    limit = request.args.get("limit", "50")
+    query = {"unread_only": "true" if unread else "false", "limit": limit}
+    return _proxy_get("/api/v1/notifications", action="ai_coding_notifications_list", query=query)
+
+
+@ai_coding_api.route("/notifications/<notification_id>/read", methods=["POST"])
+def ai_coding_notification_mark_read(notification_id: str):
+    return _proxy_write(
+        "POST",
+        f"/api/v1/notifications/{notification_id}/read",
+        action="ai_coding_notification_mark_read",
+    )
+
+
+@ai_coding_api.route("/analytics/factory-health", methods=["GET"])
+def analytics_factory_health():
+    return _proxy_get("/api/v1/analytics/factory-health", action="analytics_factory_health")
+
+
+@ai_coding_api.route("/analytics/factory", methods=["GET"])
+def analytics_factory():
+    return _proxy_get("/api/v1/analytics/factory", action="analytics_factory")
+
+
+@ai_coding_api.route("/analytics/builds", methods=["GET"])
+def analytics_builds():
+    return _proxy_get("/api/v1/analytics/builds", action="analytics_builds")
+
+
+@ai_coding_api.route("/analytics/workers", methods=["GET"])
+def analytics_workers():
+    return _proxy_get("/api/v1/analytics/workers", action="analytics_workers")
+
+
+@ai_coding_api.route("/analytics/projects", methods=["GET"])
+def analytics_projects():
+    return _proxy_get("/api/v1/analytics/projects", action="analytics_projects")
+
+
+@ai_coding_api.route("/analytics/releases", methods=["GET"])
+def analytics_releases():
+    return _proxy_get("/api/v1/analytics/releases", action="analytics_releases")

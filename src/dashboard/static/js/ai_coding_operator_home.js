@@ -420,6 +420,73 @@
     }
   }
 
+  async function fetchFactoryHealth(api) {
+    try {
+      return await fetchJsonTimed(api, '/analytics/factory-health', null, 8000);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function renderSimpleFactoryHealth(health) {
+    const el = document.getElementById('ai-factory-health-simple');
+    if (!el) return;
+    if (!health || !health.overall_health) {
+      el.classList.add('d-none');
+      return;
+    }
+    const status = health.overall_health;
+    const label = status === 'healthy'
+      ? 'Factory Healthy'
+      : status === 'warning'
+        ? 'Factory Warning'
+        : 'Factory Critical';
+    const dotClass = status === 'healthy' ? 'ok' : status === 'warning' ? 'pending' : 'bad';
+    const om = OM();
+    const esc = om && om.esc ? om.esc : (s) => String(s == null ? '' : s);
+    el.classList.remove('d-none');
+    el.innerHTML = `<span class="status-dot ${dotClass}"></span><strong>${esc(label)}</strong>
+      <span class="op-mode-muted ms-2">${esc(health.summary || '')}</span>`;
+  }
+
+  async function fetchNotifications(api) {
+    try {
+      return await fetchJsonTimed(api, '/notifications?limit=10', null, 8000);
+    } catch (_err) {
+      return { items: [], unread_count: 0 };
+    }
+  }
+
+  function renderNotificationInbox(notifications, esc) {
+    const items = (notifications && notifications.items) || [];
+    const unread = (notifications && notifications.unread_count) || 0;
+    if (!items.length) return '';
+    const cards = items.slice(0, 3).map((n) => {
+      const tone = n.notification_type === 'build_ready_for_test'
+        ? 'success'
+        : n.notification_type === 'build_blocked'
+          ? 'warning'
+          : 'danger';
+      const label = n.notification_type === 'build_ready_for_test'
+        ? 'Ready for test'
+        : n.notification_type === 'build_blocked'
+          ? 'Blocked'
+          : n.notification_type === 'build_failed'
+            ? 'Failed'
+            : 'Release ready';
+      const href = n.action_url || '#';
+      return `<div class="ai-code-glass p-2 mb-2 border-start border-3 border-${tone}">
+        <div class="small fw-semibold">${esc(label)}</div>
+        <div class="small op-mode-muted">${esc(n.title)}</div>
+        <a class="btn btn-sm btn-outline-light mt-2" href="${esc(href)}">Open Build</a>
+      </div>`;
+    }).join('');
+    return `<div class="op-home-section mt-2" id="ai-notification-inbox">
+      <h6><i class="bi bi-bell"></i> Notifications ${unread ? `<span class="badge bg-info">${esc(String(unread))}</span>` : ''}</h6>
+      ${cards}
+    </div>`;
+  }
+
   function renderProjectOverviewCard(projectRow, extras, esc) {
     if (!projectRow) return '';
     const health = (extras && extras.projectHealth) || {};
@@ -469,6 +536,7 @@
     };
 
     let html = '<div class="op-home-dashboard" data-operator-home="dashboard">';
+    html += renderNotificationInbox(ctx.notifications, esc);
     if (current) {
       html += om.renderOperatorHomeHero(current);
       const platformRow = (ctx.platformProjects || []).find(
@@ -584,7 +652,15 @@
               <label class="form-label small">Operator notes</label>
               <input class="form-control form-control-sm" id="hub-notes" />
             </div>
-            <div class="col-md-6">
+            <div class="col-md-4">
+              <label class="form-label small">Priority</label>
+              <select class="form-select form-select-sm" id="hub-priority">
+                <option value="normal" selected>Normal</option>
+                <option value="high">High</option>
+                <option value="low">Low</option>
+              </select>
+            </div>
+            <div class="col-md-4">
               <label class="form-label small">Max fix attempts</label>
               <input type="number" class="form-control form-control-sm" id="hub-max-attempts" value="3" min="1" max="10" />
             </div>
@@ -732,6 +808,7 @@
 
     async function showEmptyStart(hintProjectId, buildRows) {
       const projects = await fetchProjectsSafe(api);
+      renderSimpleFactoryHealth(await fetchFactoryHealth(api));
       const hint = hintProjectId || hintProjectIdFromRows(buildRows || lastBuildRows);
       renderStartCard(panel, projects, hooks, { showEmptyNotice: true, hintProjectId: hint });
       currentRun = null;
@@ -749,12 +826,16 @@
     }
 
     async function attachProjectContext(run, extras) {
+      const om = OM();
       const out = Object.assign({}, extras || {});
       try {
         out.platformProjects = await fetchProjectsPlatform(api);
       } catch (_) {
         out.platformProjects = [];
       }
+      out.factoryHealth = await fetchFactoryHealth(api);
+      renderSimpleFactoryHealth(out.factoryHealth);
+      out.notifications = await fetchNotifications(api);
       if (run && run.project_id && om && om.fetchProjectHealth) {
         out.projectHealth = await om.fetchProjectHealth(api, run.project_id);
         out.projectJobs = await om.fetchProjectJobs(api, run.project_id);
@@ -775,6 +856,7 @@
             allRows: lastBuildRows.length ? lastBuildRows : [runToSummary(run)],
             extras: withProject,
             platformProjects: withProject.platformProjects || [],
+            notifications: withProject.notifications,
           }, hooks);
           setRefreshStatusNote(panel, null);
         }
@@ -938,6 +1020,9 @@
               forbidden_scope: forbidden,
               operator_notes: document.getElementById('hub-notes')?.value || null,
               max_attempts: Number(document.getElementById('hub-max-attempts')?.value || 3),
+              auto_start: true,
+              priority: document.getElementById('hub-priority')?.value || 'normal',
+              actor: 'operator',
             }),
           });
           global.location.href = `/ai-coding/builds/${created.id}`;

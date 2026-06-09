@@ -10,7 +10,7 @@ BUILDS_HTML = ROOT / "src/dashboard/templates/ai_coding_builds.html"
 def test_operator_mode_js_exists() -> None:
     text = OM_JS.read_text(encoding="utf-8")
     assert "AiCodingOperatorMode" in text
-    assert "Ready For Test" in text
+    assert "Ready For Test" in text or "Ready For Manual Test" in text
     assert "Continue AI work" in text
     assert "Build progress" in text
     assert "renderProductionReadinessCard" in text
