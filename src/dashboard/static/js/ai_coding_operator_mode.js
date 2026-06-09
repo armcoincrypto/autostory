@@ -307,11 +307,17 @@
     const stopType = run.stop_type || null;
     if (stopType === 'STOP_TYPE_MANUAL_TEST' || status === 'ready_for_manual_test') return false;
     if (stopType === 'STOP_TYPE_RELEASE') return false;
+    if (TERMINAL_BLOCKED.has(status)) return true;
+    if (status === 'failed') return false;
     if (stopType === 'STOP_TYPE_REQUIREMENTS') return true;
-    if (TERMINAL_FAILURE.has(status)) return true;
     if (status === 'operator_declined') return true;
     if (run.safe_to_continue === false && stopType) return true;
     return false;
+  }
+
+  function isOperatorFailed(run) {
+    if (!run) return false;
+    return String(run.status || '').toLowerCase() === 'failed';
   }
 
   function blockedReasonLabel(run) {
@@ -321,7 +327,8 @@
     if (raw) return raw;
     const status = String(run.status || '').toLowerCase();
     if (status === 'operator_declined') return 'Needs fixes after manual test';
-    if (status === 'failed') return 'Build stopped — needs attention';
+    if (status === 'blocked') return 'Your decision is needed before AI can continue';
+    if (status === 'failed') return 'Unexpected failure — review details or start a new build';
     if (status === 'cancelled') return 'Build was cancelled';
     if (run.stop_type === 'STOP_TYPE_REQUIREMENTS') return 'Requirements unclear';
     return 'Manual decision required';
@@ -410,7 +417,8 @@
     'rollback_available',
     'rolled_back',
   ]);
-  const TERMINAL_FAILURE = new Set(['failed', 'cancelled']);
+  const TERMINAL_FAILURE = new Set(['failed']);
+  const TERMINAL_BLOCKED = new Set(['blocked']);
   const ACTIVE_WORK_STATUSES = new Set([
     'draft',
     'planning',
@@ -1866,6 +1874,7 @@
     renderOperatorBuildMiniCard,
     operatorStatusLabelForRun,
     isRealOperatorBlocker,
+    isOperatorFailed,
     blockedReasonLabel,
     renderCurrentBuildCard,
     renderProgressBarBlock,

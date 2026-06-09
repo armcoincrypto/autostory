@@ -44,6 +44,7 @@ def test_operator_home_dashboard_sections() -> None:
     assert "Ready For Test" in text or "Ready For Manual Test" in text
     assert "Recent Builds" in text
     assert "Blocked" in text
+    assert "Failed" in text
     assert "Create Your First Build" in text
     assert "Start Building" in text
     assert "Workspace Safety" not in text

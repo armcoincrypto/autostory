@@ -405,6 +405,13 @@
     </section>`;
   }
 
+  function renderFailedMiniCard(run, om) {
+    const esc = om.esc;
+    const card = om.renderOperatorBuildMiniCard(run);
+    const reason = om.blockedReasonLabel(run);
+    return card.replace('</a>', `<div class="small mt-1" style="color:#fbbf24">${esc(reason)}</div></a>`);
+  }
+
   function renderBlockedMiniCard(run, om) {
     const esc = om.esc;
     const card = om.renderOperatorBuildMiniCard(run);
@@ -470,9 +477,9 @@
       const label = n.notification_type === 'build_ready_for_test'
         ? 'Ready for test'
         : n.notification_type === 'build_blocked'
-          ? 'Blocked'
+          ? 'Blocked — action needed'
           : n.notification_type === 'build_failed'
-            ? 'Failed'
+            ? 'Failed — review build'
             : 'Release ready';
       const href = n.action_url || '#';
       return `<div class="ai-code-glass p-2 mb-2 border-start border-3 border-${tone}">
@@ -523,6 +530,9 @@
     const blocked = rows.filter(
       (r) => om.isRealOperatorBlocker(r) && String(r.id) !== currentId
     );
+    const failed = rows.filter(
+      (r) => om.isOperatorFailed && om.isOperatorFailed(r) && String(r.id) !== currentId
+    );
     const recent = rows.slice(0, 5);
 
     const readyForRelease = rows.filter(
@@ -565,6 +575,13 @@
       'bi-exclamation-octagon',
       miniGrid(blocked, (r) => renderBlockedMiniCard(r, om)),
       'Nothing blocked right now.',
+      esc
+    );
+    html += renderHomeSection(
+      'Failed',
+      'bi-x-octagon',
+      miniGrid(failed, (r) => renderFailedMiniCard(r, om)),
+      'No failed builds.',
       esc
     );
     html += renderHomeSection(
