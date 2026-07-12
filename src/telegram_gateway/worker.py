@@ -105,9 +105,67 @@ async def _run_send(
     payload: dict,
     attempts_before: int,
 ) -> None:
+    from src.core.p5d_failpoints import P5DFailpointStop, p5d_hit_failpoint
+    from src.core.p5d_gateway_reconciliation import (
+        AMBIGUOUS_RECONCILIATION_REQUIRED,
+        SENT_CONFIRMED,
+        classify_certification_payload,
+        pre_send_certification_guard,
+    )
+
+    pld = payload if isinstance(payload, dict) else {}
     try:
-        text = str((payload or {}).get("text") or "")
+        if classify_certification_payload(pld):
+            with get_db_context() as db:
+                guard = await pre_send_certification_guard(
+                    gateway_job_id=int(job_id),
+                    account_id=int(account_id),
+                    target=target,
+                    payload=pld,
+                    db=db,
+                )
+            if guard.outcome == SENT_CONFIRMED and guard.tg_message_id is not None:
+                with get_db_context() as db:
+                    mark_job_done(
+                        db,
+                        job_id,
+                        {
+                            "ok": True,
+                            "telegram_message_id": int(guard.tg_message_id),
+                            "reconciled": True,
+                            "reason_code": guard.reason_code,
+                        },
+                    )
+                logger.info(
+                    "telegram_gateway_job_done_reconciled",
+                    job_id=job_id,
+                    account_id=account_id,
+                    tg_message_id=int(guard.tg_message_id),
+                    reason_code=guard.reason_code,
+                )
+                return
+            if guard.outcome == AMBIGUOUS_RECONCILIATION_REQUIRED:
+                with get_db_context() as db:
+                    mark_job_failed(
+                        db,
+                        job_id,
+                        error_code="ambiguous_reconciliation_required",
+                        error_message=guard.reason_code[:2000],
+                        retry_at=None,
+                        increment_attempts=False,
+                    )
+                logger.warning(
+                    "telegram_gateway_ambiguous_reconciliation_required",
+                    job_id=job_id,
+                    account_id=account_id,
+                    reason_code=guard.reason_code,
+                )
+                return
+
+        p5d_hit_failpoint("p5d_after_gateway_claim")
+        text = str((pld or {}).get("text") or "")
         res = await _transport.send_message_async(account_id, target, text)
+        p5d_hit_failpoint("p5d_after_telegram_send_before_persist")
         with get_db_context() as db:
             if res.get("ok"):
                 mark_job_done(
@@ -230,6 +288,8 @@ async def _run_fetch(
 
 
 async def _process_job_snapshot(snap: tuple) -> None:
+    from src.core.p5d_failpoints import P5DFailpointStop
+
     jid, aid, ttype, target, payload, att_before = snap
     ttype = (ttype or "").strip().lower()
     target = (target or "").strip()
@@ -254,6 +314,38 @@ async def _process_job_snapshot(snap: tuple) -> None:
             return
     except Exception as e:
         logger.warning("telegram_gateway_ai_allowlist_check_failed", error=str(e))
+
+    if ttype == "send_message":
+        from src.core.execution_guard import ACTION_TELEGRAM_SEND, can_execute_action
+
+        pld = payload if isinstance(payload, dict) else {}
+        gw_target_id = pld.get("target_id")
+        gw_job_marker = pld.get("job_marker")
+        gw_scheduled_job_id = pld.get("scheduled_job_id")
+        decision = can_execute_action(
+            ACTION_TELEGRAM_SEND,
+            account_id=int(aid),
+            target_id=int(gw_target_id) if gw_target_id is not None else None,
+            job_marker=str(gw_job_marker) if gw_job_marker else None,
+            job_id=int(gw_scheduled_job_id) if gw_scheduled_job_id is not None else None,
+        )
+        if not decision.allowed:
+            with get_db_context() as db:
+                mark_job_failed(
+                    db,
+                    int(jid),
+                    error_code=decision.reason_code,
+                    error_message=decision.message[:2000],
+                    retry_at=None,
+                    increment_attempts=False,
+                )
+            logger.warning(
+                "telegram_gateway_job_rejected_execution_guard",
+                job_id=int(jid),
+                account_id=int(aid),
+                reason=decision.reason_code,
+            )
+            return
     try:
         if ttype == "send_message":
             await _run_send(jid, aid, target, payload, att_before)
@@ -274,6 +366,14 @@ async def _process_job_snapshot(snap: tuple) -> None:
                 job_id=jid,
                 task_type=ttype,
             )
+    except P5DFailpointStop as e:
+        logger.warning(
+            "p5d_failpoint_stop",
+            failpoint=e.name,
+            job_id=int(jid),
+            account_id=int(aid),
+        )
+        return
     except Exception as e:
         logger.exception(
             "telegram_gateway_job_exception",

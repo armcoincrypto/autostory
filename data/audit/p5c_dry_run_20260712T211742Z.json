@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "stage": "dry_run",
+  "job_id": 362,
+  "dry_run": {
+    "ok": true,
+    "denied_account_139": {
+      "allowed": false,
+      "action": "telegram_send",
+      "result": "DENY",
+      "reason_code": "scheduler_mutations_disabled",
+      "message": "Scheduler mutations disabled; telegram send blocked.",
+      "blockers": [
+        "scheduler_mutations_disabled"
+      ],
+      "audit": {
+        "dry_run": false,
+        "scope": null,
+        "account_id": 139,
+        "target_id": 14,
+        "job_marker": "__p5c_certification__"
+      }
+    },
+    "dry_run_decision": {
+      "allowed": true,
+      "action": "telegram_send",
+      "result": "ALLOW",
+      "reason_code": "dry_run",
+      "message": "Dry-run only; no live side effects.",
+      "blockers": [],
+      "audit": {
+        "dry_run": true,
+        "scope": null,
+        "account_id": 107,
+        "target_id": 14,
+        "job_marker": "__p5c_certification__",
+        "telethon_call": false
+      }
+    },
+    "live_guard_blocked": {
+      "allowed": false,
+      "action": "telegram_send",
+      "result": "DENY",
+      "reason_code": "p5c_scope_inactive",
+      "message": "P5C scope inactive (P5C_SINGLE_SEND_ENABLED=false).",
+      "blockers": [
+        "p5c_scope_inactive"
+      ],
+      "audit": {
+        "dry_run": false,
+        "scope": null,
+        "account_id": 107,
+        "target_id": 14,
+        "job_marker": "__p5c_certification__"
+      }
+    },
+    "armed_scope_probe": {
+      "allowed": true,
+      "action": "telegram_send",
+      "result": "ALLOW",
+      "reason_code": "p5c_scoped_second_target_authorized",
+      "message": "P5C scoped second-target send permitted.",
+      "blockers": [],
+      "audit": {
+        "dry_run": false,
+        "scope": null,
+        "account_id": 107,
+        "target_id": 14,
+        "job_marker": "__p5c_certification__",
+        "authorization_id": "277a4eed-56c6-48cc-9bb4-b44bbf3dcb68",
+        "binding_id": 45,
+        "p5c_remaining_before": 1,
+        "p5c_authorized": true
+      }
+    },
+    "delivery_count": 0,
+    "gateway_pending_running": 0,
+    "p5c_remaining": 1
+  },
+  "report_path": "/opt/autostory/data/audit/p5c_dry_run_20260712T211742Z.json"
+}

@@ -1,0 +1,20 @@
+{
+  "phase": "P5C",
+  "scope": "scoped_second_target_single_send",
+  "live_sends": 1,
+  "events": [
+    {
+      "ts": "2026-07-12T21:18:07.747388+00:00",
+      "job_id": 362,
+      "account_id": 107,
+      "target_id": 14,
+      "binding_id": 45,
+      "authorization_id": "277a4eed-56c6-48cc-9bb4-b44bbf3dcb68",
+      "gateway_job_id": 6064,
+      "delivery_id": 145,
+      "tg_message_id": 13
+    }
+  ],
+  "authorization_id": "277a4eed-56c6-48cc-9bb4-b44bbf3dcb68",
+  "updated_at": "2026-07-12T21:18:07.747414+00:00"
+}

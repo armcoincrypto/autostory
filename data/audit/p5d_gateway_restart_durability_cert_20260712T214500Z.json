@@ -1,0 +1,37 @@
+{
+  "phase": "P5D",
+  "verdict": "P5D_GATEWAY_RESTART_DURABILITY_AND_RECONCILIATION_CERTIFICATION_PASS",
+  "certified_at_utc": "2026-07-12T21:44:53Z",
+  "overall_production_status": "AUTOSTORY_PRODUCTION_CERTIFIED_NO_GO",
+  "scenarios": {
+    "A": {
+      "job_id": 364,
+      "gateway_job_id": 6067,
+      "delivery_id": 148,
+      "tg_message_id": 14,
+      "reconciled": false,
+      "stale_recovered": 0
+    },
+    "B": {
+      "job_id": 365,
+      "gateway_job_id": 6068,
+      "delivery_id": 149,
+      "tg_message_id": 15,
+      "reconciled": false,
+      "stale_recovered": 1
+    },
+    "C": {
+      "job_id": 366,
+      "gateway_job_id": 6069,
+      "delivery_id": 150,
+      "tg_message_id": 16,
+      "reconciled": true,
+      "reconciliation_reason": "telegram_lookup_confirmed_sent",
+      "stale_recovered": 1
+    }
+  },
+  "p5d_counter": "3/3",
+  "protected_p4c_p5a_p5c_unchanged": true,
+  "readiness_refresh": "canonical readiness_worker _deep_check_one account 107 READY",
+  "cert_report": "data/audit/p5d_cert_pass_20260712T214453Z.json"
+}

@@ -44,6 +44,16 @@ class JobStatus(str, Enum):
 # the dashboard Send Test API. ``execute_job`` clears it and treats the job like
 # ``is_send_test=True`` (pacing, active-account hint) when run by the scheduler worker.
 SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER = "__operator_send_test__"
+# P9.68 — run-now under campaign_pilot_5 scope; executor uses deterministic template only.
+SCHEDULED_JOB_CAMPAIGN_PILOT_MARKER = "__campaign_pilot_5__"
+# P4C — scoped controlled send certification (single live send, explicit operator phase).
+SCHEDULED_JOB_P4C_CERTIFICATION_MARKER = "__p4c_certification__"
+# P5A — scoped single-account repeatability pilot (independent authorization from P4C).
+SCHEDULED_JOB_P5A_CERTIFICATION_MARKER = "__p5a_certification__"
+# P5C — scoped second-target single-send pilot (gateway lifecycle certification).
+SCHEDULED_JOB_P5C_CERTIFICATION_MARKER = "__p5c_certification__"
+# P5D — gateway restart durability certification.
+SCHEDULED_JOB_P5D_CERTIFICATION_MARKER = "__p5d_certification__"
 
 
 class DeliveryStatus(str, Enum):

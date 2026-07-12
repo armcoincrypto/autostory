@@ -1,0 +1,132 @@
+{
+  "ok": true,
+  "scenario": "A",
+  "job_id": 364,
+  "gateway_job_id": 6067,
+  "delivery_id": 148,
+  "backup": {
+    "backup_path": "/opt/autostory/data/backups/p5d_gateway_restart_durability/storyfleet_p5d_scenario_A_20260712T214406Z.db",
+    "backup_sha256": "9da86ff57f0446a19d73a4700290fc2cb2e258b783eea367dbb5a5bf0288c9cf",
+    "quick_check": "ok",
+    "integrity_check": "ok"
+  },
+  "scheduler_stop": {
+    "action": "stop",
+    "unit": "autostory-scheduler.service",
+    "ok": true,
+    "active": "inactive"
+  },
+  "interruption": {
+    "scenario": "A",
+    "mode": "restart_before_claim_simulated_via_pending_enqueue",
+    "gateway_start": {
+      "action": "restart",
+      "unit": "telegram-gateway.service",
+      "ok": true,
+      "active": "active"
+    }
+  },
+  "gateway_result": {
+    "ok": true,
+    "telegram_message_id": 14
+  },
+  "reconcile": {
+    "send_ok": true,
+    "tg_message_id": 14,
+    "reconciled": false
+  },
+  "deliveries": [
+    {
+      "id": 148,
+      "status": "SENT",
+      "tg_message_id": 14
+    }
+  ],
+  "gateway_final_status": "done",
+  "gateway_result_json": {
+    "ok": true,
+    "telegram_message_id": 14
+  },
+  "protected_evidence_after": {
+    "ok": true,
+    "p4c": {
+      "ok": true,
+      "label": "p4c",
+      "job": {
+        "id": 329,
+        "status": "SENT"
+      },
+      "delivery": {
+        "id": 143,
+        "status": "SENT",
+        "tg_message_id": 15973
+      }
+    },
+    "p5a": {
+      "ok": true,
+      "label": "p5a",
+      "job": {
+        "id": 361,
+        "status": "SENT"
+      },
+      "delivery": {
+        "id": 144,
+        "status": "SENT",
+        "tg_message_id": 15974
+      }
+    },
+    "p5c": {
+      "ok": true,
+      "label": "p5c",
+      "job": {
+        "id": 362,
+        "status": "SENT"
+      },
+      "delivery": {
+        "id": 145,
+        "status": "SENT",
+        "tg_message_id": 13
+      }
+    },
+    "p5c_gateway": {
+      "id": 6064,
+      "status": "done",
+      "result_json": "{\"ok\": true, \"telegram_message_id\": 13}"
+    },
+    "p4c_counter": 1,
+    "p5a_counter": 1,
+    "p5c_counter": 1
+  },
+  "queue_before": {
+    "scheduled_jobs": {
+      "FAILED": 67,
+      "SENT": 70,
+      "SKIPPED": 226
+    },
+    "pending": 0,
+    "running": 0,
+    "max_job_id": 363,
+    "max_delivery_id": 147,
+    "max_gateway_job_id": 6066
+  },
+  "queue_after": {
+    "scheduled_jobs": {
+      "FAILED": 67,
+      "SENT": 71,
+      "SKIPPED": 226
+    },
+    "pending": 0,
+    "running": 0,
+    "max_job_id": 364,
+    "max_delivery_id": 148,
+    "max_gateway_job_id": 6067
+  },
+  "p5d_counter": {
+    "phase": "P5D",
+    "scope": "gateway_restart_durability",
+    "used": 1,
+    "limit": 3,
+    "remaining": 2
+  },
+  "report_path": "/opt/autostory/data/audit/p5d_scenario_a_20260712T214413Z.json"
+}

@@ -144,6 +144,154 @@ class Settings(BaseSettings):
     app_name: str = Field(default="STORYFLEET")
     environment: str = Field(default="development")
     log_level: str = Field(default="INFO")
+    fleet_operational_state_api_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable GET /api/accounts/operational-state (read-only fleet truth). "
+            "Env: FLEET_OPERATIONAL_STATE_API_ENABLED."
+        ),
+    )
+    readiness_v2_api_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable GET /api/readiness/v2/snapshots (read-only v2 observer). "
+            "Env: READINESS_V2_API_ENABLED. v1 remains authoritative."
+        ),
+    )
+    accounts_v2_dashboard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable GET /accounts-v2 dashboard shell (read-only preview). "
+            "Env: ACCOUNTS_V2_DASHBOARD_ENABLED. v1 dashboard unchanged."
+        ),
+    )
+    scheduler_mutations_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), /api/v1 scheduler POST/PUT/DELETE mutation routes "
+            "return HTTP 423 before DB writes, queue enqueue, or Telegram. "
+            "Env: SCHEDULER_MUTATIONS_ENABLED."
+        ),
+    )
+    scheduler_mutation_account_allowlist: str = Field(
+        default="",
+        description=(
+            "Comma-separated account IDs allowed for scoped mutation bypass when "
+            "SCHEDULER_MUTATION_SCOPE=send_test_only and global mutations stay false. "
+            "Env: SCHEDULER_MUTATION_ACCOUNT_ALLOWLIST."
+        ),
+    )
+    scheduler_mutation_scope: str = Field(
+        default="",
+        description=(
+            "Scoped mutation mode: 'send_test_only' or 'campaign_pilot_5' permits "
+            "POST /api/v1/jobs/run-now for allowlisted accounts (and targets for pilot). "
+            "Env: SCHEDULER_MUTATION_SCOPE."
+        ),
+    )
+    scheduler_mutation_target_allowlist: str = Field(
+        default="",
+        description=(
+            "Comma-separated target IDs for campaign_pilot_5 scope (run-now target_id must match). "
+            "Env: SCHEDULER_MUTATION_TARGET_ALLOWLIST."
+        ),
+    )
+    scheduler_mutation_pair_allowlist: str = Field(
+        default="",
+        description=(
+            "Comma-separated account:target pairs for campaign_pilot_5 "
+            "(e.g. 111:17,109:16). When set, run-now must match an exact pair. "
+            "Env: SCHEDULER_MUTATION_PAIR_ALLOWLIST."
+        ),
+    )
+    campaign_execution_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), governed campaign sends (campaign_pilot_5 marker) "
+            "are blocked even if scoped allowlists are active. Requires armed "
+            "CampaignGovernance record when true. Env: CAMPAIGN_EXECUTION_ENABLED."
+        ),
+    )
+    story_execution_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), live story publish and rotation worker ticks are blocked. "
+            "Env: STORY_EXECUTION_ENABLED."
+        ),
+    )
+    discovery_execution_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), live discovery scan/join Telethon actions are blocked. "
+            "Dry-run discovery remains allowed. Env: DISCOVERY_EXECUTION_ENABLED."
+        ),
+    )
+    p4c_single_send_enabled: bool = Field(
+        default=False,
+        description=(
+            "P4C scoped controlled send: when true, allows exactly one live send via "
+            "send_test_only scope for allowlisted account (controlled runner only). "
+            "Env: P4C_SINGLE_SEND_ENABLED."
+        ),
+    )
+    p4c_single_send_max: int = Field(
+        default=1,
+        description="Max live P4C sends while P4C_SINGLE_SEND_ENABLED=true. Env: P4C_SINGLE_SEND_MAX.",
+    )
+    p5a_single_send_enabled: bool = Field(
+        default=False,
+        description=(
+            "P5A scoped repeatability pilot: when true, allows one live send via manifest. "
+            "Env: P5A_SINGLE_SEND_ENABLED."
+        ),
+    )
+    p5a_single_send_max: int = Field(
+        default=1,
+        description="Max live P5A sends while P5A_SINGLE_SEND_ENABLED=true. Env: P5A_SINGLE_SEND_MAX.",
+    )
+    p5c_single_send_enabled: bool = Field(
+        default=False,
+        description=(
+            "P5C scoped second-target pilot: when true, allows one live send via manifest "
+            "through gateway. Env: P5C_SINGLE_SEND_ENABLED."
+        ),
+    )
+    p5c_single_send_max: int = Field(
+        default=1,
+        description="Max live P5C sends while P5C_SINGLE_SEND_ENABLED=true. Env: P5C_SINGLE_SEND_MAX.",
+    )
+    p5d_single_send_enabled: bool = Field(
+        default=False,
+        description="P5D gateway restart durability certification. Env: P5D_SINGLE_SEND_ENABLED.",
+    )
+    production_certified_no_go: bool = Field(
+        default=True,
+        description=(
+            "When true (default), production remains NO_GO and normal PROMO generation is denied. "
+            "Env: AUTOSTORY_PRODUCTION_CERTIFIED_NO_GO."
+        ),
+    )
+    promo_generation_mode: str = Field(
+        default="disabled",
+        description=(
+            "Background PROMO/INFO generation mode: disabled | planning_only | executable. "
+            "Unknown or empty values deny generation. Env: PROMO_GENERATION_MODE."
+        ),
+    )
+    dashboard_inject_admin_token: bool = Field(
+        default=False,
+        description=(
+            "When false (default), admin token is not embedded in HTML page source. "
+            "Use session auth or X-Admin-Token header. Env: DASHBOARD_INJECT_ADMIN_TOKEN."
+        ),
+    )
+    dashboard_allow_query_admin_token: bool = Field(
+        default=False,
+        description=(
+            "When false (default), admin_token query parameter is rejected. "
+            "Prefer X-Admin-Token header. Env: DASHBOARD_ALLOW_QUERY_ADMIN_TOKEN."
+        ),
+    )
 
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -179,6 +327,176 @@ class Settings(BaseSettings):
     sched_default_rule_info_times_json: Optional[str] = Field(
         default=None,
         description="JSON array string for info rule times_json.",
+    )
+
+    # -------------------------------------------------------------------------
+    # AI Agent (optional; keys never exposed via API or logs)
+    # -------------------------------------------------------------------------
+    ai_agent_provider: str = Field(
+        default="fallback",
+        description="AI draft provider: 'fallback' (deterministic) or 'openai'.",
+    )
+    ai_agent_use_openai: bool = Field(
+        default=False,
+        description=(
+            "When true and OPENAI_API_KEY is set, call OpenAI for drafts even if "
+            "ai_agent_provider is 'fallback'. Env AI_AGENT_USE_OPENAI (1/true/yes)."
+        ),
+    )
+    ai_agent_model: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI chat model when using OpenAI (env AI_AGENT_MODEL).",
+    )
+    openai_model: str = Field(
+        default="",
+        description="Optional model override (env OPENAI_MODEL). When empty, ai_agent_model is used.",
+    )
+    ai_agent_openai_timeout_sec: int = Field(
+        default=15,
+        ge=1,
+        le=120,
+        description="HTTP timeout seconds for OpenAI chat completions (env AI_AGENT_OPENAI_TIMEOUT_SEC).",
+    )
+    openai_api_key: str = Field(
+        default="",
+        repr=False,
+        description="OpenAI API key from env OPENAI_API_KEY (never logged or returned).",
+    )
+    ai_agent_account_phones: str = Field(
+        default="",
+        description=(
+            "Comma-separated E.164 phones reserved for AI Agent (optional). "
+            "When set (with or without AI_AGENT_ACCOUNT_IDS), only these accounts "
+            "may use AI Agent Telegram I/O; scheduler treats them as reserved."
+        ),
+    )
+    ai_agent_account_ids: str = Field(
+        default="",
+        description=(
+            "Comma-separated numeric account ids reserved for AI Agent (optional). "
+            "Merged with phones from AI_AGENT_ACCOUNT_PHONES."
+        ),
+    )
+    ai_agent_default_target_premium_pct: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=100.0,
+        description=(
+            "OTC: counter-offer anchor when pushing back on seller premium (env "
+            "AI_AGENT_DEFAULT_TARGET_PREMIUM_PCT)."
+        ),
+    )
+    ai_agent_negotiate_rate_threshold_pct: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=100.0,
+        description=(
+            "OTC: ask for a better rate when seller premium %% is at or above this "
+            "(env AI_AGENT_NEGOTIATE_RATE_THRESHOLD_PCT)."
+        ),
+    )
+    # OTC profit policy (Phase 2) — stored in facts JSON only; no DB migration.
+    ai_agent_otc_base_market_rate_source: str = Field(
+        default="manual",
+        description="Reserved: base market context for OTC (env AI_AGENT_OTC_BASE_MARKET_RATE_SOURCE).",
+    )
+    ai_agent_otc_target_buy_premium_pct: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=100.0,
+        description="Preferred buy-side premium %% (lower is better) — env AI_AGENT_OTC_TARGET_BUY_PREMIUM_PCT.",
+    )
+    ai_agent_otc_max_buy_premium_pct: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=100.0,
+        description="Max acceptable buy premium before strong push / review — env AI_AGENT_OTC_MAX_BUY_PREMIUM_PCT.",
+    )
+    ai_agent_otc_target_sell_premium_pct: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=100.0,
+        description="Preferred sell-side premium %% (higher is better) — env AI_AGENT_OTC_TARGET_SELL_PREMIUM_PCT.",
+    )
+    ai_agent_otc_min_sell_premium_pct: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=100.0,
+        description="Minimum acceptable sell premium before reject/review — env AI_AGENT_OTC_MIN_SELL_PREMIUM_PCT.",
+    )
+    ai_agent_otc_large_deal_amount: float = Field(
+        default=2000.0,
+        ge=0.0,
+        description="Amount threshold (crypto units) for large tier — env AI_AGENT_OTC_LARGE_DEAL_AMOUNT.",
+    )
+    ai_agent_otc_small_deal_amount: float = Field(
+        default=500.0,
+        ge=0.0,
+        description="Amount threshold for small tier — env AI_AGENT_OTC_SMALL_DEAL_AMOUNT.",
+    )
+    ai_agent_telegram_operator_ids: str = Field(
+        default="",
+        description=(
+            "Comma-separated Telegram user IDs allowed to use /ai_* bot commands "
+            "(env AI_AGENT_TELEGRAM_OPERATOR_IDS). Empty means no operators (commands disabled)."
+        ),
+    )
+    ai_agent_default_account_id: int = Field(
+        default=110,
+        ge=1,
+        description="Default AI Agent Telegram account for /ai_new (env AI_AGENT_DEFAULT_ACCOUNT_ID).",
+    )
+    kathleen_telegram_operator_ids: str = Field(
+        default="",
+        description=(
+            "Comma-separated Telegram user IDs allowed to enable the Dexpert Controller listener "
+            "(env KATHLEEN_TELEGRAM_OPERATOR_IDS). Only Telegram id 667100147 (@Armcryptoseller) "
+            "is honored as the operator when non-empty. Empty disables the listener commands."
+        ),
+    )
+    dexpert_owner_telegram_username: str = Field(
+        default="",
+        description=(
+            "Telegram username (no @) for Dexpert ready_for_operator DMs when numeric id "
+            "does not resolve in Telethon (env DEXPERT_OWNER_TELEGRAM_USERNAME)."
+        ),
+    )
+    kathleen_telegram_operator_usernames: str = Field(
+        default="",
+        description=(
+            "Comma-separated usernames (optional @) used as fallback peer for owner notify "
+            "after DEXPERT_OWNER_TELEGRAM_USERNAME (env KATHLEEN_TELEGRAM_OPERATOR_USERNAMES). "
+            "Non-numeric tokens only; first match wins."
+        ),
+    )
+    kathleen_account_id: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Telegram ``accounts.id`` used exclusively by Kathleen Account Listener user session "
+            "(env KATHLEEN_ACCOUNT_ID). Use 0 when listener is off. Do not use AI pool 110/113/131 "
+            "unless KATHLEEN_ALLOW_RESERVED_AI_POOL_ACCOUNTS is enabled."
+        ),
+    )
+    kathleen_account_listener_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, systemd may run ``python -m src.bot.kathleen_account_listener`` "
+            "(env KATHLEEN_ACCOUNT_LISTENER_ENABLED)."
+        ),
+    )
+    kathleen_allow_reserved_ai_pool_accounts: bool = Field(
+        default=False,
+        description=(
+            "Allow Kathleen listener on reserved AI negotiation account ids 110/113/131 "
+            "(env KATHLEEN_ALLOW_RESERVED_AI_POOL_ACCOUNTS). Default false to avoid gateway lock fights."
+        ),
+    )
+    kathleen_session_lock_timeout_sec: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=600.0,
+        description="Session flock acquire timeout for Kathleen listener (env KATHLEEN_SESSION_LOCK_TIMEOUT_SEC).",
     )
 
     @staticmethod

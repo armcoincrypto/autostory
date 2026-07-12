@@ -1,0 +1,44 @@
+{
+  "phase": "P5D",
+  "scope": "gateway_restart_durability",
+  "live_sends": 3,
+  "events": [
+    {
+      "ts": "2026-07-12T21:44:13.523173+00:00",
+      "scenario": "A",
+      "job_id": 364,
+      "account_id": 107,
+      "target_id": 14,
+      "authorization_id": "12efc66e-696c-479b-b270-7932b85994d4",
+      "gateway_job_id": 6067,
+      "delivery_id": 148,
+      "tg_message_id": 14,
+      "reconciled": false
+    },
+    {
+      "ts": "2026-07-12T21:44:31.282974+00:00",
+      "scenario": "B",
+      "job_id": 365,
+      "account_id": 107,
+      "target_id": 14,
+      "authorization_id": "5a92c5b5-b164-4f0c-88e8-3b4a97863b77",
+      "gateway_job_id": 6068,
+      "delivery_id": 149,
+      "tg_message_id": 15,
+      "reconciled": false
+    },
+    {
+      "ts": "2026-07-12T21:44:53.049277+00:00",
+      "scenario": "C",
+      "job_id": 366,
+      "account_id": 107,
+      "target_id": 14,
+      "authorization_id": "dc9afe6c-fc50-4e87-a1f2-02ce7de780af",
+      "gateway_job_id": 6069,
+      "delivery_id": 150,
+      "tg_message_id": 16,
+      "reconciled": true
+    }
+  ],
+  "updated_at": "2026-07-12T21:44:53.049316+00:00"
+}
