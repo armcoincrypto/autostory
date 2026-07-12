@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "operator/_macros.html" import outcome_badge %}
+{% block title %}Scheduled Jobs — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">Scheduled Jobs</h1>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover">
+      <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>Type</th><th>Status</th><th>Run at</th><th>Gateway</th><th>Delivery</th><th>Actions</th></tr></thead>
+      <tbody>{% for j in jobs %}<tr>
+        <td>{{ j.id }}</td><td>{{ j.account_id }}</td><td>{{ j.target_id }}</td><td>{{ j.type }}</td><td>{{ j.status }}</td>
+        <td class="small">{{ j.run_at }}</td>
+        <td>{% if j.gateway_job %}{{ j.gateway_job.id }} {{ j.gateway_job.state }}{% else %}—{% endif %}</td>
+        <td>{% if j.delivery %}{{ outcome_badge(j.delivery.outcome_class) }}{% else %}—{% endif %}</td>
+        <td>{% if j.cancel_allowed %}
+          <form method="post" action="{{ url_for('operator_control.operator_cancel_job', job_id=j.id) }}" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger">Cancel pending job</button>
+          </form>
+        {% else %}<span class="text-muted small">—</span>{% endif %}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

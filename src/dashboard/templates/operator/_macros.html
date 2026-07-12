@@ -1,0 +1,37 @@
+{% macro badge_state(label, tone) %}
+<span class="badge badge-{{ tone }}">{{ label }}</span>
+{% endmacro %}
+
+{% macro readiness_badge(status) %}
+{% if status == 'READY' %}
+<span class="badge badge-active">READY</span>
+{% elif status == 'STALE_READY' %}
+<span class="badge badge-flood_wait">STALE READY</span>
+{% elif status == 'NOT_AUTHORIZED' %}
+<span class="badge badge-auth_required">NOT AUTHORIZED</span>
+{% elif status == 'PROBE_REQUIRED' %}
+<span class="badge badge-inactive">PROBE REQUIRED</span>
+{% elif status == 'FAILED_AUTH' %}
+<span class="badge badge-banned">FAILED AUTH</span>
+{% elif status == 'QUARANTINED' or status == 'DISABLED' %}
+<span class="badge badge-banned">{{ status }}</span>
+{% else %}
+<span class="badge badge-inactive">{{ status or 'UNKNOWN' }}</span>
+{% endif %}
+{% endmacro %}
+
+{% macro outcome_badge(cls) %}
+{% if cls == 'SENT_CONFIRMED' %}
+<span class="badge badge-active">SENT CONFIRMED</span>
+{% elif cls == 'NOT_SENT_CONFIRMED' %}
+<span class="badge badge-inactive">NOT SENT</span>
+{% elif cls == 'AMBIGUOUS_RECONCILIATION_REQUIRED' %}
+<span class="badge badge-flood_wait">RECONCILIATION REQUIRED</span>
+{% elif cls == 'RETRYABLE_PRE_SEND_FAILURE' %}
+<span class="badge badge-inactive">RETRYABLE PRE-SEND</span>
+{% elif cls == 'TERMINAL_POLICY_DENIAL' %}
+<span class="badge badge-banned">POLICY DENIAL</span>
+{% else %}
+<span class="badge badge-inactive">{{ cls }}</span>
+{% endif %}
+{% endmacro %}

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Gateway Jobs — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">Gateway Jobs</h1>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover">
+      <thead><tr><th>ID</th><th>Account</th><th>Sched job</th><th>State</th><th>Attempts</th><th>Error</th><th>Reconciled</th><th>Updated</th><th>Explanation</th></tr></thead>
+      <tbody>{% for g in jobs %}<tr>
+        <td>{{ g.id }}</td><td>{{ g.account_id }}</td><td>{{ g.scheduled_job_id or '—' }}</td><td>{{ g.state }}</td>
+        <td>{{ g.attempts }}</td><td class="small">{{ g.error_code or '—' }}</td><td>{{ g.reconciled }}</td>
+        <td class="small">{{ g.updated_at }}</td><td class="small">{{ g.state_explanation }}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

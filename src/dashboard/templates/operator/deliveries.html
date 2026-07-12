@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% from "operator/_macros.html" import outcome_badge %}
+{% block title %}Deliveries — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">Delivery History</h1>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover">
+      <thead><tr><th>ID</th><th>Job</th><th>Account</th><th>Target</th><th>Status</th><th>Outcome</th><th>tg_msg</th><th>Sent</th><th>Error</th></tr></thead>
+      <tbody>{% for d in deliveries %}<tr>
+        <td>{{ d.id }}</td><td>{{ d.job_id or '—' }}</td><td>{{ d.account_id }}</td><td>{{ d.target_id }}</td>
+        <td>{{ d.status }}</td><td>{{ outcome_badge(d.outcome_class) }}</td><td>{{ d.tg_message_id or '—' }}</td>
+        <td class="small">{{ d.sent_at or d.created_at }}</td><td class="small">{{ d.error_code or '—' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

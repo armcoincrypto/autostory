@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "operator/_macros.html" import readiness_badge %}
+{% block title %}Account {{ detail.account.id }} — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between mb-3">
+    <h1 class="h4 mb-0">Account {{ detail.account.id }} — {{ detail.account.label }}</h1>
+    <a href="{{ url_for('operator_control.operator_accounts') }}" class="btn btn-sm btn-outline-light">Back</a>
+  </div>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}{% for cat, msg in messages %}<div class="alert alert-{{ cat }} py-2">{{ msg }}</div>{% endfor %}{% endif %}
+  {% endwith %}
+  <div class="row g-3">
+    <div class="col-lg-4">
+      <div class="card"><div class="card-header">Identity &amp; safety</div><div class="card-body small">
+        <div>Enabled: <strong>{{ 'yes' if detail.account.enabled else 'no' }}</strong></div>
+        <div>Quarantined: <strong>{{ 'yes' if detail.account.quarantined else 'no' }}</strong> ({{ detail.account.tier }})</div>
+        <div class="mt-2">Readiness: {{ readiness_badge(detail.readiness.display_status) }}</div>
+        <div>Reason: {{ detail.readiness.reason or detail.readiness.failure_code or '—' }}</div>
+        <div>Checked: {{ detail.readiness.checked_at or '—' }}</div>
+        <div>Expires: {{ detail.readiness.expires_at or '—' }}</div>
+        <div>Freshness: {{ detail.readiness.freshness }}</div>
+        {% if detail.authorization_instruction %}
+        <div class="alert alert-warning mt-2 mb-0">{{ detail.authorization_instruction }}</div>
+        {% endif %}
+        <form class="mt-3" method="post" action="{{ url_for('operator_control.operator_refresh_readiness', account_id=detail.account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-warning">Refresh readiness (auth probe only)</button>
+        </form>
+      </div></div>
+    </div>
+    <div class="col-lg-8">
+      <div class="card mb-3"><div class="card-header">Target bindings</div><div class="card-body p-0 table-responsive">
+        <table class="table table-sm mb-0"><thead><tr><th>Binding</th><th>Target</th><th>can_post</th><th>Membership</th><th>Checked</th></tr></thead>
+        <tbody>{% for b in detail.bindings %}<tr><td>{{ b.binding_id }}</td><td>{{ b.target_id }} {{ b.target_title }}</td><td>{{ b.can_post }}</td><td>{{ b.membership_status or '—' }}</td><td class="small">{{ b.permission_checked_at or '—' }}</td></tr>{% else %}<tr><td colspan="5" class="text-muted p-3">No bindings</td></tr>{% endfor %}</tbody></table>
+      </div></div>
+      <div class="card mb-3"><div class="card-header">Recent scheduled jobs</div><div class="card-body p-0 table-responsive">
+        <table class="table table-sm mb-0"><thead><tr><th>ID</th><th>Status</th><th>Type</th><th>Target</th><th>Run at</th></tr></thead>
+        <tbody>{% for j in detail.recent_jobs %}<tr><td>{{ j.id }}</td><td>{{ j.status }}</td><td>{{ j.type }}</td><td>{{ j.target_id }}</td><td class="small">{{ j.run_at }}</td></tr>{% endfor %}</tbody></table>
+      </div></div>
+      <div class="card mb-3"><div class="card-header">Recent gateway jobs</div><div class="card-body p-0 table-responsive">
+        <table class="table table-sm mb-0"><thead><tr><th>ID</th><th>State</th><th>Task</th><th>Reconciled</th><th>Explanation</th></tr></thead>
+        <tbody>{% for g in detail.recent_gateway_jobs %}<tr><td>{{ g.id }}</td><td>{{ g.state }}</td><td>{{ g.task_type }}</td><td>{{ g.reconciled }}</td><td class="small">{{ g.state_explanation }}</td></tr>{% endfor %}</tbody></table>
+      </div></div>
+      <div class="card"><div class="card-header">Recent deliveries</div><div class="card-body p-0 table-responsive">
+        <table class="table table-sm mb-0"><thead><tr><th>ID</th><th>Status</th><th>Outcome</th><th>tg_msg</th><th>Sent</th></tr></thead>
+        <tbody>{% for d in detail.recent_deliveries %}<tr><td>{{ d.id }}</td><td>{{ d.status }}</td><td>{{ d.outcome_class }}</td><td>{{ d.tg_message_id or '—' }}</td><td class="small">{{ d.sent_at or d.created_at }}</td></tr>{% endfor %}</tbody></table>
+      </div></div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "operator/_macros.html" import readiness_badge %}
+{% block title %}Operator Accounts — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 mb-0">Account Inventory</h1>
+    <a href="{{ url_for('operator_control.operator_hub') }}" class="btn btn-sm btn-outline-light">Operator hub</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+      <thead>
+        <tr>
+          <th>ID</th><th>Identity</th><th>Enabled</th><th>Readiness</th><th>Freshness</th>
+          <th>Checked</th><th>Quarantine</th><th>Targets</th><th>Schedules</th><th>Jobs</th>
+          <th>Last delivery</th><th>Blocked</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in accounts %}
+        <tr>
+          <td>{{ a.id }}</td>
+          <td>{{ a.label }}</td>
+          <td>{{ 'yes' if a.enabled else 'no' }}</td>
+          <td>{{ readiness_badge(a.readiness_status) }}</td>
+          <td>{{ a.readiness_freshness }}</td>
+          <td class="small">{{ a.checked_at or '—' }}</td>
+          <td>{{ 'yes' if a.quarantined else 'no' }}</td>
+          <td>{{ a.bound_target_count }}</td>
+          <td>{{ a.active_schedule_count }}</td>
+          <td>{{ a.pending_running_job_count }}</td>
+          <td class="small">{{ a.last_delivery_status or '—' }}<br>{{ a.last_delivery_at or '' }}</td>
+          <td class="small text-warning">{{ a.blocked_reasons | join(', ') }}</td>
+          <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('operator_control.operator_account_detail', account_id=a.id) }}">Inspect</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

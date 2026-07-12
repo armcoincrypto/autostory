@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Operator Targets — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">Target Inventory</h1>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover">
+      <thead><tr><th>ID</th><th>Peer</th><th>Type</th><th>Title</th><th>Username</th><th>Risk</th><th>Enabled</th><th>Bindings</th><th>can_post</th><th></th></tr></thead>
+      <tbody>{% for t in targets %}<tr>
+        <td>{{ t.id }}</td><td>{{ t.peer_id or '—' }}</td><td>{{ t.type or '—' }}</td><td>{{ t.title or '—' }}</td>
+        <td>{{ t.username or '—' }}</td><td>{{ t.risk_tier or '—' }}</td><td>{{ t.enabled }}</td>
+        <td>{{ t.bound_account_count }}</td><td>{{ t.can_post_summary }}</td>
+        <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('operator_control.operator_target_detail', target_id=t.id) }}">Inspect</a></td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}System Safety — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">System Safety Status</h1>
+  <div class="card mb-3"><div class="card-header">Safety flags</div><div class="card-body p-0 table-responsive">
+    <table class="table table-sm mb-0">
+      <thead><tr><th>Setting</th><th>Current</th><th>Expected</th><th>Match</th></tr></thead>
+      <tbody>{% for f in snapshot.flags %}<tr class="{% if f.dangerous %}table-danger{% endif %}">
+        <td><strong>{{ f.setting }}</strong></td><td>{{ f.env_value }}</td><td>{{ f.expected }}</td>
+        <td>{% if f.match %}<span class="badge badge-active">match</span>{% else %}<span class="badge badge-banned">MISMATCH</span>{% endif %}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div></div>
+  <div class="row g-3">
+    <div class="col-md-4"><div class="card"><div class="card-header">Services</div><div class="card-body small">
+      {% for name, st in snapshot.services.items() %}<div>{{ name }}: <strong>{{ st }}</strong></div>{% endfor %}
+    </div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-header">Queues</div><div class="card-body small">
+      {% for k,v in snapshot.queue_counts.items() %}<div>{{ k }}: {{ v }}</div>{% endfor %}
+      <div>Pending gateway: {{ snapshot.pending_gateway_jobs }}</div>
+    </div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-header">Risk counts</div><div class="card-body small">
+      <div>Reconciliation required: {{ snapshot.reconciliation_required_count }}</div>
+      <div>Quarantined accounts: {{ snapshot.quarantined_account_count }}</div>
+      <div>Stale readiness: {{ snapshot.stale_readiness_count }}</div>
+    </div></div></div>
+  </div>
+</div>
+{% endblock %}

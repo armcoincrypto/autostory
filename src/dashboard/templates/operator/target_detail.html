@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Target {{ detail.target.id }} — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4">Target {{ detail.target.id }} — {{ detail.target.title }}</h1>
+  <div class="card mb-3"><div class="card-body small">
+    Peer: {{ detail.target.peer_id }} · Type: {{ detail.target.type }} · Risk: {{ detail.target.risk_tier or '—' }} · Enabled: {{ detail.target.enabled }}
+  </div></div>
+  <div class="card mb-3"><div class="card-header">Bindings</div><div class="card-body p-0 table-responsive">
+    <table class="table table-sm mb-0"><thead><tr><th>Binding</th><th>Account</th><th>can_post</th><th>Membership</th><th>Checked</th><th>Failure</th></tr></thead>
+    <tbody>{% for b in detail.bindings %}<tr><td>{{ b.binding_id }}</td><td>{{ b.account_id }}</td><td>{{ b.can_post }}</td><td>{{ b.membership_status or '—' }}</td><td>{{ b.permission_checked_at or '—' }}</td><td class="small">{{ b.last_failure_reason or '—' }}</td></tr>{% endfor %}</tbody></table>
+  </div></div>
+</div>
+{% endblock %}

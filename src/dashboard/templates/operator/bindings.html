@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Bindings — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">Account–Target Bindings</h1>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover">
+      <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>can_post</th><th>Membership</th><th>Permission checked</th><th>Schedules</th><th>Failure</th></tr></thead>
+      <tbody>{% for b in bindings %}<tr>
+        <td>{{ b.binding_id }}</td><td>{{ b.account_id }}</td><td>{{ b.target_id }}</td><td>{{ b.can_post }}</td>
+        <td>{{ b.membership_status or '—' }}</td><td class="small">{{ b.permission_checked_at or '—' }}</td>
+        <td>{{ b.linked_schedule_count }}</td><td class="small">{{ b.last_failure_reason or '—' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

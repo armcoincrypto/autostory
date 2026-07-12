@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Operator Control — STORYFLEET{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <h1 class="h4 mb-3">Operator Control</h1>
+  <p class="text-secondary">Read-only operational visibility. Execution remains locked under NO_GO.</p>
+  <div class="row g-3">
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_accounts') }}">Accounts</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_targets') }}">Targets</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_bindings') }}">Bindings</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_schedules') }}">Schedules &amp; Eligibility</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_jobs') }}">Scheduled Jobs</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_gateway') }}">Gateway Jobs</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_deliveries') }}">Deliveries</a></div>
+    <div class="col-md-4"><a class="card card-body text-decoration-none" href="{{ url_for('operator_control.operator_system_safety') }}">System Safety</a></div>
+  </div>
+</div>
+{% endblock %}
