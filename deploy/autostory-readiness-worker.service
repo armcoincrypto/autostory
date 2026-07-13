@@ -1,0 +1,27 @@
+[Unit]
+Description=STORYFLEET Telegram readiness worker (single process)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/autostory
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/opt/autostory/.env
+# This unit is the ONLY place we want the background readiness loop enabled.
+Environment=READINESS_WORKER_ENABLED=true
+# Large fleets: optional overrides (defaults in code are fleet-sized).
+# Environment=READINESS_READY_TTL_SEC=1800
+# Environment=READINESS_WORKER_SESSION_LOCK_TIMEOUT_SEC=12
+# Environment=READINESS_WORKER_PER_ACCOUNT_TIMEOUT_SEC=25
+ExecStart=/opt/autostory/venv/bin/python /opt/autostory/scripts/run_readiness_worker.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
