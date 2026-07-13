@@ -82,7 +82,11 @@ async def _lookup_message_by_body(account_id: int, target: str, body: str) -> Op
 
 
 def classify_certification_payload(payload: dict[str, Any]) -> bool:
-    return bool(payload.get("p5d_certification") or payload.get("p5c_certification"))
+    return bool(
+        payload.get("p5d_certification")
+        or payload.get("p5c_certification")
+        or payload.get("p6_4_certification")
+    )
 
 
 async def pre_send_certification_guard(
