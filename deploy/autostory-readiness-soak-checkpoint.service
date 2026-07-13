@@ -1,0 +1,10 @@
+[Unit]
+Description=STORYFLEET P6.2A readiness worker soak checkpoint (oneshot)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/autostory
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/opt/autostory/.env
+ExecStart=/opt/autostory/venv/bin/python /opt/autostory/scripts/ops/p6_2_readiness_worker_soak_checkpoint.py

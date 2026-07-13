@@ -12,6 +12,11 @@
       </tr>{% endfor %}</tbody>
     </table>
   </div></div>
+  {% if snapshot.warnings %}
+  <div class="card mb-3 border-warning"><div class="card-header">Operational warnings</div><div class="card-body small">
+    {% for w in snapshot.warnings %}<div class="text-warning"><strong>{{ w.code }}</strong>: {{ w.message }}</div>{% endfor %}
+  </div></div>
+  {% endif %}
   <div class="row g-3">
     <div class="col-md-4"><div class="card"><div class="card-header">Services</div><div class="card-body small">
       {% for name, st in snapshot.services.items() %}<div>{{ name }}: <strong>{{ st }}</strong></div>{% endfor %}
@@ -30,7 +35,10 @@
     </div></div></div>
     <div class="col-md-4"><div class="card"><div class="card-header">Readiness worker</div><div class="card-body small">
       <div>systemd: <strong>{{ snapshot.readiness_worker.systemd_active }}</strong></div>
-      <div>Last cycle: {{ snapshot.readiness_worker.last_cycle_at or '—' }}</div>
+      <div>Last cycle duration sec: {{ snapshot.readiness_worker.last_cycle_duration_sec }}</div>
+      <div>Selection sec: {{ snapshot.readiness_worker.selection_duration_sec }}</div>
+      <div>Probe sec: {{ snapshot.readiness_worker.probe_duration_sec }}</div>
+      <div>Status age sec: {{ snapshot.readiness_worker.status_age_sec }}</div>
       <div>Cycle ID: {{ snapshot.readiness_worker.last_cycle_id or '—' }}</div>
       <div>Last checked: {{ snapshot.readiness_worker.last_checked }}</div>
       <div>Last READY probes: {{ snapshot.readiness_worker.last_ready }}</div>

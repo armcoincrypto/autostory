@@ -397,12 +397,29 @@ async def readiness_worker_loop(
         skipped_in_flight = 0
         candidate_ids: list[int] = []
         skip_counts: dict[str, int] = {}
+        selection_duration_sec = 0.0
+        probe_duration_sec = 0.0
 
         try:
-            with get_db_context() as db:
-                accounts = db.query(Account).order_by(Account.id).all()
-                candidate_ids, skip_counts = select_probe_candidates(db, accounts, config=cfg, now=now)
+            selection_t0 = time.perf_counter()
 
+            def _select_candidates() -> tuple[list[int], dict[str, int]]:
+                with get_db_context() as db:
+                    accounts = db.query(Account).order_by(Account.id).all()
+                    return select_probe_candidates(db, accounts, config=cfg, now=now)
+
+            loop = asyncio.get_running_loop()
+            candidate_ids, skip_counts = await loop.run_in_executor(None, _select_candidates)
+            selection_duration_sec = round(time.perf_counter() - selection_t0, 3)
+            logger.info(
+                "candidates_selected",
+                cycle_id=cycle_id,
+                candidate_count=len(candidate_ids),
+                selection_duration_sec=selection_duration_sec,
+                skip_counts=skip_counts,
+            )
+
+            probe_t0 = time.perf_counter()
             tasks: list[asyncio.Task] = []
             for aid in candidate_ids:
                 if stop_event is not None and stop_event.is_set():
@@ -446,11 +463,23 @@ async def readiness_worker_loop(
                             error=repr(r),
                         )
 
+            probe_duration_sec = round(time.perf_counter() - probe_t0, 3)
+
         except Exception as e:
             last_error = str(e)
             logger.warning("readiness_worker_cycle_error", cycle_id=cycle_id, error=last_error)
 
         cycle_duration_sec = round(time.perf_counter() - cycle_t0, 3)
+        slow_cycle_warn_sec = float(os.environ.get("READINESS_WORKER_SLOW_CYCLE_WARN_SEC", "120"))
+        if cycle_duration_sec > slow_cycle_warn_sec:
+            logger.warning(
+                "slow_cycle_detected",
+                cycle_id=cycle_id,
+                cycle_duration_sec=cycle_duration_sec,
+                selection_duration_sec=selection_duration_sec,
+                probe_duration_sec=probe_duration_sec,
+                threshold_sec=slow_cycle_warn_sec,
+            )
         checked = len(candidate_ids)
         failed = temp_errors + session_errors + failed_other
 
@@ -458,6 +487,8 @@ async def readiness_worker_loop(
             "updated_at": now.isoformat(),
             "cycle_id": cycle_id,
             "cycle_duration_sec": cycle_duration_sec,
+            "selection_duration_sec": selection_duration_sec,
+            "probe_duration_sec": probe_duration_sec,
             "checked": checked,
             "ready": ready_n,
             "not_authorized": not_authorized_n,
@@ -489,6 +520,8 @@ async def readiness_worker_loop(
             failed_other=failed_other,
             failed=failed,
             cycle_duration_sec=cycle_duration_sec,
+            selection_duration_sec=selection_duration_sec,
+            probe_duration_sec=probe_duration_sec,
             next_cycle_sleep_sec=float(cfg.cycle_sleep_sec),
         )
 

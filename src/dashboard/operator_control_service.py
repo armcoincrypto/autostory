@@ -400,6 +400,19 @@ def _svc_active(name: str) -> str:
         return "unknown"
 
 
+def _svc_enabled(name: str) -> str:
+    try:
+        out = subprocess.run(
+            ["systemctl", "is-enabled", name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return (out.stdout or "").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def _readiness_freshness(db: Session, account_id: int) -> dict[str, Any]:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     snap = readiness_store.fetch_snapshot(db, int(account_id))
@@ -1074,6 +1087,35 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
         if (op.get("tier") or "").lower() in ("reserved", "controller"):
             quarantined += 1
     worker_runtime = read_runtime_status()
+    cycle_sleep = float(worker_runtime.get("next_cycle_sleep_sec") or 60)
+    status_age_sec: Optional[float] = None
+    updated = worker_runtime.get("updated_at")
+    if updated:
+        try:
+            u = datetime.fromisoformat(str(updated))
+            status_age_sec = (now - u).total_seconds()
+        except ValueError:
+            pass
+    cycle_duration = float(worker_runtime.get("cycle_duration_sec") or 0)
+    warnings: list[dict[str, Any]] = []
+    for svc in ("telegram-gateway", "kathleen-account-listener", "storyfleet-bot"):
+        active = _svc_active(svc)
+        enabled = _svc_enabled(svc)
+        if active == "active":
+            warnings.append({"code": f"{svc}_active", "message": f"{svc} is active during NO_GO soak"})
+        if enabled == "enabled":
+            warnings.append({"code": f"{svc}_enabled", "message": f"{svc} is enabled (may auto-start on boot)"})
+    if not (os.environ.get("P5D_SINGLE_SEND_ENABLED") or "").strip():
+        warnings.append({"code": "p5d_unset", "message": "P5D_SINGLE_SEND_ENABLED unset (code defaults false)"})
+    if status_age_sec is not None and status_age_sec > cycle_sleep * 2:
+        warnings.append({"code": "worker_status_stale", "message": f"readiness worker status file age {int(status_age_sec)}s"})
+    if cycle_duration > float(os.environ.get("READINESS_WORKER_SLOW_CYCLE_WARN_SEC", "120")):
+        warnings.append({
+            "code": "slow_cycle",
+            "message": f"last cycle duration {cycle_duration}s exceeds threshold",
+            "selection_duration_sec": worker_runtime.get("selection_duration_sec"),
+            "probe_duration_sec": worker_runtime.get("probe_duration_sec"),
+        })
     return {
         "flags": flags,
         "services": {
@@ -1081,7 +1123,16 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
             "autostory-scheduler": _svc_active("autostory-scheduler"),
             "telegram-gateway": _svc_active("telegram-gateway"),
             "autostory-readiness-worker": _svc_active("autostory-readiness-worker"),
+            "kathleen-account-listener": _svc_active("kathleen-account-listener"),
+            "storyfleet-bot": _svc_active("storyfleet-bot"),
         },
+        "service_enablement": {
+            "telegram-gateway": _svc_enabled("telegram-gateway"),
+            "kathleen-account-listener": _svc_enabled("kathleen-account-listener"),
+            "storyfleet-bot": _svc_enabled("storyfleet-bot"),
+            "autostory-readiness-worker": _svc_enabled("autostory-readiness-worker"),
+        },
+        "warnings": warnings,
         "queue_counts": queue,
         "reconciliation_required_count": int(recon_required),
         "quarantined_account_count": int(quarantined),
@@ -1094,6 +1145,9 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
             "last_cycle_id": worker_runtime.get("cycle_id"),
             "last_cycle_at": worker_runtime.get("updated_at"),
             "last_cycle_duration_sec": worker_runtime.get("cycle_duration_sec"),
+            "selection_duration_sec": worker_runtime.get("selection_duration_sec"),
+            "probe_duration_sec": worker_runtime.get("probe_duration_sec"),
+            "status_age_sec": status_age_sec,
             "last_checked": worker_runtime.get("checked"),
             "last_ready": worker_runtime.get("ready"),
             "last_not_authorized": worker_runtime.get("not_authorized"),
