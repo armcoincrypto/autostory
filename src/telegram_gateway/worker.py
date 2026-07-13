@@ -176,6 +176,13 @@ async def _run_send(
                         "telegram_message_id": res.get("telegram_message_id"),
                     },
                 )
+                try:
+                    if str(pld.get("job_marker") or "").strip() == "__p6_4_certification__":
+                        from src.core.p6_4_authorization import mark_consumed
+
+                        mark_consumed()
+                except Exception:
+                    pass
                 logger.info(
                     "telegram_gateway_job_done",
                     job_id=job_id,
@@ -317,18 +324,46 @@ async def _process_job_snapshot(snap: tuple) -> None:
 
     if ttype == "send_message":
         from src.core.execution_guard import ACTION_TELEGRAM_SEND, can_execute_action
+        from src.core.p6_4_authorization import message_sha256 as p6_4_message_sha256
 
         pld = payload if isinstance(payload, dict) else {}
         gw_target_id = pld.get("target_id")
         gw_job_marker = pld.get("job_marker")
         gw_scheduled_job_id = pld.get("scheduled_job_id")
-        decision = can_execute_action(
-            ACTION_TELEGRAM_SEND,
-            account_id=int(aid),
-            target_id=int(gw_target_id) if gw_target_id is not None else None,
-            job_marker=str(gw_job_marker) if gw_job_marker else None,
-            job_id=int(gw_scheduled_job_id) if gw_scheduled_job_id is not None else None,
+        gw_binding_id = pld.get("binding_id")
+        text = str(pld.get("text") or pld.get("message_body") or "")
+        content_sha = pld.get("expected_message_sha256") or (
+            p6_4_message_sha256(text) if text else None
         )
+        # Content immutability: if payload declares a hash, reject mismatch before send.
+        declared = str(pld.get("expected_message_sha256") or "").strip().lower()
+        if declared and text and p6_4_message_sha256(text) != declared:
+            with get_db_context() as db:
+                mark_job_failed(
+                    db,
+                    int(jid),
+                    error_code="content_hash_mismatch",
+                    error_message="Payload text does not match expected_message_sha256.",
+                    retry_at=None,
+                    increment_attempts=False,
+                )
+            logger.warning(
+                "telegram_gateway_job_rejected_content_hash",
+                job_id=int(jid),
+                account_id=int(aid),
+            )
+            return
+        with get_db_context() as db:
+            decision = can_execute_action(
+                ACTION_TELEGRAM_SEND,
+                account_id=int(aid),
+                target_id=int(gw_target_id) if gw_target_id is not None else None,
+                job_marker=str(gw_job_marker) if gw_job_marker else None,
+                job_id=int(gw_scheduled_job_id) if gw_scheduled_job_id is not None else None,
+                binding_id=int(gw_binding_id) if gw_binding_id is not None else None,
+                content_sha256=str(content_sha) if content_sha else None,
+                db=db,
+            )
         if not decision.allowed:
             with get_db_context() as db:
                 mark_job_failed(

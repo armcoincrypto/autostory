@@ -54,6 +54,7 @@ SCHEDULED_JOB_P5A_CERTIFICATION_MARKER = "__p5a_certification__"
 SCHEDULED_JOB_P5C_CERTIFICATION_MARKER = "__p5c_certification__"
 # P5D — gateway restart durability certification.
 SCHEDULED_JOB_P5D_CERTIFICATION_MARKER = "__p5d_certification__"
+SCHEDULED_JOB_P6_4_CERTIFICATION_MARKER = "__p6_4_certification__"
 
 
 class DeliveryStatus(str, Enum):

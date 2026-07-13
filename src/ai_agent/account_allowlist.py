@@ -165,9 +165,11 @@ def gateway_claim_allowed_account_ids(db: Session) -> Optional[frozenset[int]]:
         try:
             from src.core.p5c_authorization import p5c_gateway_claim_extra_account_ids
             from src.core.p5d_authorization import p5d_gateway_claim_extra_account_ids
+            from src.core.p6_4_authorization import p6_4_gateway_claim_extra_account_ids
 
             allowed |= set(p5c_gateway_claim_extra_account_ids())
             allowed |= set(p5d_gateway_claim_extra_account_ids())
+            allowed |= set(p6_4_gateway_claim_extra_account_ids())
         except Exception:
             pass
         return frozenset(allowed)

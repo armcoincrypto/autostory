@@ -224,6 +224,8 @@ def can_execute_action(
     db=None,
     job_marker: str | None = None,
     job_id: int | None = None,
+    binding_id: int | None = None,
+    content_sha256: str | None = None,
     skip_audit: bool = False,
 ) -> ExecutionGuardDecision:
     """
@@ -296,6 +298,7 @@ def can_execute_action(
             SCHEDULED_JOB_P5A_CERTIFICATION_MARKER,
             SCHEDULED_JOB_P5C_CERTIFICATION_MARKER,
             SCHEDULED_JOB_P5D_CERTIFICATION_MARKER,
+            SCHEDULED_JOB_P6_4_CERTIFICATION_MARKER,
         )
         from src.dashboard.scheduler_mutations import (
             is_scoped_campaign_pilot_run_now_allowed,
@@ -469,6 +472,69 @@ def can_execute_action(
                 return decision
             audit_base["p5d_authorized"] = True
 
+        if str(job_marker or "").strip() == SCHEDULED_JOB_P6_4_CERTIFICATION_MARKER:
+            from src.core.p6_4_authorization import (
+                p6_4_single_send_enabled,
+                validate_p6_4_authorization,
+            )
+
+            if not p6_4_single_send_enabled():
+                decision = _deny(
+                    action,
+                    "p6_4_scope_inactive",
+                    "P6.4 scope inactive (P6_4_SINGLE_SEND_ENABLED=false).",
+                    audit=audit_base,
+                )
+                if not skip_audit:
+                    _log_guard_decision(decision)
+                return decision
+            ok, reason, p64_audit = validate_p6_4_authorization(
+                account_id=account_id,
+                target_id=target_id,
+                binding_id=binding_id,
+                job_marker=job_marker,
+                job_id=job_id,
+                content_sha256=content_sha256,
+                require_armed=True,
+                allow_consumed=False,
+            )
+            audit_base.update(p64_audit)
+            if not ok:
+                decision = _deny(
+                    action,
+                    reason,
+                    f"P6.4 authorization blocked: {reason}",
+                    audit=audit_base,
+                )
+                if not skip_audit:
+                    _log_guard_decision(decision)
+                return decision
+            audit_base["p6_4_authorized"] = True
+            scoped_ok = True
+
+        # Send-time binding guard (persisted VERIFIED_CAN_POST + TTL).
+        # Gateway always supplies db. Unit tests that omit db still exercise auth flags.
+        if account_id is not None and target_id is not None and db is not None:
+            from src.clients.send_time_binding_guard import evaluate_send_time_binding_guard
+
+            ok_b, reason_b, b_audit = evaluate_send_time_binding_guard(
+                db,
+                account_id=int(account_id),
+                target_id=int(target_id),
+                binding_id=int(binding_id) if binding_id is not None else None,
+            )
+            audit_base.update(b_audit)
+            if not ok_b:
+                decision = _deny(
+                    action,
+                    reason_b,
+                    f"Send-time binding guard blocked: {reason_b}",
+                    audit=audit_base,
+                )
+                if not skip_audit:
+                    _log_guard_decision(decision)
+                return decision
+
         if not scheduler_mutations_enabled() and not scoped_ok:
             decision = _deny(
                 action,
@@ -518,6 +584,23 @@ def can_execute_action(
                 action,
                 "p5d_gateway_restart_authorized",
                 "P5D gateway restart durability send permitted.",
+                audit=audit_base,
+            )
+        elif audit_base.get("p6_4_authorized"):
+            decision = _allow(
+                action,
+                "p6_4_live_canary_authorized",
+                "P6.4 single-account single-target live canary permitted.",
+                audit=audit_base,
+            )
+        elif (
+            str(job_marker or "").strip() == SCHEDULED_JOB_P6_4_CERTIFICATION_MARKER
+            and not audit_base.get("p6_4_authorized")
+        ):
+            decision = _deny(
+                action,
+                "p6_4_scope_inactive",
+                "P6.4 canary send requires active scoped authorization.",
                 audit=audit_base,
             )
         elif (
