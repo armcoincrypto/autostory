@@ -5,10 +5,14 @@ Reuses canonical readiness, eligibility, and scheduler models. No execution side
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+import structlog
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -22,10 +26,18 @@ from src.core.scheduler_models import (
     AccountTargetBinding,
     AccountTargetMembershipProbe,
     ChatTarget,
+    JobStatus,
     MessageDelivery,
     ScheduleProfile,
     ScheduleRule,
     ScheduledJob,
+)
+from src.core.p5d_gateway_reconciliation import (
+    AMBIGUOUS_RECONCILIATION_REQUIRED,
+    NOT_SENT_CONFIRMED,
+    SENT_CONFIRMED,
+    TERMINAL_POLICY_DENIAL,
+    _lookup_message_by_body,
 )
 from src.scheduler.generation_eligibility import (
     evaluate_generation_eligibility,
@@ -33,6 +45,318 @@ from src.scheduler.generation_eligibility import (
     promo_generation_mode,
 )
 from src.telegram_gateway.models import TelegramGatewayJob
+
+logger = structlog.get_logger(__name__)
+
+PROTECTED_DELIVERY_IDS = frozenset({143, 144, 145, 148, 149, 150})
+PROTECTED_JOB_IDS = frozenset({329, 361, 362, 363, 364, 365, 366})
+
+
+def _git_short_head() -> str:
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                text=True,
+                timeout=3,
+            )
+            .strip()
+        )
+    except Exception:
+        return "unknown"
+
+
+def build_info_snapshot() -> dict[str, Any]:
+    """Safe build marker for production artifact verification."""
+    return {
+        "git_commit": _git_short_head(),
+        "production_no_go": production_certified_no_go_active(),
+        "readiness_worker_enabled": (
+            os.environ.get("READINESS_WORKER_ENABLED", "true").strip().lower()
+            in ("1", "true", "yes", "on")
+        ),
+        "readiness_worker_note": (
+            "Web gunicorn sets READINESS_WORKER_ENABLED=false; use dedicated "
+            "autostory-readiness-worker or inline refresh on account detail."
+        ),
+    }
+
+
+def same_day_duplicate_status(
+    db: Session,
+    *,
+    account_id: int,
+    target_id: int,
+    job_type: str,
+    timezone_name: Optional[str],
+) -> dict[str, Any]:
+    """Read-only same-day job presence (mirrors generator._job_exists semantics)."""
+    try:
+        tz = ZoneInfo((timezone_name or "UTC").strip())
+    except Exception:
+        tz = ZoneInfo("UTC")
+    local_day = datetime.now(tz).date()
+    start_local = datetime(local_day.year, local_day.month, local_day.day, 0, 0, 0, tzinfo=tz)
+    end_local = start_local + timedelta(days=1)
+    day_start_utc = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    day_end_utc = end_local.astimezone(timezone.utc).replace(tzinfo=None)
+    active_statuses = (
+        JobStatus.PENDING.value,
+        JobStatus.SKIPPED.value,
+        JobStatus.SENT.value,
+        JobStatus.RUNNING.value,
+    )
+    jobs = (
+        db.query(ScheduledJob)
+        .filter(
+            ScheduledJob.account_id == int(account_id),
+            ScheduledJob.target_id == int(target_id),
+            ScheduledJob.type == job_type,
+            ScheduledJob.run_at >= day_start_utc,
+            ScheduledJob.run_at < day_end_utc,
+            ScheduledJob.status.in_(active_statuses),
+        )
+        .order_by(ScheduledJob.id.asc())
+        .all()
+    )
+    return {
+        "local_date": str(local_day),
+        "exists": bool(jobs),
+        "would_block_generation": bool(jobs),
+        "jobs": [
+            {
+                "id": int(j.id),
+                "status": _status_str(j.status),
+                "run_at": _iso(j.run_at),
+            }
+            for j in jobs
+        ],
+    }
+
+
+def compute_next_occurrence(rule: ScheduleRule, profile: Optional[ScheduleProfile]) -> dict[str, Any]:
+    """Next fixed HH:MM occurrence in profile timezone; explicit unavailable for RANDOM rules."""
+    tz_name = (profile.timezone if profile else None) or "UTC"
+    try:
+        tz = ZoneInfo(tz_name.strip())
+    except Exception:
+        return {"available": False, "reason": f"invalid_timezone:{tz_name}"}
+    try:
+        times = json.loads(rule.times_json) if isinstance(rule.times_json, str) else rule.times_json
+    except (json.JSONDecodeError, TypeError):
+        times = []
+    if not times:
+        return {"available": False, "reason": "no_schedule_times"}
+    now_local = datetime.now(tz)
+    candidates: list[datetime] = []
+    for time_str in times:
+        if not isinstance(time_str, str):
+            continue
+        if time_str.strip().upper().startswith("RANDOM"):
+            return {
+                "available": False,
+                "reason": "random_window_requires_scheduler",
+                "detail": "RANDOM windows are resolved at generation time only.",
+            }
+        try:
+            h, m = map(int, time_str.split(":"))
+        except (ValueError, IndexError):
+            continue
+        for offset in (0, 1):
+            d = now_local.date() + timedelta(days=offset)
+            dt = datetime(d.year, d.month, d.day, h, m, tzinfo=tz)
+            if dt > now_local:
+                candidates.append(dt)
+    if not candidates:
+        return {"available": False, "reason": "no_future_fixed_times_today"}
+    nxt = min(candidates)
+    utc_naive = nxt.astimezone(timezone.utc).replace(tzinfo=None)
+    return {
+        "available": True,
+        "next_at_utc": _iso(utc_naive),
+        "next_at_local": nxt.isoformat(),
+        "timezone": tz_name,
+    }
+
+
+def _find_gateway_for_scheduled_job(db: Session, scheduled_job_id: int) -> Optional[TelegramGatewayJob]:
+    rows = (
+        db.query(TelegramGatewayJob)
+        .order_by(TelegramGatewayJob.id.desc())
+        .limit(200)
+        .all()
+    )
+    for row in rows:
+        payload = row.payload_json if isinstance(row.payload_json, dict) else {}
+        if payload.get("scheduled_job_id") == int(scheduled_job_id):
+            return row
+    return None
+
+
+async def run_delivery_reconciliation_check(db: Session, delivery_id: int) -> dict[str, Any]:
+    """
+    Non-sending reconciliation inspect using P5D Telegram lookup helpers.
+
+    Does not send messages, reset jobs, or consume counters.
+    """
+    delivery = db.get(MessageDelivery, int(delivery_id)) if hasattr(db, "get") else (
+        db.query(MessageDelivery).filter(MessageDelivery.id == int(delivery_id)).first()
+    )
+    if delivery is None:
+        return {"ok": False, "error": "delivery_not_found"}
+
+    audit: dict[str, Any] = {
+        "delivery_id": int(delivery.id),
+        "job_id": delivery.job_id,
+        "account_id": delivery.account_id,
+        "target_id": delivery.target_id,
+        "protected_record": int(delivery.id) in PROTECTED_DELIVERY_IDS,
+    }
+    st = _status_str(delivery.status).upper()
+    err = (delivery.error_code or "").upper()
+
+    if st == "SENT" and delivery.tg_message_id is not None:
+        return {
+            "ok": True,
+            "outcome": SENT_CONFIRMED,
+            "reason_code": "delivery_sent_with_message_id",
+            "tg_message_id": int(delivery.tg_message_id),
+            "audit": audit,
+            "mutated": False,
+        }
+
+    if err in ("POLICY", "DENIED", "NOT_ALLOWED") or "POLICY" in err:
+        return {
+            "ok": True,
+            "outcome": TERMINAL_POLICY_DENIAL,
+            "reason_code": delivery.error_code or "policy_denial",
+            "audit": audit,
+            "mutated": False,
+        }
+
+    gateway = None
+    if delivery.job_id:
+        gateway = _find_gateway_for_scheduled_job(db, int(delivery.job_id))
+    if gateway is not None:
+        audit["gateway_job_id"] = int(gateway.id)
+        audit["gateway_status"] = gateway.status
+        res = gateway.result_json if isinstance(gateway.result_json, dict) else {}
+        tid = res.get("telegram_message_id")
+        if str(gateway.status or "").lower() == "done" and tid is not None:
+            return {
+                "ok": True,
+                "outcome": SENT_CONFIRMED,
+                "reason_code": "gateway_done_with_message_id",
+                "tg_message_id": int(tid),
+                "audit": audit,
+                "mutated": False,
+            }
+
+    target = db.get(ChatTarget, int(delivery.target_id)) if hasattr(db, "get") else (
+        db.query(ChatTarget).filter(ChatTarget.id == int(delivery.target_id)).first()
+    )
+    target_ref = ""
+    if target is not None:
+        target_ref = (
+            (target.username or "").strip()
+            or (getattr(target, "invite_link", None) or "")
+            or (str(getattr(target, "tg_id", "") or ""))
+        )
+    body = (delivery.rendered_body or "").strip()
+    if body and target_ref:
+        looked_up = await _lookup_message_by_body(int(delivery.account_id), target_ref, body)
+        if looked_up is not None:
+            audit["telegram_lookup_tg_message_id"] = looked_up
+            return {
+                "ok": True,
+                "outcome": SENT_CONFIRMED,
+                "reason_code": "telegram_lookup_confirmed_sent",
+                "tg_message_id": int(looked_up),
+                "audit": audit,
+                "mutated": False,
+            }
+
+    if st in ("FAILED", "ERROR", "SENDING") and not delivery.tg_message_id:
+        return {
+            "ok": True,
+            "outcome": AMBIGUOUS_RECONCILIATION_REQUIRED,
+            "reason_code": "no_durable_send_proof",
+            "audit": audit,
+            "mutated": False,
+        }
+
+    return {
+        "ok": True,
+        "outcome": NOT_SENT_CONFIRMED,
+        "reason_code": "no_send_evidence",
+        "audit": audit,
+        "mutated": False,
+    }
+
+
+async def refresh_binding_permission(db: Session, binding_id: int, *, force_refresh: bool = True) -> dict[str, Any]:
+    """Canonical membership probe for one binding; updates probe cache only."""
+    binding = db.get(AccountTargetBinding, int(binding_id)) if hasattr(db, "get") else (
+        db.query(AccountTargetBinding).filter(AccountTargetBinding.id == int(binding_id)).first()
+    )
+    if binding is None:
+        return {"ok": False, "error": "binding_not_found"}
+
+    from src.clients.membership_check import check_targets_membership_sequential, upsert_membership_probe
+    from src.clients.manager import client_manager as _client_manager
+    from src.core.models import Account
+
+    account_id = int(binding.account_id)
+    target_id = int(binding.target_id)
+    before = queue_counts_snapshot(db)
+
+    acc = db.query(Account).filter(Account.id == account_id).first()
+    if acc is None:
+        return {"ok": False, "error": "account_not_found"}
+
+    pooled = False
+    try:
+        wrapper, gate_err = await _client_manager.add_account(acc)
+        if wrapper is not None:
+            pooled = True
+        elif gate_err:
+            return {"ok": False, "error": gate_err, "before": before, "after": before}
+
+        results = await check_targets_membership_sequential(account_id, [target_id])
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        for row in results:
+            upsert_membership_probe(db, account_id, row, checked_at=now)
+        db.commit()
+    finally:
+        if pooled:
+            try:
+                await _client_manager.remove_account(account_id)
+            except Exception as exc:
+                logger.warning("binding_refresh_remove_account_failed", account_id=account_id, error=str(exc))
+
+    after = queue_counts_snapshot(db)
+    probe = (
+        db.query(AccountTargetMembershipProbe)
+        .filter(
+            AccountTargetMembershipProbe.account_id == account_id,
+            AccountTargetMembershipProbe.target_id == target_id,
+        )
+        .order_by(AccountTargetMembershipProbe.checked_at.desc())
+        .first()
+    )
+    return {
+        "ok": True,
+        "binding_id": int(binding_id),
+        "account_id": account_id,
+        "target_id": target_id,
+        "membership_status": probe.status if probe else None,
+        "can_post": bool(probe.can_post) if probe and probe.can_post is not None else bool(binding.can_post),
+        "permission_checked_at": _iso(probe.checked_at) if probe else None,
+        "message": (probe.message or "")[:300] if probe else None,
+        "non_mutating_proof": {"before": before, "after": after, "execution_unchanged": before == after},
+    }
+
 
 _DANGEROUS_ENV_KEYS = (
     "AUTOSTORY_PRODUCTION_CERTIFIED_NO_GO",
@@ -393,18 +717,26 @@ def _delivery_outcome_class(delivery: MessageDelivery) -> str:
 
 
 def _serialize_delivery(d: MessageDelivery) -> dict[str, Any]:
+    outcome = _delivery_outcome_class(d)
     return {
         "id": d.id,
         "job_id": d.job_id,
         "account_id": d.account_id,
         "target_id": d.target_id,
         "status": _status_str(d.status),
-        "outcome_class": _delivery_outcome_class(d),
+        "outcome_class": outcome,
         "tg_message_id": d.tg_message_id,
         "error_code": d.error_code,
         "error_message": (d.error_message or "")[:300] if d.error_message else None,
         "sent_at": _iso(d.sent_at),
         "created_at": _iso(d.created_at),
+        "reconcile_allowed": outcome == AMBIGUOUS_RECONCILIATION_REQUIRED
+        or (
+            int(d.id) not in PROTECTED_DELIVERY_IDS
+            and _status_str(d.status).upper() in ("FAILED", "ERROR", "SENDING")
+            and not d.tg_message_id
+        ),
+        "protected_record": int(d.id) in PROTECTED_DELIVERY_IDS,
     }
 
 
@@ -590,6 +922,7 @@ def list_bindings(db: Session, *, limit: int = 200) -> list[dict[str, Any]]:
                 "permission_checked_at": _iso(probe.checked_at) if probe else None,
                 "last_failure_reason": probe.message if probe else None,
                 "linked_schedule_count": int(schedule_count),
+                "refresh_allowed": True,
             }
         )
     return out
@@ -632,6 +965,14 @@ def build_schedule_eligibility_rows(db: Session) -> list[dict[str, Any]]:
                 schedule_profile_id=int(profile.id) if profile else None,
             )
             readiness = _readiness_freshness(db, int(rule.account_id))
+            dup = same_day_duplicate_status(
+                db,
+                account_id=int(rule.account_id),
+                target_id=int(tid) if tid else 0,
+                job_type=rule.type or "PROMO",
+                timezone_name=profile.timezone if profile else None,
+            )
+            nxt = compute_next_occurrence(rule, profile)
             rows.append(
                 {
                     "profile_id": profile.id if profile else None,
@@ -647,6 +988,8 @@ def build_schedule_eligibility_rows(db: Session) -> list[dict[str, Any]]:
                     "human_reason": decision.human_reason,
                     "readiness_freshness": readiness["freshness"],
                     "no_go_active": production_certified_no_go_active(),
+                    "next_occurrence": nxt,
+                    "same_day_duplicate": dup,
                 }
             )
     return rows
@@ -727,6 +1070,7 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
             .scalar()
             or 0
         ),
+        "build_info": build_info_snapshot(),
     }
 
 

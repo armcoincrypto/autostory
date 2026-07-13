@@ -25,6 +25,12 @@
       <div>Quarantined accounts: {{ snapshot.quarantined_account_count }}</div>
       <div>Stale readiness: {{ snapshot.stale_readiness_count }}</div>
     </div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-header">Build</div><div class="card-body small">
+      <div>git_commit: <strong>{{ snapshot.build_info.git_commit }}</strong></div>
+      <div>NO_GO: {{ snapshot.build_info.production_no_go }}</div>
+      <div>Readiness worker in web: {{ snapshot.build_info.readiness_worker_enabled }}</div>
+      <div class="text-secondary">{{ snapshot.build_info.readiness_worker_note }}</div>
+    </div></div></div>
   </div>
 </div>
 {% endblock %}

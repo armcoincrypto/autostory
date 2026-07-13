@@ -3,13 +3,22 @@
 {% block content %}
 <div class="container-fluid py-3">
   <h1 class="h4 mb-3">Account–Target Bindings</h1>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}{% for cat, msg in messages %}<div class="alert alert-{{ cat }} py-2">{{ msg }}</div>{% endfor %}{% endif %}
+  {% endwith %}
   <div class="table-responsive">
     <table class="table table-sm table-hover">
-      <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>can_post</th><th>Membership</th><th>Permission checked</th><th>Schedules</th><th>Failure</th></tr></thead>
+      <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>can_post</th><th>Membership</th><th>Checked</th><th>Failure</th><th>Action</th></tr></thead>
       <tbody>{% for b in bindings %}<tr>
         <td>{{ b.binding_id }}</td><td>{{ b.account_id }}</td><td>{{ b.target_id }}</td><td>{{ b.can_post }}</td>
         <td>{{ b.membership_status or '—' }}</td><td class="small">{{ b.permission_checked_at or '—' }}</td>
-        <td>{{ b.linked_schedule_count }}</td><td class="small">{{ b.last_failure_reason or '—' }}</td>
+        <td class="small">{{ b.last_failure_reason or '—' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('operator_control.operator_refresh_binding_permission', binding_id=b.binding_id) }}" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-warning">Refresh permission verification</button>
+          </form>
+        </td>
       </tr>{% endfor %}</tbody>
     </table>
   </div>

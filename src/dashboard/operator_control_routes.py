@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from typing import Any
 
 from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, url_for
@@ -18,6 +19,7 @@ from src.dashboard.auth_access import dashboard_api_authorized
 from src.dashboard.operator_control_service import (
     build_account_detail,
     build_account_inventory_row,
+    build_info_snapshot,
     build_schedule_eligibility_rows,
     build_system_safety_snapshot,
     build_target_detail,
@@ -27,6 +29,8 @@ from src.dashboard.operator_control_service import (
     list_scheduled_jobs,
     list_targets,
     queue_counts_snapshot,
+    refresh_binding_permission,
+    run_delivery_reconciliation_check,
 )
 from src.scheduler.generation_eligibility import evaluate_generation_eligibility
 
@@ -115,6 +119,74 @@ def operator_bindings():
     with get_db_context() as db:
         bindings = list_bindings(db)
     return render_template("operator/bindings.html", bindings=bindings)
+
+
+@operator_control_bp.route("/operator/bindings/<int:binding_id>/refresh-permission", methods=["POST"])
+@login_required
+def operator_refresh_binding_permission(binding_id: int):
+    if not _csrf_ok():
+        flash("CSRF validation failed.", "danger")
+        return redirect(url_for("operator_control.operator_bindings"))
+    try:
+        with get_db_context() as db:
+            result = asyncio.run(refresh_binding_permission(db, int(binding_id)))
+    except Exception as exc:
+        flash(f"Permission refresh failed: {exc.__class__.__name__}", "warning")
+        return redirect(url_for("operator_control.operator_bindings"))
+    if not result.get("ok"):
+        flash(f"Permission refresh denied: {result.get('error', 'unknown')}", "warning")
+    else:
+        flash(
+            f"Binding {binding_id}: membership={result.get('membership_status')} "
+            f"can_post={result.get('can_post')}",
+            "success",
+        )
+    return redirect(url_for("operator_control.operator_bindings"))
+
+
+@operator_control_bp.route("/operator/deliveries/<int:delivery_id>/reconcile", methods=["POST"])
+@login_required
+def operator_reconcile_delivery(delivery_id: int):
+    if not _csrf_ok():
+        flash("CSRF validation failed.", "danger")
+        return redirect(url_for("operator_control.operator_deliveries"))
+    with get_db_context() as db:
+        before = queue_counts_snapshot(db)
+        try:
+            result = asyncio.run(run_delivery_reconciliation_check(db, int(delivery_id)))
+        except Exception as exc:
+            flash(f"Reconciliation check failed: {exc.__class__.__name__}", "warning")
+            return redirect(url_for("operator_control.operator_deliveries"))
+        after = queue_counts_snapshot(db)
+    if not result.get("ok"):
+        flash(f"Reconciliation failed: {result.get('error', 'unknown')}", "warning")
+    else:
+        flash(
+            f"Delivery {delivery_id}: {result.get('outcome')} ({result.get('reason_code')}) — no send performed",
+            "info",
+        )
+        if before != after:
+            flash("Unexpected queue change detected during reconciliation inspect.", "danger")
+    return redirect(url_for("operator_control.operator_deliveries"))
+
+
+@operator_control_bp.route("/api/operator/build-info", methods=["GET"])
+def api_operator_build_info():
+    denied = _require_api_access()
+    if denied is not None:
+        return denied
+    info = build_info_snapshot()
+    try:
+        info["process_started_at"] = (
+            subprocess.check_output(
+                ["systemctl", "show", "autostory-web", "-p", "ActiveEnterTimestamp", "--value"],
+                text=True,
+                timeout=3,
+            ).strip()
+        )
+    except Exception:
+        info["process_started_at"] = None
+    return jsonify(info)
 
 
 @operator_control_bp.route("/operator/schedules", methods=["GET"])

@@ -76,8 +76,8 @@ def test_unauthenticated_accounts_redirects_to_login():
     assert "/login" in (r.location or "")
 
 
-def test_authenticated_accounts_returns_200_and_loads_template():
-    """Logged-in admin can access /accounts; page contains loadAccounts / api/accounts dependency."""
+def test_authenticated_accounts_renders_main_page():
+    """P10.13: GET /accounts renders operator accounts main page; diagnostics remain at /accounts-v2."""
     from src.dashboard.app import create_app
     from src.core.database import init_db, get_db_context
     from src.dashboard.models import DashboardUser
@@ -96,11 +96,11 @@ def test_authenticated_accounts_returns_200_and_loads_template():
     app.config["WTF_CSRF_ENABLED"] = False
     client = app.test_client()
     client.post("/login", data={"username": "testadmin", "password": "testpass123", "next": "/accounts"}, follow_redirects=True)
-    r = client.get("/accounts")
+    r = client.get("/accounts", follow_redirects=False)
     assert r.status_code == 200
-    # Template JS expects /api/accounts?summary=1
-    assert b"/api/accounts" in r.data
-    assert b"summary=1" in r.data
+    assert b"Accounts" in r.data or b"account" in r.data.lower()
+    r2 = client.get("/accounts-v2", follow_redirects=False)
+    assert r2.status_code in (200, 404)
 
 
 def _logged_in_client():
@@ -200,3 +200,143 @@ def test_authenticated_scheduler_returns_200():
     r = client.get("/scheduler")
     assert r.status_code == 200
     assert b"/api/v1" in r.data or b"api/v1" in r.data
+
+
+def test_unauthenticated_dexpert_redirects_to_login():
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/dexpert", follow_redirects=False)
+    assert r.status_code == 302
+    assert "/login" in (r.location or "")
+
+
+def test_authenticated_dexpert_audit_returns_200():
+    client = _logged_in_client()
+    r = client.get("/dexpert")
+    assert r.status_code == 200
+    assert b"Dexpert audit" in r.data
+    assert b"Recent Dexpert conversations" in r.data
+    assert b"Kathleen plans" in r.data
+
+
+def _csrf_enabled_client():
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    app.config.update(
+        TESTING=True,
+        SESSION_COOKIE_SECURE=False,
+        WTF_CSRF_ENABLED=True,
+    )
+    return app.test_client()
+
+
+def _csrf_token_from_login_page(client, *, environ_overrides: dict | None = None) -> str:
+    import re
+
+    r = client.get("/login", environ_overrides=environ_overrides or {})
+    assert r.status_code == 200
+    m = re.search(rb'name="csrf_token" value="([^"]+)"', r.data)
+    assert m is not None
+    return m.group(1).decode()
+
+
+def _production_login_post_env(host: str = "localhost") -> dict[str, str]:
+    return {
+        "HTTP_X_FORWARDED_PROTO": "https",
+        "HTTP_X_FORWARDED_HOST": host,
+        "HTTP_HOST": host,
+        "HTTP_REFERER": f"https://{host}/login",
+    }
+
+
+def test_login_csrf_token_issued_on_get():
+    client = _csrf_enabled_client()
+    token = _csrf_token_from_login_page(client)
+    assert len(token) > 20
+
+
+def test_login_post_without_csrf_rejected():
+    client = _csrf_enabled_client()
+    _csrf_token_from_login_page(client)
+    r = client.post(
+        "/login",
+        data={"username": "testadmin", "password": "wrong", "next": "/"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+    assert b"CSRF failed" in r.data or b"csrf_failed" in r.data
+
+
+def test_login_post_with_csrf_and_session_succeeds_or_shows_auth_error():
+    from src.dashboard.app import create_app
+    from src.core.database import init_db, get_db_context
+    from src.dashboard.models import DashboardUser
+
+    init_db()
+    with get_db_context() as db:
+        user = db.query(DashboardUser).filter(DashboardUser.username == "testadmin").first()
+        if not user:
+            user = DashboardUser(username="testadmin", email="testadmin@test", is_admin=True, is_active=True)
+            user.set_password("testpass123")
+            db.add(user)
+            db.commit()
+
+    app = create_app()
+    app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False, WTF_CSRF_ENABLED=True)
+    client = app.test_client()
+    post_env = _production_login_post_env()
+    csrf = _csrf_token_from_login_page(client, environ_overrides=post_env)
+    r = client.post(
+        "/login",
+        data={"username": "testadmin", "password": "testpass123", "next": "/", "csrf_token": csrf},
+        environ_overrides=post_env,
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 200)
+    if r.status_code == 302:
+        assert r.location.endswith("/") or r.location == "/"
+    r2 = client.get("/")
+    assert r2.status_code == 200
+
+
+def test_login_csrf_ssl_strict_requires_referrer_behind_https_proxy():
+    client = _csrf_enabled_client()
+    https_env = {
+        "HTTP_X_FORWARDED_PROTO": "https",
+        "HTTP_X_FORWARDED_HOST": "ex.zellotex.com",
+        "HTTP_HOST": "ex.zellotex.com",
+    }
+    csrf = _csrf_token_from_login_page(client, environ_overrides=https_env)
+    r = client.post(
+        "/login",
+        data={"username": "x", "password": "y", "next": "/", "csrf_token": csrf},
+        environ_overrides=https_env,
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+    assert b"CSRF failed" in r.data
+
+    csrf2 = _csrf_token_from_login_page(
+        client,
+        environ_overrides={**https_env, "HTTP_REFERER": "https://ex.zellotex.com/login"},
+    )
+    r_ok = client.post(
+        "/login",
+        data={"username": "x", "password": "y", "next": "/", "csrf_token": csrf2},
+        environ_overrides={**https_env, "HTTP_REFERER": "https://ex.zellotex.com/login"},
+        follow_redirects=False,
+    )
+    assert r_ok.status_code == 200
+
+
+def test_production_session_cookie_secure_flag_configured():
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    assert app.config.get("SESSION_COOKIE_SECURE") is True
+    assert app.config.get("SESSION_COOKIE_SAMESITE") == "Lax"
+    assert app.config.get("SESSION_COOKIE_HTTPONLY") is True

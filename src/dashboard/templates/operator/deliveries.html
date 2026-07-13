@@ -4,13 +4,23 @@
 {% block content %}
 <div class="container-fluid py-3">
   <h1 class="h4 mb-3">Delivery History</h1>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}{% for cat, msg in messages %}<div class="alert alert-{{ cat }} py-2">{{ msg }}</div>{% endfor %}{% endif %}
+  {% endwith %}
   <div class="table-responsive">
     <table class="table table-sm table-hover">
-      <thead><tr><th>ID</th><th>Job</th><th>Account</th><th>Target</th><th>Status</th><th>Outcome</th><th>tg_msg</th><th>Sent</th><th>Error</th></tr></thead>
+      <thead><tr><th>ID</th><th>Job</th><th>Account</th><th>Target</th><th>Status</th><th>Outcome</th><th>tg_msg</th><th>Sent</th><th>Action</th></tr></thead>
       <tbody>{% for d in deliveries %}<tr>
-        <td>{{ d.id }}</td><td>{{ d.job_id or '—' }}</td><td>{{ d.account_id }}</td><td>{{ d.target_id }}</td>
+        <td>{{ d.id }}{% if d.protected_record %} <span class="badge badge-inactive">protected</span>{% endif %}</td>
+        <td>{{ d.job_id or '—' }}</td><td>{{ d.account_id }}</td><td>{{ d.target_id }}</td>
         <td>{{ d.status }}</td><td>{{ outcome_badge(d.outcome_class) }}</td><td>{{ d.tg_message_id or '—' }}</td>
-        <td class="small">{{ d.sent_at or d.created_at }}</td><td class="small">{{ d.error_code or '—' }}</td>
+        <td class="small">{{ d.sent_at or d.created_at }}</td>
+        <td>{% if d.reconcile_allowed %}
+          <form method="post" action="{{ url_for('operator_control.operator_reconcile_delivery', delivery_id=d.id) }}" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-warning">Run reconciliation check</button>
+          </form>
+        {% else %}<span class="text-muted small">—</span>{% endif %}</td>
       </tr>{% endfor %}</tbody>
     </table>
   </div>

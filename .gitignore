@@ -110,3 +110,4 @@ celerybeat.pid
 data/bot/storyfleet_bot.session
 
 data/*.backup*
+data/backups/

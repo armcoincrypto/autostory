@@ -6,13 +6,14 @@
   <p class="text-secondary small">Non-mutating preview via canonical <code>evaluate_generation_eligibility</code>.</p>
   <div class="table-responsive">
     <table class="table table-sm table-hover">
-      <thead><tr><th>Rule</th><th>Account</th><th>Target</th><th>TZ</th><th>Enabled</th><th>Mode</th><th>Eligible</th><th>Reason</th><th>Readiness</th><th>NO_GO</th></tr></thead>
+      <thead><tr><th>Rule</th><th>Account</th><th>Target</th><th>TZ</th><th>Next</th><th>Same-day dup</th><th>Enabled</th><th>Eligible</th><th>Reason</th><th>NO_GO</th></tr></thead>
       <tbody>{% for s in schedules %}<tr>
         <td>{{ s.rule_id }}</td><td>{{ s.account_id }}</td><td>{{ s.target_id or '—' }}</td><td>{{ s.timezone or '—' }}</td>
-        <td>{{ s.rule_enabled and s.profile_enabled }}</td><td>{{ s.generation_mode }}</td>
+        <td class="small">{% if s.next_occurrence.available %}{{ s.next_occurrence.next_at_local }}{% else %}{{ s.next_occurrence.reason }}{% endif %}</td>
+        <td class="small">{% if s.same_day_duplicate.exists %}{% for j in s.same_day_duplicate.jobs %}#{{ j.id }} {{ j.status }}{% if not loop.last %}; {% endif %}{% endfor %}{% else %}none{% endif %}</td>
+        <td>{{ s.rule_enabled and s.profile_enabled }}</td>
         <td>{% if s.eligible %}<span class="badge badge-active">yes</span>{% else %}<span class="badge badge-banned">no</span>{% endif %}</td>
-        <td class="small">{{ s.reason_code }} — {{ s.human_reason }}</td>
-        <td>{{ s.readiness_freshness }}</td><td>{{ s.no_go_active }}</td>
+        <td class="small">{{ s.reason_code }}</td><td>{{ s.no_go_active }}</td>
       </tr>{% endfor %}</tbody>
     </table>
   </div>
