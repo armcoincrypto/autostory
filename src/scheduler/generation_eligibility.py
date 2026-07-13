@@ -356,6 +356,17 @@ def evaluate_generation_eligibility(
             audit=audit_base,
         )
 
+    from src.clients.binding_verification import classify_binding_verification
+
+    binding_ver = classify_binding_verification(db, int(account_id), int(target_id))
+    audit_base = {**audit_base, "binding_verification": binding_ver.get("status")}
+    if not binding_ver.get("production_verified"):
+        return _deny(
+            binding_ver.get("reason_code") or "binding_not_verified",
+            binding_ver.get("human_reason") or "Binding is not Telegram-verified for production.",
+            audit=audit_base,
+        )
+
     allowed_types = (binding.allowed_types or "PROMO,INFO").replace(" ", "").split(",")
     jt = audit_base["job_type"]
     if jt and jt not in allowed_types:

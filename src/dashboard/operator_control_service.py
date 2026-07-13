@@ -316,7 +316,7 @@ async def refresh_binding_permission(db: Session, binding_id: int, *, force_refr
         return {"ok": False, "error": "binding_not_found"}
 
     from src.clients.membership_check import check_targets_membership_sequential, upsert_membership_probe
-    from src.clients.manager import client_manager as _client_manager
+    from src.clients.readiness_worker import _acquire_probe_slot, _release_probe_slot
     from src.core.models import Account
 
     account_id = int(binding.account_id)
@@ -327,25 +327,17 @@ async def refresh_binding_permission(db: Session, binding_id: int, *, force_refr
     if acc is None:
         return {"ok": False, "error": "account_not_found"}
 
-    pooled = False
-    try:
-        wrapper, gate_err = await _client_manager.add_account(acc)
-        if wrapper is not None:
-            pooled = True
-        elif gate_err:
-            return {"ok": False, "error": gate_err, "before": before, "after": before}
+    if not await _acquire_probe_slot(account_id, wait=True, wait_timeout_sec=30.0):
+        return {"ok": False, "error": "probe_in_flight", "before": before, "after": before}
 
+    try:
         results = await check_targets_membership_sequential(account_id, [target_id])
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         for row in results:
             upsert_membership_probe(db, account_id, row, checked_at=now)
         db.commit()
     finally:
-        if pooled:
-            try:
-                await _client_manager.remove_account(account_id)
-            except Exception as exc:
-                logger.warning("binding_refresh_remove_account_failed", account_id=account_id, error=str(exc))
+        await _release_probe_slot(account_id)
 
     after = queue_counts_snapshot(db)
     probe = (
@@ -920,8 +912,11 @@ def build_target_detail(db: Session, target_id: int) -> Optional[dict[str, Any]]
 
 
 def list_bindings(db: Session, *, limit: int = 200) -> list[dict[str, Any]]:
+    from src.clients.binding_verification import classify_binding_verification
+
     out = []
     for b in db.query(AccountTargetBinding).order_by(AccountTargetBinding.id.asc()).limit(limit).all():
+        ver = classify_binding_verification(db, int(b.account_id), int(b.target_id))
         probe = (
             db.query(AccountTargetMembershipProbe)
             .filter(
@@ -937,15 +932,21 @@ def list_bindings(db: Session, *, limit: int = 200) -> list[dict[str, Any]]:
             .scalar()
             or 0
         )
+        display_status = ver.get("status") or "UNKNOWN"
         out.append(
             {
                 "binding_id": b.id,
                 "account_id": b.account_id,
                 "target_id": b.target_id,
                 "can_post": bool(b.can_post),
+                "configured_can_post": bool(b.can_post),
+                "verification_status": display_status,
+                "production_verified": bool(ver.get("production_verified")),
                 "membership_status": probe.status if probe else None,
+                "verified_can_post": probe.can_post if probe else None,
                 "permission_checked_at": _iso(probe.checked_at) if probe else None,
                 "last_failure_reason": probe.message if probe else None,
+                "verification_human_reason": ver.get("human_reason"),
                 "linked_schedule_count": int(schedule_count),
                 "refresh_allowed": True,
             }

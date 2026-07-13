@@ -2,25 +2,31 @@
 {% block title %}Bindings — STORYFLEET{% endblock %}
 {% block content %}
 <div class="container-fluid py-3">
-  <h1 class="h4 mb-3">Account–Target Bindings</h1>
-  {% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}{% for cat, msg in messages %}<div class="alert alert-{{ cat }} py-2">{{ msg }}</div>{% endfor %}{% endif %}
-  {% endwith %}
-  <div class="table-responsive">
-    <table class="table table-sm table-hover">
-      <thead><tr><th>ID</th><th>Account</th><th>Target</th><th>can_post</th><th>Membership</th><th>Checked</th><th>Failure</th><th>Action</th></tr></thead>
-      <tbody>{% for b in bindings %}<tr>
-        <td>{{ b.binding_id }}</td><td>{{ b.account_id }}</td><td>{{ b.target_id }}</td><td>{{ b.can_post }}</td>
-        <td>{{ b.membership_status or '—' }}</td><td class="small">{{ b.permission_checked_at or '—' }}</td>
-        <td class="small">{{ b.last_failure_reason or '—' }}</td>
+  <h1 class="h4 mb-3">Account-Target Bindings</h1>
+  <div class="card"><div class="card-body p-0 table-responsive">
+    <table class="table table-sm mb-0">
+      <thead><tr>
+        <th>ID</th><th>Account</th><th>Target</th><th>Configured</th><th>Verification</th>
+        <th>Membership</th><th>Verified post</th><th>Checked</th><th>Failure</th><th>Action</th>
+      </tr></thead>
+      <tbody>{% for b in bindings %}
+        <tr class="{% if b.production_verified %}table-success{% elif b.verification_status in ('CONFIGURED_NOT_VERIFIED','STALE_CHECK','PROBE_MISSING') %}table-warning{% endif %}">
+        <td>{{ b.binding_id }}</td><td>{{ b.account_id }}</td><td>{{ b.target_id }}</td>
+        <td>{{ b.configured_can_post }}</td>
+        <td><strong>{{ b.verification_status }}</strong>
+          {% if b.verification_human_reason %}<div class="small text-secondary">{{ b.verification_human_reason }}</div>{% endif %}
+        </td>
+        <td>{{ b.membership_status or '—' }}</td>
+        <td>{{ b.verified_can_post if b.verified_can_post is not none else '—' }}</td>
+        <td class="small">{{ b.permission_checked_at or '—' }}</td>
+        <td class="small text-danger">{{ b.last_failure_reason or '—' }}</td>
         <td>
           <form method="post" action="{{ url_for('operator_control.operator_refresh_binding_permission', binding_id=b.binding_id) }}" class="d-inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-warning">Refresh permission verification</button>
+            <button type="submit" class="btn btn-sm btn-outline-primary">Refresh</button>
           </form>
         </td>
       </tr>{% endfor %}</tbody>
     </table>
-  </div>
+  </div></div>
 </div>
 {% endblock %}
