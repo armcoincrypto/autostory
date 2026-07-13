@@ -5,9 +5,7 @@ Reuses canonical readiness, eligibility, and scheduler models. No execution side
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -53,17 +51,26 @@ PROTECTED_JOB_IDS = frozenset({329, 361, 362, 363, 364, 365, 366})
 
 
 def _git_short_head() -> str:
-    root = os.environ.get("AUTOSTORY_ROOT", "/opt/autostory")
+    root = Path(os.environ.get("AUTOSTORY_ROOT", "/opt/autostory"))
     try:
         return (
             subprocess.check_output(
                 ["git", "rev-parse", "--short", "HEAD"],
-                cwd=root,
+                cwd=str(root),
                 text=True,
                 timeout=3,
             )
             .strip()
         )
+    except Exception:
+        pass
+    try:
+        head_file = root / ".git" / "HEAD"
+        ref = head_file.read_text(encoding="utf-8").strip()
+        if ref.startswith("ref: "):
+            ref_path = root / ".git" / ref[5:].strip()
+            return ref_path.read_text(encoding="utf-8").strip()[:12]
+        return ref[:12]
     except Exception:
         return "unknown"
 
