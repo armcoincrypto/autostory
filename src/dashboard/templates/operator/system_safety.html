@@ -24,6 +24,21 @@
       <div>Reconciliation required: {{ snapshot.reconciliation_required_count }}</div>
       <div>Quarantined accounts: {{ snapshot.quarantined_account_count }}</div>
       <div>Stale readiness: {{ snapshot.stale_readiness_count }}</div>
+      <div>Fresh READY: {{ snapshot.fresh_readiness_count }}</div>
+      <div>NOT_AUTHORIZED: {{ snapshot.not_authorized_readiness_count }}</div>
+      <div>FAILED_AUTH: {{ snapshot.failed_auth_readiness_count }}</div>
+    </div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-header">Readiness worker</div><div class="card-body small">
+      <div>systemd: <strong>{{ snapshot.readiness_worker.systemd_active }}</strong></div>
+      <div>Last cycle: {{ snapshot.readiness_worker.last_cycle_at or '—' }}</div>
+      <div>Cycle ID: {{ snapshot.readiness_worker.last_cycle_id or '—' }}</div>
+      <div>Last checked: {{ snapshot.readiness_worker.last_checked }}</div>
+      <div>Last READY probes: {{ snapshot.readiness_worker.last_ready }}</div>
+      <div>Last NOT_AUTHORIZED: {{ snapshot.readiness_worker.last_not_authorized }}</div>
+      <div>Next sleep sec: {{ snapshot.readiness_worker.next_cycle_sleep_sec }}</div>
+      <div>Dry run: {{ snapshot.readiness_worker.dry_run }}</div>
+      <div>Allow IDs: {{ snapshot.readiness_worker.allow_ids or 'all eligible' }}</div>
+      {% if snapshot.readiness_worker.last_error %}<div class="text-danger">Last error: {{ snapshot.readiness_worker.last_error }}</div>{% endif %}
     </div></div></div>
     <div class="col-md-4"><div class="card"><div class="card-header">Build</div><div class="card-body small">
       <div>git_commit: <strong>{{ snapshot.build_info.git_commit }}</strong></div>

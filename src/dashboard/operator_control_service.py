@@ -19,6 +19,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.clients import readiness_store
+from src.clients.readiness_worker_policy import read_runtime_status
 from src.core.account_operational_state import compute_account_operational_state
 from src.core.datetime_utc import to_utc_iso_z
 from src.core.models import Account
@@ -1053,28 +1054,54 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
         or 0
     )
     stale_readiness = 0
+    fresh_ready = 0
+    not_authorized_count = 0
+    failed_auth_count = 0
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for snap in db.query(AccountReadinessSnapshot).all():
-        if snap.status == readiness_store.STAT_READY and not readiness_store.snapshot_ready_and_valid(
-            db, int(snap.account_id)
-        ):
-            stale_readiness += 1
+        if snap.status == readiness_store.STAT_READY:
+            if readiness_store.snapshot_ready_and_valid(db, int(snap.account_id)):
+                fresh_ready += 1
+            else:
+                stale_readiness += 1
+        elif snap.status == readiness_store.STAT_NOT_AUTH:
+            not_authorized_count += 1
+            if (snap.failure_code or "").lower() in ("failed_auth", "unauthorized_session"):
+                failed_auth_count += 1
     quarantined = 0
     for account in db.query(Account).all():
         op = compute_account_operational_state(db, account)
         if (op.get("tier") or "").lower() in ("reserved", "controller"):
             quarantined += 1
+    worker_runtime = read_runtime_status()
     return {
         "flags": flags,
         "services": {
             "autostory-web": _svc_active("autostory-web"),
             "autostory-scheduler": _svc_active("autostory-scheduler"),
             "telegram-gateway": _svc_active("telegram-gateway"),
+            "autostory-readiness-worker": _svc_active("autostory-readiness-worker"),
         },
         "queue_counts": queue,
         "reconciliation_required_count": int(recon_required),
         "quarantined_account_count": int(quarantined),
         "stale_readiness_count": int(stale_readiness),
+        "fresh_readiness_count": int(fresh_ready),
+        "not_authorized_readiness_count": int(not_authorized_count),
+        "failed_auth_readiness_count": int(failed_auth_count),
+        "readiness_worker": {
+            "systemd_active": _svc_active("autostory-readiness-worker"),
+            "last_cycle_id": worker_runtime.get("cycle_id"),
+            "last_cycle_at": worker_runtime.get("updated_at"),
+            "last_cycle_duration_sec": worker_runtime.get("cycle_duration_sec"),
+            "last_checked": worker_runtime.get("checked"),
+            "last_ready": worker_runtime.get("ready"),
+            "last_not_authorized": worker_runtime.get("not_authorized"),
+            "last_error": worker_runtime.get("last_error"),
+            "next_cycle_sleep_sec": worker_runtime.get("next_cycle_sleep_sec"),
+            "dry_run": worker_runtime.get("dry_run"),
+            "allow_ids": worker_runtime.get("allow_ids"),
+        },
         "pending_gateway_jobs": (
             db.query(func.count(TelegramGatewayJob.id))
             .filter(TelegramGatewayJob.status.in_(("pending", "retry")))

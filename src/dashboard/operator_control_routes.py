@@ -85,10 +85,10 @@ def operator_refresh_readiness(account_id: int):
     if not _csrf_ok():
         flash("CSRF validation failed.", "danger")
         return redirect(url_for("operator_control.operator_account_detail", account_id=account_id))
-    from src.clients.readiness_worker import _deep_check_one
+    from src.clients.readiness_worker import deep_check_one_for_operator
 
     try:
-        asyncio.run(asyncio.wait_for(_deep_check_one(int(account_id)), timeout=25.0))
+        asyncio.run(asyncio.wait_for(deep_check_one_for_operator(int(account_id)), timeout=25.0))
         flash(f"Readiness probe completed for account {account_id}.", "success")
     except Exception as exc:
         flash(f"Readiness probe failed: {exc.__class__.__name__}", "warning")
