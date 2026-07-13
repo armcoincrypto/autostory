@@ -12,6 +12,13 @@
       </tr>{% endfor %}</tbody>
     </table>
   </div></div>
+  <div class="card mb-3"><div class="card-header">P6.4 canary ops (CLI)</div>
+    <div class="card-body small">
+      <div>Preflight (read-only): <code>scripts/ops/p6_4_live_canary_preflight.py --dry-run</code></div>
+      <div>Emergency stop: <code>scripts/ops/p6_4_emergency_stop.sh</code></div>
+      <div>Execute wrapper exists but requires P6.2 PASS + operator confirmation — do not run from UI.</div>
+    </div>
+  </div>
   {% if snapshot.warnings %}
   <div class="card mb-3 border-warning"><div class="card-header">Operational warnings</div><div class="card-body small">
     {% for w in snapshot.warnings %}<div class="text-warning"><strong>{{ w.code }}</strong>: {{ w.message }}</div>{% endfor %}

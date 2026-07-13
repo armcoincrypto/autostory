@@ -368,6 +368,7 @@ _DANGEROUS_ENV_KEYS = (
     "SCHEDULER_MUTATIONS_ENABLED",
     "P5C_SINGLE_SEND_ENABLED",
     "P5D_SINGLE_SEND_ENABLED",
+    "P6_4_SINGLE_SEND_ENABLED",
     "P5D_CERTIFICATION_MODE",
     "P5D_FAILPOINT",
 )
@@ -1029,6 +1030,7 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
         "SCHEDULER_MUTATIONS_ENABLED": "false",
         "P5C_SINGLE_SEND_ENABLED": "false",
         "P5D_SINGLE_SEND_ENABLED": "false",
+        "P6_4_SINGLE_SEND_ENABLED": "false",
         "P5D_CERTIFICATION_MODE": "",
         "P5D_FAILPOINT": "",
     }
@@ -1043,6 +1045,7 @@ def build_system_safety_snapshot(db: Session) -> dict[str, Any]:
             "SCHEDULER_MUTATIONS_ENABLED",
             "P5C_SINGLE_SEND_ENABLED",
             "P5D_SINGLE_SEND_ENABLED",
+            "P6_4_SINGLE_SEND_ENABLED",
             "P5D_CERTIFICATION_MODE",
             "P5D_FAILPOINT",
         )
