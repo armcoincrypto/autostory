@@ -53,11 +53,12 @@ PROTECTED_JOB_IDS = frozenset({329, 361, 362, 363, 364, 365, 366})
 
 
 def _git_short_head() -> str:
+    root = os.environ.get("AUTOSTORY_ROOT", "/opt/autostory")
     try:
         return (
             subprocess.check_output(
                 ["git", "rev-parse", "--short", "HEAD"],
-                cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                cwd=root,
                 text=True,
                 timeout=3,
             )
