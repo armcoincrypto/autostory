@@ -164,7 +164,24 @@ async def _run_send(
 
         p5d_hit_failpoint("p5d_after_gateway_claim")
         text = str((pld or {}).get("text") or "")
-        res = await _transport.send_message_async(account_id, target, text)
+        # Propagate certification scope into transport-level guard (required for P6.4).
+        from src.core.p6_4_authorization import message_sha256 as _p64_sha
+
+        _tid = pld.get("target_id")
+        _bid = pld.get("binding_id")
+        _sid = pld.get("scheduled_job_id")
+        _marker = pld.get("job_marker")
+        _hash = pld.get("expected_message_sha256") or (_p64_sha(text) if text else None)
+        res = await _transport.send_message_async(
+            account_id,
+            target,
+            text,
+            target_id=int(_tid) if _tid is not None else None,
+            job_marker=str(_marker) if _marker else None,
+            job_id=int(_sid) if _sid is not None else None,
+            binding_id=int(_bid) if _bid is not None else None,
+            content_sha256=str(_hash) if _hash else None,
+        )
         p5d_hit_failpoint("p5d_after_telegram_send_before_persist")
         with get_db_context() as db:
             if res.get("ok"):

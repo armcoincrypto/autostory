@@ -801,6 +801,8 @@ def require_execution_allowed(
     db=None,
     job_marker: str | None = None,
     job_id: int | None = None,
+    binding_id: int | None = None,
+    content_sha256: str | None = None,
 ) -> ExecutionGuardDecision | None:
     """
     Return None when action may proceed; otherwise the DENY decision (audit logged).
@@ -814,6 +816,8 @@ def require_execution_allowed(
         db=db,
         job_marker=job_marker,
         job_id=job_id,
+        binding_id=binding_id,
+        content_sha256=content_sha256,
     )
     return None if decision.allowed else decision
 
