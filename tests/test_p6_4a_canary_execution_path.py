@@ -424,8 +424,11 @@ async def test_isolated_e2e_one_send_and_replay_blocked(isolated_db, tmp_path, m
         lambda db: frozenset({107}),
     )
 
-    async def fake_send(account_id, target, text):
+    async def fake_send(account_id, target, text, **kwargs):
         assert text == body
+        # Regression 849a43c: certification scope must reach transport.
+        assert kwargs.get("job_marker") == MARKER
+        assert kwargs.get("target_id") == 1
         fake_send.calls.append(1)
         return {"ok": True, "telegram_message_id": 4242}
 

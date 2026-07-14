@@ -125,17 +125,40 @@ async def _run_send(
                     db=db,
                 )
             if guard.outcome == SENT_CONFIRMED and guard.tg_message_id is not None:
+                from src.core.certification_delivery import upsert_sent_delivery_for_gateway_cert
+
                 with get_db_context() as db:
-                    mark_job_done(
-                        db,
-                        job_id,
-                        {
-                            "ok": True,
-                            "telegram_message_id": int(guard.tg_message_id),
-                            "reconciled": True,
-                            "reason_code": guard.reason_code,
-                        },
-                    )
+                    result_payload: dict[str, Any] = {
+                        "ok": True,
+                        "telegram_message_id": int(guard.tg_message_id),
+                        "reconciled": True,
+                        "reason_code": guard.reason_code,
+                    }
+                    _tid = pld.get("target_id")
+                    _sid = pld.get("scheduled_job_id")
+                    _bid = pld.get("binding_id")
+                    if _tid is not None:
+                        try:
+                            delivery_audit = upsert_sent_delivery_for_gateway_cert(
+                                db,
+                                gateway_job_id=int(job_id),
+                                scheduled_job_id=int(_sid) if _sid is not None else None,
+                                account_id=int(account_id),
+                                target_id=int(_tid),
+                                telegram_message_id=int(guard.tg_message_id),
+                                rendered_body=str(pld.get("text") or ""),
+                                binding_id=int(_bid) if _bid is not None else None,
+                                content_sha256=str(pld.get("expected_message_sha256") or "")
+                                or None,
+                            )
+                            result_payload["delivery_id"] = delivery_audit.get("delivery_id")
+                            result_payload["delivery_created"] = delivery_audit.get("created")
+                        except Exception as exc:
+                            result_payload["delivery_persistence"] = (
+                                "SEND_CONFIRMED_DELIVERY_PERSISTENCE_PENDING"
+                            )
+                            result_payload["delivery_persistence_error"] = str(exc)[:500]
+                    mark_job_done(db, job_id, result_payload)
                 logger.info(
                     "telegram_gateway_job_done_reconciled",
                     job_id=job_id,
@@ -166,6 +189,7 @@ async def _run_send(
         text = str((pld or {}).get("text") or "")
         # Propagate certification scope into transport-level guard (required for P6.4).
         from src.core.p6_4_authorization import message_sha256 as _p64_sha
+        from src.core.certification_delivery import upsert_sent_delivery_for_gateway_cert
 
         _tid = pld.get("target_id")
         _bid = pld.get("binding_id")
@@ -185,14 +209,44 @@ async def _run_send(
         p5d_hit_failpoint("p5d_after_telegram_send_before_persist")
         with get_db_context() as db:
             if res.get("ok"):
-                mark_job_done(
-                    db,
-                    job_id,
-                    {
-                        "ok": True,
-                        "telegram_message_id": res.get("telegram_message_id"),
-                    },
-                )
+                tg_mid = res.get("telegram_message_id")
+                result_payload: dict[str, Any] = {
+                    "ok": True,
+                    "telegram_message_id": tg_mid,
+                }
+                # Order: Telegram confirmed → delivery upsert → gateway done → auth consume.
+                if tg_mid is not None and _tid is not None:
+                    try:
+                        delivery_audit = upsert_sent_delivery_for_gateway_cert(
+                            db,
+                            gateway_job_id=int(job_id),
+                            scheduled_job_id=int(_sid) if _sid is not None else None,
+                            account_id=int(account_id),
+                            target_id=int(_tid),
+                            telegram_message_id=int(tg_mid),
+                            rendered_body=text,
+                            binding_id=int(_bid) if _bid is not None else None,
+                            content_sha256=str(_hash) if _hash else None,
+                        )
+                        result_payload["delivery_id"] = delivery_audit.get("delivery_id")
+                        result_payload["delivery_created"] = delivery_audit.get("created")
+                        result_payload["delivery_idempotency_key"] = delivery_audit.get(
+                            "idempotency_key"
+                        )
+                    except Exception as exc:
+                        # Do NOT retry Telegram. Surface persistence pending for reconcile.
+                        logger.error(
+                            "gateway_delivery_persistence_failed_after_send",
+                            job_id=job_id,
+                            account_id=account_id,
+                            telegram_message_id=tg_mid,
+                            error=str(exc)[:500],
+                        )
+                        result_payload["delivery_persistence"] = (
+                            "SEND_CONFIRMED_DELIVERY_PERSISTENCE_PENDING"
+                        )
+                        result_payload["delivery_persistence_error"] = str(exc)[:500]
+                mark_job_done(db, job_id, result_payload)
                 try:
                     if str(pld.get("job_marker") or "").strip() == "__p6_4_certification__":
                         from src.core.p6_4_authorization import mark_consumed

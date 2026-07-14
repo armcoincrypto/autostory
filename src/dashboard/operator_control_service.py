@@ -721,6 +721,8 @@ def _delivery_outcome_class(delivery: MessageDelivery) -> str:
     err = (delivery.error_code or "").upper()
     if st == "SENT" and delivery.tg_message_id:
         return "SENT_CONFIRMED"
+    if err in ("TEST_RESIDUE_ARCHIVED", "FAILED_CONFIRMED_NOT_SENT"):
+        return "NOT_SENT_CONFIRMED"
     if st in ("FAILED", "ERROR") and "RECONCIL" in err:
         return "AMBIGUOUS_RECONCILIATION_REQUIRED"
     if st in ("FAILED", "ERROR") and err in ("POLICY", "DENIED", "NOT_ALLOWED"):
@@ -753,6 +755,8 @@ def _serialize_delivery(d: MessageDelivery) -> dict[str, Any]:
             int(d.id) not in PROTECTED_DELIVERY_IDS
             and _status_str(d.status).upper() in ("FAILED", "ERROR", "SENDING")
             and not d.tg_message_id
+            and (d.error_code or "").upper()
+            not in ("TEST_RESIDUE_ARCHIVED", "FAILED_CONFIRMED_NOT_SENT")
         ),
         "protected_record": int(d.id) in PROTECTED_DELIVERY_IDS,
     }

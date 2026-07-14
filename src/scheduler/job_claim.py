@@ -42,6 +42,8 @@ def claim_due_job(
     run = JobStatus.RUNNING.value
 
     # Prefer fresh PENDING work over reclaiming stale RUNNING.
+    # Gateway-owned certification jobs (P5C/P5D/P6.4) must not be claimed by the
+    # scheduler Telethon rail — they are executed via telegram-gateway only.
     row = db.execute(
         text(
             """
@@ -55,6 +57,14 @@ def claim_due_job(
                 FROM scheduled_jobs AS sj
                 WHERE sj.status = :pending
                   AND sj.run_at <= :now_naive
+                  AND (
+                    sj.last_error IS NULL
+                    OR sj.last_error NOT IN (
+                      '__p5c_certification__',
+                      '__p5d_certification__',
+                      '__p6_4_certification__'
+                    )
+                  )
                 ORDER BY sj.run_at ASC, sj.id ASC
                 LIMIT 1
             )
@@ -95,6 +105,14 @@ def claim_due_job(
                 WHERE sj.status = :running
                   AND sj.lease_until IS NOT NULL
                   AND sj.lease_until < :now_naive
+                  AND (
+                    sj.last_error IS NULL
+                    OR sj.last_error NOT IN (
+                      '__p5c_certification__',
+                      '__p5d_certification__',
+                      '__p6_4_certification__'
+                    )
+                  )
                 ORDER BY sj.lease_until ASC, sj.id ASC
                 LIMIT 1
             )
