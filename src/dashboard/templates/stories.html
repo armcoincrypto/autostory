@@ -45,19 +45,20 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
         <h2 class="mb-0 lh-1"><i class="bi bi-arrow-repeat text-primary"></i> Story Operations</h2>
-        <small class="text-muted">Select account · upload media · dry-run · gated live test</small>
+        <small class="text-muted">Choose destination · add story · dry-run · publish only when eligible</small>
     </div>
     <div class="d-flex gap-2 align-items-center">
         <button type="button" class="btn btn-sm stories-ops-btn-glass" id="btn-refresh-readiness-top"
-                onclick="refreshStoryReadinessState().catch(() => {})" title="Refresh readiness">
+                onclick="refreshStoryReadinessState().catch(() => {})" title="Refresh account status">
             <i class="bi bi-arrow-clockwise" id="btn-refresh-readiness-icon"></i> Refresh
         </button>
         <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#storiesJoinModal">
             <i class="bi bi-box-arrow-in-right"></i> Join
         </button>
         <span class="badge rounded-pill stories-ops-chip text-warning border border-warning-subtle px-3 py-2"
-              title="STORY_EXECUTION_ENABLED is false">
-            <i class="bi bi-lock-fill me-1"></i> Live publishing locked — use Dry Run first
+              id="ops-live-lock-badge"
+              title="Live Story publishing requires fresh auth and explicit approval">
+            <i class="bi bi-lock-fill me-1"></i> Live publishing unavailable
         </span>
     </div>
 </div>
@@ -69,7 +70,7 @@
             <div class="card-body py-2 px-3 d-flex justify-content-between align-items-center">
                 <div>
                     <div class="stat-value mb-1" id="ops-ready-count" style="color:#22c55e;">—</div>
-                    <div class="stat-label">🟢 Ready</div>
+                    <div class="stat-label">🟢 Ready for live</div>
                 </div>
             </div>
         </div>
@@ -79,7 +80,7 @@
         <div class="card stories-ops-glass stories-ops-stat h-100" style="--ops-stat-accent:#f59e0b;">
             <div class="card-body py-2 px-3">
                 <div class="stat-value mb-1" id="ops-needs-refresh-count" style="color:#f59e0b;">—</div>
-                <div class="stat-label">🟡 Needs refresh</div>
+                <div class="stat-label">🟡 Needs authentication</div>
             </div>
         </div>
     </div>
@@ -96,7 +97,7 @@
         <div class="card stories-ops-glass stories-ops-stat h-100" style="--ops-stat-accent:#3b82f6;">
             <div class="card-body py-2 px-3">
                 <div class="stat-value mb-1" id="ops-protected-count" style="color:#60a5fa;">—</div>
-                <div class="stat-label">🔵 Protected</div>
+                <div class="stat-label">🔵 Protected / reserved</div>
             </div>
         </div>
     </div>
@@ -119,8 +120,8 @@
 <div class="card mb-4 stories-ops-glass" style="border-color:rgba(99,102,241,.35);">
     <div class="card-header d-flex justify-content-between align-items-center py-2"
          style="background:rgba(99,102,241,.06);border-bottom:1px solid rgba(99,102,241,.15);">
-        <span class="fw-semibold"><i class="bi bi-sliders text-primary me-2"></i>Run controls</span>
-        <span class="text-muted small d-none" id="sched-ready-label"></span>
+        <span class="fw-semibold"><i class="bi bi-sliders text-primary me-2"></i>Story run</span>
+        <span class="text-muted small" id="sched-ready-label"></span>
         <button type="button" class="btn btn-sm btn-outline-secondary py-0 d-none" id="btn-refresh-readiness"
                 onclick="refreshStoryReadinessState().catch(() => {})">
             <i class="bi bi-arrow-clockwise"></i>
@@ -128,152 +129,193 @@
     </div>
     <div class="card-body p-3">
         <div id="readiness-sync-banner" class="d-none alert alert-warning py-2 px-3 small mb-3" role="status"></div>
+        <div id="ops-next-step" class="alert alert-secondary py-2 px-3 small mb-3" role="status">
+            Loading…
+        </div>
         <div id="sched-result" class="d-none mb-2"></div>
         <div id="story-precheck-panel" class="d-none alert py-2 px-3 small mb-3" role="status"></div>
 
-        <!-- Primary actions -->
-        <div class="d-flex flex-wrap gap-2 mb-3" id="ops-primary-actions">
-            <button type="button" class="btn btn-sm stories-ops-btn-glass" id="btn-refresh-account"
-                    onclick="refreshStoryReadinessState().catch(() => {})">
-                <i class="bi bi-arrow-clockwise me-1"></i> Refresh account
-            </button>
-            <button type="button" class="btn btn-sm btn-outline-info" id="btn-dryrun" onclick="runStoryPrecheck(true)">
-                <i class="bi bi-eye me-1"></i> Run dry-run
-            </button>
-            <button type="button" class="btn btn-sm btn-primary" id="btn-schedule" onclick="scheduleRun()" disabled>
-                <i class="bi bi-lock-fill me-1"></i> Enable live test
-            </button>
-            <button type="button" class="btn btn-sm btn-link text-muted" id="btn-toggle-advanced"
-                    onclick="toggleOpsAdvanced()">
-                <i class="bi bi-chevron-down" id="ops-advanced-chevron"></i> Advanced
-            </button>
-            <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="btn-precheck" onclick="runStoryPrecheck(false)">
-                Precheck
-            </button>
-        </div>
-
-        <div class="row g-3">
-            <!-- Account + status card -->
-            <div class="col-lg-5">
+        <!-- Step 1 — Destination -->
+        <div class="mb-3">
+            <div class="fw-semibold small text-muted mb-2">Step 1 — Choose destination</div>
+            <div class="btn-group btn-group-sm mb-2" role="group" aria-label="Publish from">
+                <input type="radio" class="btn-check" name="ops-dest-mode" id="ops-dest-account" autocomplete="off" checked
+                       onchange="onDestModeChange()">
+                <label class="btn btn-outline-secondary" for="ops-dest-account">Single account</label>
+                <input type="radio" class="btn-check" name="ops-dest-mode" id="ops-dest-pool" autocomplete="off"
+                       onchange="onDestModeChange()">
+                <label class="btn btn-outline-secondary" for="ops-dest-pool">Account pool</label>
+            </div>
+            <div id="ops-dest-account-wrap">
                 <label class="form-label fw-semibold mb-1">Account</label>
                 <select class="form-select form-select-sm mb-2" id="sched-account" onchange="onSchedAccountChange()">
-                    <option value="">— Loading —</option>
+                    <option value="">— Select account —</option>
                 </select>
                 <div id="selected-account-readiness" class="stories-ops-account-card d-none"></div>
             </div>
-
-            <!-- Media -->
-            <div class="col-lg-7">
-                <label class="form-label fw-semibold mb-1">Media</label>
-                <div id="media-selected-display" class="d-none mb-2 d-flex align-items-center gap-2 p-2 rounded stories-ops-glass">
-                    <span id="media-selected-icon" class="fs-5">📷</span>
-                    <div class="flex-grow-1 overflow-hidden">
-                        <div class="fw-semibold small text-truncate" id="media-selected-name">—</div>
-                        <div class="text-muted" style="font-size:.75em;" id="media-selected-size">—</div>
-                    </div>
-                    <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="clearMediaSelection()" title="Clear">×</button>
-                </div>
-                <div class="d-flex gap-2 flex-wrap">
-                    <label class="btn btn-sm btn-outline-primary mb-0" style="cursor:pointer;">
-                        <i class="bi bi-upload me-1"></i>Upload
-                        <input type="file" id="media-upload-input" class="d-none"
-                               accept=".jpg,.jpeg,.png,.webp,.mp4,.mov" onchange="handleMediaUpload(this)">
-                    </label>
-                    <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleMediaBrowser()">
-                        <i class="bi bi-folder2-open me-1"></i>Browse
-                        <span id="media-file-count" class="badge bg-secondary ms-1" style="font-size:.7em;"></span>
-                    </button>
-                </div>
-                <div id="media-upload-progress" class="d-none mt-2">
-                    <div class="progress" style="height:4px;">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" style="width:100%"></div>
-                    </div>
-                </div>
-                <div id="media-upload-status" class="small mt-2 d-none"></div>
-                <div id="media-browser" class="d-none mt-2 p-2 rounded stories-ops-glass" style="max-height:140px;overflow-y:auto;">
-                    <div id="media-browser-list" class="d-flex flex-wrap gap-2">
-                        <span class="text-muted small">Loading…</span>
-                    </div>
-                </div>
-                <input type="hidden" id="sched-media-path-resolved">
+            <div id="ops-dest-pool-wrap" class="d-none">
+                <label class="form-label fw-semibold mb-1">Pool</label>
+                <select class="form-select form-select-sm mb-1" id="sched-pool" onchange="onPoolChange()">
+                    <option value="">— All ready accounts —</option>
+                </select>
+                <div class="text-muted small" id="ops-pool-hint"></div>
+            </div>
+            <div class="form-check form-check-sm mt-2">
+                <input class="form-check-input" type="checkbox" id="sched-show-protected" onchange="refreshStoryReadinessState().catch(() => {})">
+                <label class="form-check-label text-muted small" for="sched-show-protected">Show protected accounts</label>
             </div>
         </div>
 
-        <!-- Advanced options (collapsed) -->
-        <div id="ops-advanced-panel" class="d-none mt-3 pt-3" style="border-top:1px solid rgba(148,163,184,.15);">
-            <div class="row g-3">
-                <div class="col-md-4">
-                    <label class="form-label small mb-1">Pool</label>
-                    <select class="form-select form-select-sm" id="sched-pool">
-                        <option value="">— All ready accounts —</option>
-                    </select>
+        <!-- Step 2 — Media + caption -->
+        <div class="mb-3 pt-2" style="border-top:1px solid rgba(148,163,184,.12);">
+            <div class="fw-semibold small text-muted mb-2">Step 2 — Add Story</div>
+            <label class="form-label fw-semibold mb-1">Media <span id="media-status-chip" class="stories-ops-chip blocked ms-1">No media selected</span></label>
+            <div id="media-selected-display" class="d-none mb-2 d-flex align-items-center gap-2 p-2 rounded stories-ops-glass">
+                <span id="media-selected-icon" class="fs-5">📷</span>
+                <div class="flex-grow-1 overflow-hidden">
+                    <div class="fw-semibold small text-truncate" id="media-selected-name">—</div>
+                    <div class="text-muted" style="font-size:.75em;" id="media-selected-size">—</div>
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label small mb-1">Mode</label>
-                    <select class="form-select form-select-sm" id="sched-mode" onchange="toggleInterval()">
-                        <option value="once" selected>Once</option>
-                        <option value="continuous">Continuous</option>
-                    </select>
+                <label class="btn btn-sm btn-outline-secondary py-0 px-2 mb-0" style="cursor:pointer;" title="Replace">
+                    Replace
+                    <input type="file" class="d-none" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov" onchange="handleMediaUpload(this)">
+                </label>
+                <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="clearMediaSelection()" title="Remove">Remove</button>
+            </div>
+            <div class="d-flex gap-2 flex-wrap" id="media-upload-actions">
+                <label class="btn btn-sm btn-outline-primary mb-0" style="cursor:pointer;">
+                    <i class="bi bi-upload me-1"></i>Upload
+                    <input type="file" id="media-upload-input" class="d-none"
+                           accept=".jpg,.jpeg,.png,.webp,.mp4,.mov" onchange="handleMediaUpload(this)">
+                </label>
+                <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleMediaBrowser()">
+                    <i class="bi bi-folder2-open me-1"></i>Browse
+                    <span id="media-file-count" class="badge bg-secondary ms-1" style="font-size:.7em;"></span>
+                </button>
+            </div>
+            <div id="media-upload-progress" class="d-none mt-2">
+                <div class="progress" style="height:4px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" style="width:100%"></div>
                 </div>
-                <div class="col-md-4" id="interval-group" style="display:none;">
-                    <label class="form-label small mb-1">Interval (min)</label>
-                    <input type="number" class="form-control form-control-sm" id="sched-interval" value="60" min="5" max="1440">
+            </div>
+            <div id="media-upload-status" class="small mt-2 d-none"></div>
+            <div id="media-browser" class="d-none mt-2 p-2 rounded stories-ops-glass" style="max-height:140px;overflow-y:auto;">
+                <div id="media-browser-list" class="d-flex flex-wrap gap-2">
+                    <span class="text-muted small">Loading…</span>
                 </div>
-                <div class="col-md-4">
+            </div>
+            <input type="hidden" id="sched-media-path-resolved">
+            <div class="mt-2">
+                <label class="form-label small mb-1">Caption <span class="text-muted">(optional)</span></label>
+                <input type="text" class="form-control form-control-sm" id="sched-caption" placeholder="Optional caption"
+                       oninput="onEligibilityInputChange()">
+            </div>
+        </div>
+
+        <!-- Step 3 — Audience -->
+        <div class="mb-3 pt-2" style="border-top:1px solid rgba(148,163,184,.12);">
+            <div class="fw-semibold small text-muted mb-2">Step 3 — Configure audience</div>
+            <div class="row g-2">
+                <div class="col-md-6">
                     <label class="form-label small mb-1">Mention source</label>
-                    <select class="form-select form-select-sm" id="sched-mention-source">
+                    <select class="form-select form-select-sm" id="sched-mention-source" onchange="onEligibilityInputChange()">
                         <option value="">— All groups —</option>
                     </select>
                     <div class="text-muted small mt-1" id="sched-mention-source-count"></div>
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label small mb-1">Caption</label>
-                    <input type="text" class="form-control form-control-sm" id="sched-caption" placeholder="Optional">
-                </div>
-                <div class="col-md-2">
+                <div class="col-md-3">
                     <label class="form-label small mb-1">Mentions</label>
-                    <input type="number" class="form-control form-control-sm" id="sched-mentions" value="1" min="0" max="20">
+                    <input type="number" class="form-control form-control-sm" id="sched-mentions" value="1" min="0" max="20"
+                           onchange="onEligibilityInputChange()">
                 </div>
-                <div class="col-md-2">
-                    <label class="form-label small mb-1">Max stories</label>
-                    <input type="number" class="form-control form-control-sm" id="sched-max-stories" value="1" placeholder="Unlimited" min="1">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label small mb-1">Mention pick</label>
-                    <select class="form-select form-select-sm" id="sched-mention-strategy">
-                        <option value="random" selected>Random</option>
-                        <option value="oldest">Oldest never-mentioned</option>
+                <div class="col-md-3">
+                    <label class="form-label small mb-1">Run mode</label>
+                    <select class="form-select form-select-sm" id="sched-mode" onchange="toggleInterval(); onEligibilityInputChange();">
+                        <option value="once" selected>Once</option>
+                        <option value="continuous">Continuous</option>
                     </select>
                 </div>
-                <div class="col-12">
-                    <div class="form-check form-check-sm">
-                        <input class="form-check-input" type="checkbox" id="sched-show-protected" onchange="refreshStoryReadinessState().catch(() => {})">
-                        <label class="form-check-label text-muted small" for="sched-show-protected">Show protected accounts</label>
-                    </div>
+                <div class="col-md-3" id="interval-group" style="display:none;">
+                    <label class="form-label small mb-1">Interval (min)</label>
+                    <input type="number" class="form-control form-control-sm" id="sched-interval" value="60" min="5" max="1440">
                 </div>
-                <div class="col-12 p-2 rounded stories-ops-glass">
-                    <div class="small fw-semibold mb-2">Live test gate (account 140 only)</div>
-                    <div class="row g-2 align-items-center">
-                        <div class="col-md-4">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="sched-approval-checkbox">
-                                <label class="form-check-label small" for="sched-approval-checkbox">Operator approval</label>
+                <div class="col-md-3" id="max-stories-group">
+                    <label class="form-label small mb-1">Max stories</label>
+                    <input type="number" class="form-control form-control-sm" id="sched-max-stories" value="1" min="1"
+                           onchange="onEligibilityInputChange()">
+                </div>
+            </div>
+            <div id="ops-continuous-warn" class="alert alert-warning py-2 px-3 small mt-2 mb-0 d-none">
+                Continuous mode configures a recurring run. Automation remains disabled unless separately authorized.
+            </div>
+        </div>
+
+        <!-- Step 4 — Actions -->
+        <div class="pt-2" style="border-top:1px solid rgba(148,163,184,.12);">
+            <div class="fw-semibold small text-muted mb-2">Step 4 — Review and run</div>
+            <div class="d-flex flex-wrap gap-2 mb-2" id="ops-primary-actions">
+                <button type="button" class="btn btn-sm btn-primary" id="btn-primary-action"
+                        onclick="runPrimaryOperatorAction()">
+                    Run Dry Run
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-info" id="btn-dryrun" onclick="runStoryPrecheck(true)">
+                    <i class="bi bi-eye me-1"></i> Run Dry Run
+                </button>
+                <button type="button" class="btn btn-sm stories-ops-btn-glass" id="btn-refresh-account"
+                        onclick="runSelectedAccountAuthProbe()">
+                    <i class="bi bi-shield-check me-1"></i> Run authentication check
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="btn-schedule" onclick="scheduleRun()" disabled>
+                    <i class="bi bi-lock-fill me-1"></i> Start approved Story
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="btn-precheck" onclick="runStoryPrecheck(false)">
+                    Precheck
+                </button>
+            </div>
+        </div>
+
+        <!-- Advanced options (collapsed) -->
+        <div class="mt-3">
+            <button type="button" class="btn btn-sm btn-link text-muted p-0" id="btn-toggle-advanced"
+                    onclick="toggleOpsAdvanced()">
+                <i class="bi bi-chevron-down" id="ops-advanced-chevron"></i> Advanced options
+            </button>
+            <div id="ops-advanced-panel" class="d-none mt-2 pt-2" style="border-top:1px solid rgba(148,163,184,.15);">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label small mb-1">Mention pick</label>
+                        <select class="form-select form-select-sm" id="sched-mention-strategy" onchange="onEligibilityInputChange()">
+                            <option value="random" selected>Random</option>
+                            <option value="oldest">Oldest never-mentioned</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-sm btn-link text-muted p-0" type="button"
+                                onclick="toggleSection('media-advanced','media-adv-chevron')">
+                            <i class="bi bi-chevron-right" id="media-adv-chevron"></i> Server media path
+                        </button>
+                        <div id="media-advanced" style="display:none;" class="mt-2">
+                            <input type="text" class="form-control form-control-sm" id="sched-media-path"
+                                   placeholder="data/media/story.jpg" oninput="onManualPathInput(this.value)">
+                        </div>
+                    </div>
+                    <div class="col-12 p-2 rounded stories-ops-glass d-none" id="ops-live-gate-panel">
+                        <div class="small fw-semibold mb-2">Advanced: Controlled live test (account 140 only)</div>
+                        <div class="text-muted small mb-2">
+                            Approval does not repair authentication. Fresh Story auth and a passing Dry Run are required first.
+                        </div>
+                        <div class="row g-2 align-items-center">
+                            <div class="col-md-4">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="sched-approval-checkbox">
+                                    <label class="form-check-label small" for="sched-approval-checkbox">Operator approval</label>
+                                </div>
+                            </div>
+                            <div class="col-md-5">
+                                <input type="text" class="form-control form-control-sm" id="sched-confirmation-token"
+                                       placeholder="LIVE_STORY_ACCOUNT_140" value="">
                             </div>
                         </div>
-                        <div class="col-md-5">
-                            <input type="text" class="form-control form-control-sm" id="sched-confirmation-token"
-                                   placeholder="LIVE_STORY_ACCOUNT_140">
-                        </div>
-                    </div>
-                </div>
-                <div class="col-12">
-                    <button class="btn btn-sm btn-link text-muted p-0" type="button"
-                            onclick="toggleSection('media-advanced','media-adv-chevron')">
-                        <i class="bi bi-chevron-right" id="media-adv-chevron"></i> Server media path
-                    </button>
-                    <div id="media-advanced" style="display:none;" class="mt-2">
-                        <input type="text" class="form-control form-control-sm" id="sched-media-path"
-                               placeholder="/opt/autostory/media/story.jpg" oninput="onManualPathInput(this.value)">
                     </div>
                 </div>
             </div>
@@ -281,14 +323,16 @@
 
         <!-- Technical diagnostics (collapsed) -->
         <details id="story-advanced-diagnostics" class="mt-3 text-muted">
-            <summary class="small fw-semibold" style="cursor:pointer;">Technical details</summary>
+            <summary class="small fw-semibold" style="cursor:pointer;">Technical diagnostics</summary>
             <div id="story-advanced-diagnostics-body" class="mt-2 p-2 rounded stories-ops-glass small"></div>
         </details>
     </div>
 </div>
 
-<!-- ── STEP 3: Recent activity — side by side ──────────────────────────────── -->
-<div class="row g-3 mb-4">
+<!-- ── Run history (collapsed) ─────────────────────────────────────────────── -->
+<details class="mb-4">
+<summary class="fw-semibold text-muted" style="cursor:pointer;">Run history</summary>
+<div class="row g-3 mt-1">
 
     <!-- Recent Stories -->
     <div class="col-lg-7">
@@ -354,13 +398,14 @@
         </div>
     </div>
 </div>
+</details>
 
-<!-- ── Pool Management — collapsed ─────────────────────────────────────────── -->
+<!-- ── Account pools (collapsed) ───────────────────────────────────────────── -->
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center py-2"
          style="cursor:pointer;" onclick="toggleSection('pool-mgmt-section','pool-mgmt-chevron')">
         <span class="fw-semibold text-muted">
-            <i class="bi bi-collection"></i> Pool Management
+            <i class="bi bi-collection"></i> Account pools
             <span class="badge bg-secondary ms-1 fw-normal small" id="pool-count"></span>
         </span>
         <i class="bi bi-chevron-down text-muted" id="pool-mgmt-chevron"></i>
@@ -463,12 +508,12 @@
     </div>
 </div>
 
-<!-- ── Mention Blacklist — collapsed ───────────────────────────────────────── -->
+<!-- ── Mention safety — collapsed ──────────────────────────────────────────── -->
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center py-2"
          style="cursor:pointer;" onclick="toggleSection('blacklist-section','blacklist-chevron')">
         <span class="fw-semibold text-muted">
-            <i class="bi bi-person-slash"></i> Mention Blacklist
+            <i class="bi bi-person-slash"></i> Mention safety
             <span class="badge bg-secondary ms-1 fw-normal small" id="blacklist-count"></span>
         </span>
         <i class="bi bi-chevron-down text-muted" id="blacklist-chevron"></i>
@@ -611,6 +656,11 @@ let _accountMap = {};  // account_id → account object
 let _readinessPreview = null;  // alias of last API payload shape
 let _readinessMap = {};  // account_id → readiness row (alias)
 let _lastStoryPrecheck = null;
+let _precheckStale = true;
+let _precheckMediaPath = null;
+let _precheckAccountId = null;
+let _mediaUiStatus = 'empty'; // empty | uploading | ready | failed
+let _authProbeInFlight = false;
 
 /** P10.22C single source of truth for Stories readiness UI */
 window.storyReadinessState = {
@@ -653,43 +703,116 @@ function clampDisplayCount(value) {
 function operatorStatusForRow(row) {
     if (!row) return { icon: '⚪', label: 'Unknown', chip: 'blocked', hint: 'Select an account' };
     if (!row.governance_allowed) {
-        return { icon: '🔵', label: 'Protected', chip: 'protected', hint: 'Hidden unless Show protected is enabled' };
+        return { icon: '🔵', label: 'Protected', chip: 'protected', hint: 'Excluded by governance or reserved policy' };
     }
     if (row.runtime_story_ready) {
-        return { icon: '🟢', label: 'Ready', chip: 'ready', hint: 'Story-ready (fresh auth within TTL)' };
+        return { icon: '🟢', label: 'Ready', chip: 'ready', hint: 'Fresh Story authentication — live eligible when gates pass' };
     }
-    // Auth-failed / blocked must beat needs_auth_probe (failed also sets needs_auth_probe).
     if (row.story_auth_state === 'blocked') {
-        return { icon: '🔴', label: 'Blocked', chip: 'blocked', hint: 'Story auth blocked until a future time' };
+        return { icon: '🔴', label: 'Blocked', chip: 'blocked', hint: 'Story authentication is temporarily blocked' };
     }
     if (row.story_auth_state === 'failed') {
         return {
             icon: '🔴',
-            label: 'Auth failed',
+            label: 'Authentication failed',
             chip: 'blocked',
-            hint: 'story_precheck not allowed — re-run account story auth probe',
+            hint: 'Not authorized for Stories — Dry Run may still work with media',
         };
     }
     if (row.story_auth_state === 'fresh_auth_stale') {
-        return { icon: '🟡', label: 'Needs refresh', chip: 'refresh', hint: 'Auth TTL expired — re-run auth probe' };
+        return {
+            icon: '🟡',
+            label: 'Needs authentication',
+            chip: 'refresh',
+            hint: 'Authentication expired — run an authentication check before live publishing',
+        };
     }
     if (row.needs_auth_probe || row.story_auth_state === 'fresh_auth_required') {
-        return { icon: '🟡', label: 'Needs refresh', chip: 'refresh', hint: 'Auth probe required before live; dry-run still allowed with media' };
+        return {
+            icon: '🟡',
+            label: 'Needs authentication',
+            chip: 'refresh',
+            hint: 'Run an authentication check before live publishing — Dry Run is still available with media',
+        };
     }
-    return { icon: '🔴', label: 'Blocked', chip: 'blocked', hint: (row.blockers || []).slice(0, 2).join(', ') || 'Action required' };
+    return { icon: '🔴', label: 'Blocked', chip: 'blocked', hint: 'This account cannot be used for Stories right now' };
 }
 
 function operatorPickerLabel(row) {
     const st = operatorStatusForRow(row);
-    return `${st.icon} #${row.account_id} ${st.label}`;
+    return `#${row.account_id} — ${st.label}`;
 }
 
 function hasMediaSelected() {
     return !!(document.getElementById('sched-media-path-resolved')?.value || '').trim();
 }
 
+function currentMediaPath() {
+    return (document.getElementById('sched-media-path-resolved')?.value || '').trim();
+}
+
 function mediaStatusLabel() {
-    return hasMediaSelected() ? 'Ready' : 'Not selected';
+    if (_mediaUiStatus === 'uploading') return 'Uploading…';
+    if (_mediaUiStatus === 'failed') return 'Upload failed';
+    if (hasMediaSelected() || _mediaUiStatus === 'ready') return 'Media ready';
+    return 'No media selected';
+}
+
+function updateMediaStatusChip() {
+    const chip = document.getElementById('media-status-chip');
+    if (!chip) return;
+    const label = mediaStatusLabel();
+    chip.textContent = label;
+    chip.classList.remove('ready', 'refresh', 'blocked', 'protected');
+    if (label === 'Media ready') chip.classList.add('ready');
+    else if (label === 'Uploading…') chip.classList.add('refresh');
+    else chip.classList.add('blocked');
+    const actions = document.getElementById('media-upload-actions');
+    if (actions) actions.classList.toggle('d-none', hasMediaSelected());
+}
+
+function operatorSummaryCounts() {
+    const summary = window.storyReadinessState.summary || {};
+    const protectedStrict = clampDisplayCount(summary.protected);
+    const manualOnly = clampDisplayCount(summary.manual_only);
+    const aiReserved = clampDisplayCount(summary.ai_reserved);
+    return {
+        ready: clampDisplayCount(summary.runtime_story_ready),
+        needsAuth: clampDisplayCount(summary.needs_auth_probe),
+        blocked: clampDisplayCount(summary.blocked) + clampDisplayCount(summary.quarantined),
+        // Header + diagnostics use the same governance-excluded bucket.
+        protected: protectedStrict + manualOnly + aiReserved,
+        protectedStrict,
+        manualOnly,
+        aiReserved,
+    };
+}
+
+function invalidatePrecheck(reason) {
+    _precheckStale = true;
+    const panel = document.getElementById('story-precheck-panel');
+    if (panel && _lastStoryPrecheck) {
+        panel.className = 'alert alert-secondary py-2 px-3 small mb-3';
+        panel.classList.remove('d-none');
+        panel.textContent = reason
+            ? `Previous check outdated (${reason}). Run Dry Run again.`
+            : 'Previous Dry Run is outdated. Run Dry Run again.';
+    }
+    // Never keep a historical missing_media counter as current fleet truth.
+    if (hasMediaSelected()) {
+        setText('fleet-missing-config-count', 0, '#22c55e');
+    }
+    renderOperatorGuidance();
+    renderPrimaryActions();
+}
+
+function precheckMatchesCurrentSelection() {
+    if (!_lastStoryPrecheck || _precheckStale) return false;
+    const media = currentMediaPath();
+    const accountId = getSelectedSchedAccountId();
+    if ((_precheckMediaPath || '') !== media) return false;
+    if (accountId && String(_precheckAccountId || '') !== String(accountId)) return false;
+    return true;
 }
 
 function toggleOpsAdvanced() {
@@ -730,12 +853,12 @@ function authToneForState(state) {
 }
 
 function readinessOptionSuffix(row) {
-    if (row.runtime_story_ready) return ' — Story-ready';
-    if (row.story_auth_state === 'blocked') return ' — Auth blocked';
-    if (row.story_auth_state === 'failed') return ' — Auth failed';
-    if (row.story_auth_state === 'fresh_auth_stale') return ' — Auth stale';
-    if (row.needs_auth_probe || row.story_auth_state === 'fresh_auth_required') return ' — Auth required';
-    if (!row.governance_allowed) return ' — Protected/blocked';
+    if (row.runtime_story_ready) return ' — Ready';
+    if (row.story_auth_state === 'blocked') return ' — Blocked';
+    if (row.story_auth_state === 'failed') return ' — Authentication failed';
+    if (row.story_auth_state === 'fresh_auth_stale') return ' — Needs authentication';
+    if (row.needs_auth_probe || row.story_auth_state === 'fresh_auth_required') return ' — Needs authentication';
+    if (!row.governance_allowed) return ' — Protected';
     return ' — Not ready';
 }
 
@@ -744,20 +867,60 @@ function getSelectedSchedAccountId() {
     return accountSel && accountSel.value ? String(accountSel.value) : null;
 }
 
+function isPoolDestMode() {
+    return !!document.getElementById('ops-dest-pool')?.checked;
+}
+
+function onDestModeChange() {
+    const poolMode = isPoolDestMode();
+    document.getElementById('ops-dest-account-wrap')?.classList.toggle('d-none', poolMode);
+    document.getElementById('ops-dest-pool-wrap')?.classList.toggle('d-none', !poolMode);
+    if (poolMode) {
+        const accountSel = document.getElementById('sched-account');
+        if (accountSel) accountSel.value = '';
+    } else {
+        const poolSel = document.getElementById('sched-pool');
+        if (poolSel) poolSel.value = '';
+    }
+    updatePoolHint();
+    invalidatePrecheck('destination changed');
+    renderSelectedAccountCard();
+    renderOperatorGuidance();
+    renderPrimaryActions();
+}
+
+function onPoolChange() {
+    invalidatePrecheck('pool changed');
+    updatePoolHint();
+    renderOperatorGuidance();
+    renderPrimaryActions();
+}
+
+function onEligibilityInputChange() {
+    invalidatePrecheck('settings changed');
+}
+
+function updatePoolHint() {
+    const hint = document.getElementById('ops-pool-hint');
+    if (!hint) return;
+    const counts = operatorSummaryCounts();
+    if (counts.ready <= 0) {
+        hint.textContent = 'No account pool is usable right now because no Story accounts are Ready for live. Create a pool after accounts become Story-ready, or use a single account for Dry Run.';
+    } else {
+        hint.textContent = `${counts.ready} account(s) currently Ready for live Stories.`;
+    }
+}
+
 function renderReadinessSummary() {
-    const summary = window.storyReadinessState.summary || {};
-    const ready = clampDisplayCount(summary.runtime_story_ready);
-    const needsRefresh = clampDisplayCount(summary.needs_auth_probe);
-    const blocked = clampDisplayCount(summary.blocked) + clampDisplayCount(summary.quarantined);
-    const protectedCount = clampDisplayCount(summary.protected)
-        + clampDisplayCount(summary.manual_only) + clampDisplayCount(summary.ai_reserved);
-    setText('ops-ready-count', ready, ready > 0 ? '#22c55e' : '#94a3b8');
-    setText('ops-needs-refresh-count', needsRefresh, needsRefresh > 0 ? '#f59e0b' : '#94a3b8');
-    setText('ops-blocked-count', blocked, blocked > 0 ? '#ef4444' : '#94a3b8');
-    setText('ops-protected-count', protectedCount, protectedCount > 0 ? '#60a5fa' : '#94a3b8');
-    setText('fleet-story-ready-count', ready);
+    const counts = operatorSummaryCounts();
+    setText('ops-ready-count', counts.ready, counts.ready > 0 ? '#22c55e' : '#94a3b8');
+    setText('ops-needs-refresh-count', counts.needsAuth, counts.needsAuth > 0 ? '#f59e0b' : '#94a3b8');
+    setText('ops-blocked-count', counts.blocked, counts.blocked > 0 ? '#ef4444' : '#94a3b8');
+    setText('ops-protected-count', counts.protected, counts.protected > 0 ? '#60a5fa' : '#94a3b8');
+    setText('fleet-story-ready-count', counts.ready);
     const lbl = document.getElementById('sched-ready-label');
-    if (lbl) lbl.textContent = `Ready ${ready} · Refresh ${needsRefresh}`;
+    if (lbl) lbl.textContent = `Ready ${counts.ready} · Needs auth ${counts.needsAuth}`;
+    updatePoolHint();
 }
 
 function renderAccountPicker() {
@@ -770,19 +933,15 @@ function renderAccountPicker() {
     );
     schedAccount.innerHTML = '<option value="">— Select account —</option>' + rows.map(row => {
         const lbl = operatorPickerLabel(row);
-        const title = [
-            row.story_auth_label || row.story_auth_state || '',
-            ...(row.blockers || []).slice(0, 3),
-        ].filter(Boolean).join(' · ');
-        return `<option value="${row.account_id}" title="${storyEscapeHtml(title)}">${lbl.replace(/</g, '&lt;')}</option>`;
+        const title = operatorStatusForRow(row).hint;
+        const disabled = row.governance_allowed === false ? ' disabled' : '';
+        return `<option value="${row.account_id}" title="${storyEscapeHtml(title)}"${disabled}>${lbl.replace(/</g, '&lt;')}</option>`;
     }).join('');
+    // Preserve prior selection only — never silently auto-select an account.
     if (prev && schedAccount.querySelector(`option[value="${prev}"]`)) {
         schedAccount.value = prev;
-    } else if (schedAccount.querySelector('option[value="140"]')) {
-        schedAccount.value = '140';
     } else {
-        const firstReady = rows.find(r => r.runtime_story_ready);
-        if (firstReady) schedAccount.value = String(firstReady.account_id);
+        schedAccount.value = '';
     }
 }
 
@@ -790,7 +949,7 @@ function renderSelectedAccountCard(accountId) {
     const panel = document.getElementById('selected-account-readiness');
     if (!panel) return;
     const id = accountId != null ? String(accountId) : getSelectedSchedAccountId();
-    if (!id) {
+    if (!id || isPoolDestMode()) {
         panel.classList.add('d-none');
         return;
     }
@@ -803,20 +962,121 @@ function renderSelectedAccountCard(accountId) {
     panel.classList.remove('d-none');
     const loadedAt = window.storyReadinessState.loadedAt;
     const refreshLabel = loadedAt ? relTime(new Date(loadedAt).toISOString()) : '—';
-    const blockers = (row.blockers || []).slice(0, 4);
-    const blockerHtml = blockers.length
-        ? `<div class="small mt-2"><span class="text-muted">Why:</span> ${storyEscapeHtml(blockers.join(' · '))}</div>`
-        : '';
+    let message = st.hint;
+    if (st.chip === 'refresh') {
+        message = `Account ${id} needs an authentication check before live publishing. Dry Run is still available.`;
+    } else if (st.chip === 'blocked' && row.story_auth_state === 'failed') {
+        message = `Account ${id} — authentication failed / not authorized. Dry Run may still work with media.`;
+    } else if (st.chip === 'ready') {
+        message = `Account ${id} has fresh Story authentication.`;
+    }
     panel.innerHTML = `<div class="d-flex justify-content-between align-items-start mb-2">`
         + `<div class="fw-semibold">Account #${storyEscapeHtml(id)}</div>`
         + `<span class="stories-ops-chip ${st.chip}">${st.icon} ${storyEscapeHtml(st.label)}</span></div>`
-        + `<div class="small text-muted mb-2">${storyEscapeHtml(st.hint)}</div>`
+        + `<div class="small mb-2">${storyEscapeHtml(message)}</div>`
         + `<div class="small d-flex flex-wrap gap-3 text-muted">`
-        + `<span>Auth: ${storyEscapeHtml(row.story_auth_state || '—')}</span>`
-        + `<span>Last refresh: ${storyEscapeHtml(refreshLabel)}</span>`
+        + `<span>Status refreshed: ${storyEscapeHtml(refreshLabel)}</span>`
         + `<span>Media: ${storyEscapeHtml(mediaStatusLabel())}</span>`
-        + `</div>`
-        + blockerHtml;
+        + `</div>`;
+}
+
+function renderOperatorGuidance() {
+    const el = document.getElementById('ops-next-step');
+    const badge = document.getElementById('ops-live-lock-badge');
+    if (!el) return;
+    const counts = operatorSummaryCounts();
+    const id = getSelectedSchedAccountId();
+    const row = id ? window.storyReadinessState.accounts[id] : null;
+    const mediaOk = hasMediaSelected();
+    const dryFresh = precheckMatchesCurrentSelection() && _lastStoryPrecheck && _lastStoryPrecheck.ok;
+    const liveAllowed = !!(dryFresh && _lastStoryPrecheck && _lastStoryPrecheck.live_publish_allowed);
+    let tone = 'alert-secondary';
+    let text = '';
+
+    if (!id && !isPoolDestMode()) {
+        tone = 'alert-secondary';
+        text = 'Select an account to continue.';
+    } else if (isPoolDestMode() && counts.ready <= 0) {
+        tone = 'alert-warning';
+        text = 'No Story accounts are currently Ready for live. Use a single account for Dry Run, or wait until authentication succeeds.';
+    } else if (!mediaOk) {
+        tone = 'alert-warning';
+        text = 'Upload media to continue.';
+    } else if (_precheckStale || !precheckMatchesCurrentSelection()) {
+        tone = 'alert-info';
+        text = 'Media ready. Run Dry Run to verify this Story before any live action.';
+    } else if (dryFresh && row && !row.runtime_story_ready) {
+        tone = 'alert-success';
+        text = 'Dry Run ready. Live publishing is unavailable because this account needs an authentication check.';
+    } else if (dryFresh && !liveAllowed) {
+        tone = 'alert-success';
+        text = counts.ready <= 0
+            ? 'Dry Run ready. Live publishing is unavailable because no account currently has fresh Story authentication.'
+            : 'Dry Run ready. Live publishing remains gated until approval requirements are met.';
+    } else if (liveAllowed) {
+        tone = 'alert-success';
+        text = 'Dry Run passed. Controlled live test requirements are met — review Advanced live controls if authorized.';
+    } else {
+        tone = 'alert-warning';
+        text = `Dry Run found issues. ${( _lastStoryPrecheck?.live_blockers || []).slice(0, 2).map(compactStoryBlockerLabel).join('; ') || 'Review and fix blockers.'}`;
+    }
+
+    if (counts.ready <= 0 && badge) {
+        badge.innerHTML = '<i class="bi bi-lock-fill me-1"></i> Live unavailable — authentication needed';
+    } else if (badge) {
+        badge.innerHTML = '<i class="bi bi-lock-fill me-1"></i> Live publishing unavailable';
+    }
+
+    el.className = `alert ${tone} py-2 px-3 small mb-3`;
+    el.textContent = text;
+}
+
+function primaryActionPlan() {
+    const id = getSelectedSchedAccountId();
+    const row = id ? window.storyReadinessState.accounts[id] : null;
+    if (!id && !isPoolDestMode()) {
+        return { label: 'Select an account', enabled: false, action: 'noop' };
+    }
+    if (!hasMediaSelected()) {
+        return { label: 'Upload media', enabled: true, action: 'upload' };
+    }
+    if (row && (row.story_auth_state === 'fresh_auth_stale' || row.needs_auth_probe || row.story_auth_state === 'fresh_auth_required')
+        && precheckMatchesCurrentSelection() && _lastStoryPrecheck?.ok) {
+        // Dry run already ok — offer auth check as next live-path step, but dry-run stays available.
+        return { label: 'Run authentication check', enabled: true, action: 'auth' };
+    }
+    if (!precheckMatchesCurrentSelection() || _precheckStale || !_lastStoryPrecheck) {
+        return { label: 'Run Dry Run', enabled: true, action: 'dryrun' };
+    }
+    if (_lastStoryPrecheck.live_publish_allowed) {
+        return { label: 'Review live requirements', enabled: true, action: 'live-review' };
+    }
+    if (!_lastStoryPrecheck.ok) {
+        return { label: 'Run Dry Run', enabled: true, action: 'dryrun' };
+    }
+    return { label: 'Run Dry Run', enabled: true, action: 'dryrun' };
+}
+
+function runPrimaryOperatorAction() {
+    const plan = primaryActionPlan();
+    if (plan.action === 'upload') {
+        document.getElementById('media-upload-input')?.click();
+        return;
+    }
+    if (plan.action === 'auth') {
+        runSelectedAccountAuthProbe();
+        return;
+    }
+    if (plan.action === 'live-review') {
+        const panel = document.getElementById('ops-advanced-panel');
+        if (panel?.classList.contains('d-none')) toggleOpsAdvanced();
+        document.getElementById('ops-live-gate-panel')?.classList.remove('d-none');
+        document.getElementById('ops-live-gate-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return;
+    }
+    if (plan.action === 'dryrun') {
+        runStoryPrecheck(true);
+    }
 }
 
 function renderPrimaryActions() {
@@ -824,37 +1084,58 @@ function renderPrimaryActions() {
     const row = id ? window.storyReadinessState.accounts[id] : null;
     const liveBtn = document.getElementById('btn-schedule');
     const dryBtn = document.getElementById('btn-dryrun');
-    const precheck = _lastStoryPrecheck;
-    if (dryBtn) {
-        dryBtn.disabled = !id;
-        dryBtn.title = id ? 'Run dry-run for selected account' : 'Select an account first';
+    const primaryBtn = document.getElementById('btn-primary-action');
+    const authBtn = document.getElementById('btn-refresh-account');
+    const plan = primaryActionPlan();
+    if (primaryBtn) {
+        primaryBtn.disabled = !plan.enabled || _authProbeInFlight;
+        primaryBtn.textContent = plan.label;
     }
+    if (dryBtn) {
+        const canDry = !!(id || isPoolDestMode()) && hasMediaSelected();
+        dryBtn.disabled = !canDry || _authProbeInFlight;
+        dryBtn.title = canDry ? 'Run dry-run for current selection' : 'Select destination and media first';
+        dryBtn.classList.toggle('d-none', plan.action === 'dryrun');
+    }
+    const canShowLivePanel = !!(
+        id === '140'
+        && row
+        && row.runtime_story_ready
+        && hasMediaSelected()
+        && precheckMatchesCurrentSelection()
+        && _lastStoryPrecheck
+        && _lastStoryPrecheck.ok
+    );
+    const livePanel = document.getElementById('ops-live-gate-panel');
+    if (livePanel) livePanel.classList.toggle('d-none', !canShowLivePanel);
     if (liveBtn) {
-        const canLive = !!(precheck && precheck.live_publish_allowed);
+        const canLive = !!(precheckMatchesCurrentSelection() && _lastStoryPrecheck && _lastStoryPrecheck.live_publish_allowed);
+        liveBtn.classList.toggle('d-none', !canShowLivePanel);
         liveBtn.disabled = !canLive;
         liveBtn.innerHTML = canLive
-            ? '<i class="bi bi-play-circle me-1"></i> Enable live test'
-            : '<i class="bi bi-lock-fill me-1"></i> Enable live test';
-        liveBtn.title = canLive
-            ? 'Creates gated live run (account 140 only)'
-            : 'Complete dry-run and approval first';
+            ? '<i class="bi bi-play-circle me-1"></i> Start approved Story'
+            : '<i class="bi bi-lock-fill me-1"></i> Start approved Story';
     }
-    const refreshBtn = document.getElementById('btn-refresh-account');
-    if (refreshBtn && row) {
-        const st = operatorStatusForRow(row);
-        refreshBtn.title = st.hint;
+    if (authBtn) {
+        const needsAuth = !!(row && (row.needs_auth_probe || row.story_auth_state === 'fresh_auth_stale'
+            || row.story_auth_state === 'fresh_auth_required' || row.story_auth_state === 'failed'));
+        authBtn.classList.toggle('d-none', !id || !needsAuth);
+        authBtn.disabled = !id || _authProbeInFlight;
     }
+    renderOperatorGuidance();
 }
 
 function renderAdvancedDiagnostics(precheck) {
     const body = document.getElementById('story-advanced-diagnostics-body');
     if (!body) return;
-    const summary = window.storyReadinessState.summary || {};
+    const counts = operatorSummaryCounts();
     const id = getSelectedSchedAccountId();
     const row = id ? window.storyReadinessState.accounts[id] : null;
     const lines = [
-        `<div><strong>API summary</strong></div>`,
-        `<div class="text-muted">ready=${clampDisplayCount(summary.runtime_story_ready)} · refresh=${clampDisplayCount(summary.needs_auth_probe)} · blocked=${clampDisplayCount(summary.blocked)} · protected=${clampDisplayCount(summary.protected)}</div>`,
+        `<div><strong>Operator summary (same as header)</strong></div>`,
+        `<div class="text-muted">ready=${counts.ready} · needs_auth=${counts.needsAuth} · blocked=${counts.blocked} · protected=${counts.protected} (strict=${counts.protectedStrict} · manual_only=${counts.manualOnly} · ai_reserved=${counts.aiReserved})</div>`,
+        `<div class="mt-2"><strong>Current media</strong></div>`,
+        `<div class="text-muted">ui=${storyEscapeHtml(mediaStatusLabel())} · path=${storyEscapeHtml(currentMediaPath() || '—')} · precheck_stale=${_precheckStale}</div>`,
     ];
     if (row) {
         lines.push(`<div class="mt-2"><strong>Account #${storyEscapeHtml(id)}</strong></div>`);
@@ -862,22 +1143,16 @@ function renderAdvancedDiagnostics(precheck) {
         if (row.blockers && row.blockers.length) {
             lines.push(`<div class="text-muted">blockers: ${storyEscapeHtml(row.blockers.join(', '))}</div>`);
         }
-        if (row.labels) {
-            lines.push(`<div class="text-muted">labels: ${storyEscapeHtml(JSON.stringify(row.labels))}</div>`);
-        }
     }
     const healthy = document.getElementById('fleet-healthy-count')?.textContent;
     const limited = document.getElementById('fleet-limited-count')?.textContent;
     const missing = document.getElementById('fleet-missing-config-count')?.textContent;
     const active = document.getElementById('fleet-active-run-count')?.textContent;
-    lines.push(`<div class="mt-2"><strong>Fleet health</strong></div>`);
-    lines.push(`<div class="text-muted">healthy=${storyEscapeHtml(healthy || '—')} · rate_limited=${storyEscapeHtml(limited || '—')} · missing_media=${storyEscapeHtml(missing || '—')} · active_runs=${storyEscapeHtml(active || '—')}</div>`);
+    lines.push(`<div class="mt-2"><strong>Fleet health (legacy counters)</strong></div>`);
+    lines.push(`<div class="text-muted">healthy=${storyEscapeHtml(healthy || '—')} · rate_limited=${storyEscapeHtml(limited || '—')} · missing_media=${storyEscapeHtml(missing || '—')}${_precheckStale ? ' (may be historical)' : ''} · active_runs=${storyEscapeHtml(active || '—')}</div>`);
     if (precheck) {
-        lines.push(`<div class="mt-2"><strong>Last precheck</strong></div>`);
-        lines.push(`<div class="text-muted">ok=${!!precheck.ok} · story_ready=${clampDisplayCount(precheck.counts?.story_ready)} · live_blockers=${storyEscapeHtml((precheck.live_blockers || []).join(', ') || 'none')}</div>`);
-        if (precheck.account_blockers && Object.keys(precheck.account_blockers).length) {
-            lines.push(`<pre class="small mt-1 mb-0" style="white-space:pre-wrap;color:#94a3b8;">${storyEscapeHtml(JSON.stringify(precheck.account_blockers, null, 2))}</pre>`);
-        }
+        lines.push(`<div class="mt-2"><strong>Last precheck${_precheckStale ? ' (STALE)' : ''}</strong></div>`);
+        lines.push(`<div class="text-muted">ok=${!!precheck.ok} · media_ok=${!!(precheck.media && precheck.media.ok)} · path=${storyEscapeHtml((precheck.media && precheck.media.path) || _precheckMediaPath || '—')} · live_blockers=${storyEscapeHtml((precheck.live_blockers || []).join(', ') || 'none')}</div>`);
     }
     body.innerHTML = lines.join('');
 }
@@ -888,11 +1163,16 @@ function renderAllReadinessUi(precheck) {
     renderSelectedAccountCard();
     renderPrimaryActions();
     renderAdvancedDiagnostics(precheck || _lastStoryPrecheck);
+    updateMediaStatusChip();
 }
 
 function onSchedAccountChange() {
+    invalidatePrecheck('account changed');
     renderSelectedAccountCard();
     renderPrimaryActions();
+    if (hasMediaSelected() && getSelectedSchedAccountId()) {
+        runStoryPrecheck(true, {quiet: true}).catch(() => {});
+    }
 }
 
 async function refreshStoryReadinessState() {
@@ -1115,7 +1395,9 @@ async function loadBatchHistory() {
 function toggleInterval() {
     const mode = document.getElementById('sched-mode').value;
     const grp  = document.getElementById('interval-group');
+    const warn = document.getElementById('ops-continuous-warn');
     if (grp) grp.style.display = mode === 'continuous' ? '' : 'none';
+    if (warn) warn.classList.toggle('d-none', mode !== 'continuous');
 }
 
 let _activeRunId = null;
@@ -1180,26 +1462,34 @@ function storyEscapeHtml(value) {
 }
 
 function compactStoryBlockerLabel(blocker) {
-    if (blocker === 'fresh_story_auth_stale') return 'Fresh story auth stale — re-run probe';
+    if (blocker === 'missing_or_invalid_media') return 'Upload a valid media file';
+    if (blocker === 'fresh_story_auth_stale') return 'Account authentication needs refresh';
     if (blocker === 'fresh_story_auth_required' || String(blocker).startsWith('fresh_story_precheck_required')) {
-        return 'Fresh story auth required';
+        return 'Run an authentication check';
     }
     if (String(blocker).startsWith('story_precheck_not_allowed')) {
-        return 'Story precheck not allowed';
+        return 'Authentication failed / not authorized';
     }
     if (String(blocker).startsWith('stale_account_health_superseded_by_v1_ready')) {
-        return 'Legacy health is stale; v1 readiness is trusted for dry-run';
+        return 'Legacy health is stale; Dry Run still uses readiness';
     }
-    if (blocker === 'readiness_snapshot_expired') return 'Readiness snapshot expired';
-    if (blocker === 'auth_required') return 'Fresh story auth required';
+    if (blocker === 'readiness_snapshot_expired') return 'Readiness expired — refresh status';
+    if (blocker === 'auth_required') return 'Run an authentication check';
+    if (blocker === 'no_story_ready_accounts') return 'No account is currently ready for live publishing';
     return String(blocker).replaceAll('_', ' ');
 }
 
 function renderStoryPrecheck(precheck, {quiet = false} = {}) {
     _lastStoryPrecheck = precheck;
+    _precheckStale = false;
+    _precheckMediaPath = currentMediaPath();
+    _precheckAccountId = getSelectedSchedAccountId();
     const counts = precheck.counts || {};
-    setText('fleet-missing-config-count', clampDisplayCount(counts.missing_media_or_config),
-        clampDisplayCount(counts.missing_media_or_config) > 0 ? '#f97316' : '#22c55e');
+    const mediaOkNow = hasMediaSelected() && !!(precheck.media && precheck.media.ok);
+    // Prefer live form media over a stale missing_media count from an older payload.
+    setText('fleet-missing-config-count',
+        mediaOkNow ? 0 : clampDisplayCount(counts.missing_media_or_config),
+        mediaOkNow ? '#22c55e' : (clampDisplayCount(counts.missing_media_or_config) > 0 ? '#f97316' : '#22c55e'));
     setText('fleet-active-run-count', clampDisplayCount(counts.active_or_stale_runs),
         clampDisplayCount(counts.active_or_stale_runs) > 0 ? '#f59e0b' : '#22c55e');
     const panel = document.getElementById('story-precheck-panel');
@@ -1207,27 +1497,44 @@ function renderStoryPrecheck(precheck, {quiet = false} = {}) {
     renderAdvancedDiagnostics(precheck);
     if (!panel) return;
     const ok = !!precheck.ok;
+    const mediaOk = !!(precheck.media && precheck.media.ok);
+    // Never claim missing media when the form currently has media selected.
+    const blockers = (precheck.live_blockers || []).filter(b => {
+        if (b === 'missing_or_invalid_media' && hasMediaSelected() && mediaOk) return false;
+        return true;
+    });
     panel.className = ok ? 'alert alert-success py-2 px-3 small mb-3' : 'alert alert-warning py-2 px-3 small mb-3';
     panel.classList.remove('d-none');
-    const mediaOk = precheck.media && precheck.media.ok;
-    panel.textContent = ok
-        ? `Dry-run passed · media ${mediaOk ? 'ready' : 'check required'} · live test still locked`
-        : `Dry-run blocked · ${(precheck.live_blockers || []).slice(0, 2).join(', ') || 'review required'}`;
+    if (ok) {
+        panel.textContent = mediaOk
+            ? 'Dry-run passed · media ready · live publishing still gated'
+            : 'Dry-run passed · review live requirements before publishing';
+    } else if (blockers.includes('missing_or_invalid_media') && !hasMediaSelected()) {
+        panel.textContent = 'Dry-run blocked · upload media to continue';
+    } else {
+        panel.textContent = `Dry-run blocked · ${blockers.slice(0, 2).map(compactStoryBlockerLabel).join('; ') || 'review required'}`;
+    }
     if (!quiet) {
         const resultEl = document.getElementById('sched-result');
         if (resultEl) {
             resultEl.classList.remove('d-none');
             resultEl.className = ok ? 'alert alert-success mb-2 py-2 px-3 small' : 'alert alert-warning mb-2 py-2 px-3 small';
-            resultEl.textContent = ok ? 'Dry-run complete.' : 'Dry-run found issues — see Technical details.';
+            resultEl.textContent = ok ? 'Dry-run complete.' : 'Dry-run found issues — see guidance above.';
         }
     }
+    renderOperatorGuidance();
 }
 
 async function runStoryPrecheck(isDryRun, opts = {}) {
     const btn = document.getElementById(isDryRun ? 'btn-dryrun' : 'btn-precheck');
+    const primaryBtn = document.getElementById('btn-primary-action');
     if (btn && !opts.quiet) {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking...';
+    }
+    if (primaryBtn && !opts.quiet) {
+        primaryBtn.disabled = true;
+        primaryBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking...';
     }
     try {
         const fetcher = window.dashboardFetchJson || (async (url, options) => {
@@ -1245,17 +1552,86 @@ async function runStoryPrecheck(isDryRun, opts = {}) {
     } catch (e) {
         if (!opts.quiet) {
             const resultEl = document.getElementById('sched-result');
-            resultEl.classList.remove('d-none');
-            resultEl.className = 'alert alert-danger mb-2';
-            resultEl.textContent = 'Precheck failed: ' + (e.message || e);
+            if (resultEl) {
+                resultEl.classList.remove('d-none');
+                resultEl.className = 'alert alert-danger mb-2';
+                resultEl.textContent = 'Precheck failed: ' + (e.message || e);
+            }
         }
     } finally {
         if (btn && !opts.quiet) {
             btn.disabled = false;
             btn.innerHTML = isDryRun
-                ? '<i class="bi bi-eye me-1"></i> Run dry-run'
+                ? '<i class="bi bi-eye me-1"></i> Run Dry Run'
                 : '<i class="bi bi-shield-check me-1"></i> Precheck';
         }
+        renderPrimaryActions();
+    }
+}
+
+async function runSelectedAccountAuthProbe() {
+    const id = getSelectedSchedAccountId();
+    if (!id) {
+        alert('Select an account first.');
+        return;
+    }
+    const btn = document.getElementById('btn-refresh-account');
+    const primaryBtn = document.getElementById('btn-primary-action');
+    const resultEl = document.getElementById('sched-result');
+    _authProbeInFlight = true;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking auth…';
+    }
+    if (primaryBtn) {
+        primaryBtn.disabled = true;
+        primaryBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking auth…';
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
+    try {
+        const headers = {'Content-Type': 'application/json'};
+        if (typeof ADMIN_TOKEN === 'string' && ADMIN_TOKEN) headers['X-Admin-Token'] = ADMIN_TOKEN;
+        const r = await fetch('/api/accounts/story-precheck', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers,
+            body: JSON.stringify({ account_ids: [parseInt(id, 10)] }),
+            signal: controller.signal,
+        });
+        const d = await (typeof dashboardReadJson === 'function' ? dashboardReadJson(r) : r.json());
+        if (resultEl) {
+            resultEl.classList.remove('d-none');
+            if (!r.ok) {
+                resultEl.className = 'alert alert-danger mb-2';
+                resultEl.textContent = d.error || d.message || `Authentication check failed (HTTP ${r.status})`;
+            } else {
+                resultEl.className = 'alert alert-success mb-2';
+                resultEl.textContent = `Authentication check finished for account ${id}.`;
+            }
+        }
+        await refreshStoryReadinessState();
+        if (hasMediaSelected()) {
+            await runStoryPrecheck(true, {quiet: true});
+        }
+    } catch (e) {
+        if (resultEl) {
+            resultEl.classList.remove('d-none');
+            resultEl.className = 'alert alert-danger mb-2';
+            resultEl.textContent = e.name === 'AbortError'
+                ? 'Authentication check timed out. Try again or check account session.'
+                : ('Authentication check error: ' + (e.message || e));
+        }
+        await refreshStoryReadinessState().catch(() => {});
+    } finally {
+        clearTimeout(timer);
+        _authProbeInFlight = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-shield-check me-1"></i> Run authentication check';
+        }
+        renderPrimaryActions();
+        renderSelectedAccountCard();
     }
 }
 
@@ -1315,8 +1691,18 @@ function setMediaSelection(path, filename, sizeTxt, isVideo) {
     document.getElementById('media-selected-icon').textContent = isVideo ? '🎬' : '🖼️';
     document.getElementById('media-selected-display').classList.remove('d-none');
     document.getElementById('media-browser').classList.add('d-none');
-    refreshStoryReadinessState().catch(() => {});
+    _mediaUiStatus = 'ready';
+    updateMediaStatusChip();
+    setText('fleet-missing-config-count', 0, '#22c55e');
+    invalidatePrecheck('media updated');
     renderSelectedAccountCard();
+    // Recompute eligibility with the new media path (no full-page refresh).
+    if (getSelectedSchedAccountId() || isPoolDestMode()) {
+        runStoryPrecheck(true, {quiet: true}).catch(() => {});
+    } else {
+        renderOperatorGuidance();
+        renderPrimaryActions();
+    }
 }
 
 function clearMediaSelection() {
@@ -1324,6 +1710,12 @@ function clearMediaSelection() {
     document.getElementById('media-selected-display').classList.add('d-none');
     const adv = document.getElementById('sched-media-path');
     if (adv) adv.value = '';
+    _mediaUiStatus = 'empty';
+    updateMediaStatusChip();
+    invalidatePrecheck('media removed');
+    renderSelectedAccountCard();
+    renderOperatorGuidance();
+    renderPrimaryActions();
 }
 
 function onManualPathInput(val) {
@@ -1336,9 +1728,13 @@ function onManualPathInput(val) {
         document.getElementById('media-selected-size').textContent = 'server path';
         document.getElementById('media-selected-icon').textContent = isVideo ? '🎬' : '🖼️';
         document.getElementById('media-selected-display').classList.remove('d-none');
+        _mediaUiStatus = 'ready';
     } else {
         document.getElementById('media-selected-display').classList.add('d-none');
+        _mediaUiStatus = 'empty';
     }
+    updateMediaStatusChip();
+    invalidatePrecheck('media path edited');
 }
 
 async function handleMediaUpload(input) {
@@ -1359,6 +1755,8 @@ async function handleMediaUpload(input) {
         return;
     }
     prog.classList.remove('d-none');
+    _mediaUiStatus = 'uploading';
+    updateMediaStatusChip();
     showStatus('Uploading…', null);
     const fd = new FormData();
     fd.append('file', file);
@@ -1394,6 +1792,8 @@ async function handleMediaUpload(input) {
             const msg = parseErr.status === 413 || /413/.test(String(parseErr.message || ''))
                 ? 'Upload rejected: file too large for reverse proxy (HTTP 413).'
                 : (parseErr.message || 'Upload failed');
+            _mediaUiStatus = 'failed';
+            updateMediaStatusChip();
             showStatus(msg, false);
             alert(msg);
             input.value = '';
@@ -1407,12 +1807,16 @@ async function handleMediaUpload(input) {
             loadMediaBrowser();
         } else {
             const msg = (d && (d.error || d.message)) || `Upload failed (HTTP ${r.status})`;
+            _mediaUiStatus = 'failed';
+            updateMediaStatusChip();
             showStatus(msg, false);
             alert(msg);
         }
     } catch (e) {
         prog.classList.add('d-none');
         const msg = 'Upload error: ' + (e.message || e);
+        _mediaUiStatus = 'failed';
+        updateMediaStatusChip();
         showStatus(msg, false);
         alert(msg);
     }
@@ -1467,10 +1871,10 @@ async function scheduleRun() {
     const btn      = document.getElementById('btn-schedule');
     const resultEl = document.getElementById('sched-result');
     const body = buildStoryRunPayload();
-    if (!_lastStoryPrecheck || !_lastStoryPrecheck.live_publish_allowed) {
+    if (!precheckMatchesCurrentSelection() || !_lastStoryPrecheck || !_lastStoryPrecheck.live_publish_allowed) {
         resultEl.classList.remove('d-none');
         resultEl.className = 'alert alert-warning mb-2';
-        resultEl.textContent = 'Run precheck first. Live run stays locked until account 140 has fresh story auth and explicit approval.';
+        resultEl.textContent = 'Live run stays locked until Dry Run passes with the current media and account 140 has fresh Story authentication plus explicit approval.';
         return;
     }
     if (!body.account_ids || body.account_ids.length !== 1 || body.account_ids[0] !== 140) {
@@ -1700,13 +2104,14 @@ async function loadPoolsUI() {
                 ? `<optgroup label="Named Pools">${poolOpts}</optgroup>`
                 : '';
             sel.innerHTML = `
-                <option value="">— All ready accounts (stories + both) —</option>
+                <option value="">— All ready accounts —</option>
                 <optgroup label="By Purpose">
                     <option value="purpose:autostory">Stories-only accounts</option>
                     <option value="purpose:both">Both (stories + messaging) accounts</option>
                 </optgroup>
                 ${poolGroup}
             `;
+            updatePoolHint();
         }
 
         const tbody = document.getElementById('pool-list-table');
@@ -1728,7 +2133,7 @@ async function loadPoolsUI() {
                     ><i class="bi bi-trash3"></i></button>
                 </td>
               </tr>`).join('')
-            : '<tr><td colspan="5" class="text-center text-muted py-3">No custom pools yet. You can still run with all story-ready accounts.</td></tr>';
+            : '<tr><td colspan="5" class="text-center text-muted py-3">No custom pools yet. Create a pool after accounts become Story-ready.</td></tr>';
     } catch (e) { console.error('loadPoolsUI', e); }
 }
 
@@ -1916,6 +2321,9 @@ async function storiesJoinChannel() {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+    updateMediaStatusChip();
+    toggleInterval();
+    onDestModeChange();
     await loadFleetStatus();
     loadPoolsUI();
     loadMentionSources();
@@ -1923,7 +2331,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadStories();
     loadBatchHistory();
     loadActiveRun();
-    await runStoryPrecheck(true, {quiet: true});
+    // Do not run a quiet dry-run without media — that left a stale missing_media banner.
+    renderOperatorGuidance();
+    renderPrimaryActions();
     loadBlacklist();
     setInterval(loadActiveRun, 30000);
 });
