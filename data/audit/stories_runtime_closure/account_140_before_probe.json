@@ -1,0 +1,64 @@
+{
+  "label": "before_probe",
+  "at_utc": "2026-07-16T11:32:37.069499Z",
+  "summary": {
+    "governance_story_eligible": 96,
+    "runtime_story_ready": 0,
+    "needs_auth_probe": 96,
+    "protected": 0,
+    "manual_only": 3,
+    "quarantined": 0,
+    "ai_reserved": 2,
+    "blocked": 2
+  },
+  "account_140_db": {
+    "story_precheck_status": "allowed",
+    "story_precheck_reason": "CanSendStory OK",
+    "story_precheck_checked_at": "2026-06-05 12:01:51.508637",
+    "story_blocked_until": "None",
+    "status": "AccountStatus.ACTIVE",
+    "health_status": "error"
+  },
+  "account_140_auth_state": {
+    "state": "fresh_auth_stale",
+    "fresh": false,
+    "label": "Auth stale",
+    "tone": "warning",
+    "checked_at": "2026-06-05T12:01:51.508637",
+    "blocked_until": null,
+    "status": "allowed",
+    "reason": "CanSendStory OK",
+    "blockers": [
+      "fresh_story_auth_stale"
+    ]
+  },
+  "account_140_readiness": {
+    "story_auth": {
+      "state": "fresh_auth_stale",
+      "label": "Auth stale",
+      "tone": "warning",
+      "fresh": false,
+      "checked_at": "2026-06-05T12:01:51.508637",
+      "blocked_until": null,
+      "blockers": [
+        "fresh_story_auth_stale"
+      ]
+    },
+    "runtime_story_ready": false,
+    "needs_auth_probe": true,
+    "governance_allowed": true,
+    "labels": {
+      "governance": "Allowed",
+      "governance_tone": "success",
+      "story_auth": "Auth stale",
+      "story_auth_tone": "warning",
+      "runtime": "Not ready",
+      "runtime_tone": "warning",
+      "primary": "Needs story auth",
+      "severity": "warning"
+    },
+    "blockers": [
+      "fresh_story_auth_stale"
+    ]
+  }
+}

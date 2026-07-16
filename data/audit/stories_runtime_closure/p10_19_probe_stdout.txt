@@ -1,0 +1,10 @@
+2026-07-16 13:33:09 [info     ] story_publish_client_ready     account_id=140 session_source_kind=canonical_file
+2026-07-16 13:33:09 [info     ] story_precheck_allowed         account_id=140
+2026-07-16 13:33:09 [info     ] Client disconnected            phone=+18096373640
+2026-07-16 13:33:09 [info     ] story_precheck_persisted       account_id=140 blocked_until=None status=allowed
+/opt/autostory/scripts/ops/p10_19_story_authorization_probe.py:184: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "generated_at": datetime.utcnow().isoformat(),
+/opt/autostory/scripts/ops/p10_19_story_authorization_probe.py:127: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+data/recovery_lab/reports/p10_19_story_authorization_probe_20260716_113309.json
+data/recovery_lab/reports/p10_19_story_authorization_probe_20260716_113309.md

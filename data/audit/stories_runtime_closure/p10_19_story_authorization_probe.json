@@ -1,0 +1,573 @@
+{
+  "account_id": 140,
+  "after": {
+    "account_id": 140,
+    "found": true,
+    "fresh_story_auth_ok": true,
+    "has_canonical_session": true,
+    "health_checked_at": "2026-05-14T14:30:18.067011",
+    "health_reason": "P2_scheduler_truth: account_readiness_snapshots is authoritative for scheduler eligibility; accounts.health_status may lag fleet healthcheck.",
+    "health_status": "error",
+    "last_story_attempt_at": null,
+    "last_story_success_at": null,
+    "precheck_projection": {
+      "account_blockers": {},
+      "account_live_only_blockers": {},
+      "accounts": [
+        {
+          "account_id": 140,
+          "blockers": [],
+          "dry_run_ready": true,
+          "fresh_story_auth_ok": true,
+          "health_status": "error",
+          "live_only_blockers": [],
+          "live_ready": true,
+          "next_allowed_at": null,
+          "purpose": "both",
+          "readiness_fresh": true,
+          "readiness_status": "READY",
+          "safety_human": "Health status=error. Alive != story-ready.",
+          "safety_reason": "auth_required",
+          "status": "active",
+          "story_precheck_checked_at": "2026-07-16T11:33:09.606148",
+          "story_precheck_stale": false,
+          "story_precheck_status": "allowed",
+          "story_ready": true,
+          "technical_health_ok": true,
+          "technical_health_source": "v1_readiness"
+        }
+      ],
+      "blocked_accounts": [],
+      "blocker_counts": {},
+      "checked_at": "2026-07-16T11:33:09.620613",
+      "controlled_live_account_id": 140,
+      "counts": {
+        "accounts_considered": 1,
+        "active_or_stale_runs": 0,
+        "cooldown_blocked": 0,
+        "eligible_but_blocked": 0,
+        "frozen_or_blocked": 0,
+        "mention_candidates": 1037,
+        "missing_media_or_config": 1,
+        "rate_limited": 0,
+        "story_ready": 1
+      },
+      "dry_run": true,
+      "eligible_accounts": [
+        140
+      ],
+      "live_blockers": [
+        "missing_or_invalid_media"
+      ],
+      "live_gate_blockers": [
+        "explicit_operator_approval_required",
+        "confirmation_token_required",
+        "missing_or_invalid_media"
+      ],
+      "live_only_blocker_counts": {},
+      "live_only_blockers": [],
+      "live_publish_allowed": false,
+      "live_run_allowed": false,
+      "media": {
+        "accepted_formats": [
+          ".jpg",
+          ".jpeg",
+          ".png",
+          ".webp",
+          ".mp4",
+          ".mov"
+        ],
+        "message": "Media is required before a live story run.",
+        "ok": false,
+        "path": null,
+        "required": true
+      },
+      "mentions": {
+        "available": 1037,
+        "avoid_duplicates_per_story": true,
+        "dry_run_mutates_history": false,
+        "implemented": true,
+        "mentions_per_story": 0,
+        "ok": true,
+        "prefer_never_mentioned_users": true,
+        "random_selection_implemented": true,
+        "required_for_estimated_run": 0,
+        "sample_candidates": [],
+        "selection_mode": "random",
+        "source_chat_id": null,
+        "warning": null
+      },
+      "missing_requested_account_ids": [],
+      "ok": false,
+      "ready_account_ids": [
+        140
+      ],
+      "requested_account_ids": [
+        140
+      ],
+      "requires_operator_approval": true,
+      "run_counts": {
+        "cancelled": 2,
+        "failed_stale": 3,
+        "skipped_empty": 1
+      },
+      "runs": [
+        {
+          "age_minutes": 72686.52,
+          "created_at": "2026-05-27T00:06:38.176068",
+          "hygiene_action": null,
+          "id": 6,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": null,
+          "media_path": "data/media/Screenshot_2026-05-27_at_01.22.37.png",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": null,
+          "status": "cancelled",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "cancelled"
+        },
+        {
+          "age_minutes": 72686.53,
+          "created_at": "2026-05-27T00:06:37.817634",
+          "hygiene_action": null,
+          "id": 5,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": null,
+          "media_path": "data/media/Screenshot_2026-05-27_at_01.22.37.png",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": null,
+          "status": "cancelled",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "cancelled"
+        },
+        {
+          "age_minutes": 72842.96,
+          "created_at": "2026-05-26T21:30:12.197826",
+          "hygiene_action": null,
+          "id": 4,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": null,
+          "media_path": "data/media/Screenshot_2026-05-27_at_01.22.37.png",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": null,
+          "status": "skipped_empty",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "skipped_empty"
+        },
+        {
+          "age_minutes": 133278.25,
+          "created_at": "2026-04-14T22:14:44.861791",
+          "hygiene_action": null,
+          "id": 3,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": "2026-04-14T22:14:54.683762",
+          "media_path": "/opt/autostory/data/media/test.jpg",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": "2026-04-14T22:14:54.674593",
+          "status": "failed_stale",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "failed_stale"
+        },
+        {
+          "age_minutes": 133297.06,
+          "created_at": "2026-04-14T21:55:25.696333",
+          "hygiene_action": null,
+          "id": 2,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": "2026-04-14T21:56:05.786505",
+          "media_path": "/opt/autostory/data/media/test.jpg",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": "2026-04-14T21:56:05.774704",
+          "status": "failed_stale",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "failed_stale"
+        },
+        {
+          "age_minutes": 133868.42,
+          "created_at": "2026-04-14T12:24:12.707370",
+          "hygiene_action": null,
+          "id": 1,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": "2026-04-14T12:24:44.135757",
+          "media_path": "/opt/autostory/data/media/test.jpg",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": "2026-04-14T12:24:44.103152",
+          "status": "failed_stale",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "failed_stale"
+        }
+      ],
+      "sample_accounts": [
+        {
+          "account_id": 140,
+          "blockers": [],
+          "dry_run_ready": true,
+          "fresh_story_auth_ok": true,
+          "health_status": "error",
+          "live_only_blockers": [],
+          "live_ready": true,
+          "next_allowed_at": null,
+          "purpose": "both",
+          "readiness_fresh": true,
+          "readiness_status": "READY",
+          "safety_human": "Health status=error. Alive != story-ready.",
+          "safety_reason": "auth_required",
+          "status": "active",
+          "story_precheck_checked_at": "2026-07-16T11:33:09.606148",
+          "story_precheck_stale": false,
+          "story_precheck_status": "allowed",
+          "story_ready": true,
+          "technical_health_ok": true,
+          "technical_health_source": "v1_readiness"
+        }
+      ],
+      "selected_mention_candidates": [],
+      "settings": {
+        "all_ready_accounts_mode": true,
+        "max_accounts": null,
+        "max_stories_per_account_per_day": 1,
+        "mention_strategy": "random",
+        "per_account_cooldown_minutes": 60,
+        "pool_id": null,
+        "pool_name": null,
+        "pool_optional": true,
+        "purpose_filter": null
+      }
+    },
+    "purpose": "both",
+    "readiness_snapshot": {
+      "checked_at": "2026-07-16T11:23:26.374635",
+      "expires_at": "2026-07-16T12:23:26.374635",
+      "reason": "readiness_worker_ok",
+      "status": "READY"
+    },
+    "session_readiness": "canonical_ok",
+    "status": "active",
+    "stories_today": 0,
+    "story_blocked_until": null,
+    "story_precheck_checked_at": "2026-07-16T11:33:09.606148",
+    "story_precheck_reason": "CanSendStory OK",
+    "story_precheck_status": "allowed",
+    "story_status": "ok",
+    "story_status_reason": null
+  },
+  "applied": true,
+  "before": {
+    "account_id": 140,
+    "found": true,
+    "fresh_story_auth_ok": false,
+    "has_canonical_session": true,
+    "health_checked_at": "2026-05-14T14:30:18.067011",
+    "health_reason": "P2_scheduler_truth: account_readiness_snapshots is authoritative for scheduler eligibility; accounts.health_status may lag fleet healthcheck.",
+    "health_status": "error",
+    "last_story_attempt_at": null,
+    "last_story_success_at": null,
+    "precheck_projection": {
+      "account_blockers": {},
+      "account_live_only_blockers": {
+        "140": [
+          "fresh_story_auth_stale"
+        ]
+      },
+      "accounts": [
+        {
+          "account_id": 140,
+          "blockers": [],
+          "dry_run_ready": true,
+          "fresh_story_auth_ok": false,
+          "health_status": "error",
+          "live_only_blockers": [
+            "fresh_story_auth_stale"
+          ],
+          "live_ready": false,
+          "next_allowed_at": null,
+          "purpose": "both",
+          "readiness_fresh": true,
+          "readiness_status": "READY",
+          "safety_human": "Health status=error. Alive != story-ready.",
+          "safety_reason": "auth_required",
+          "status": "active",
+          "story_precheck_checked_at": "2026-06-05T12:01:51.508637",
+          "story_precheck_stale": true,
+          "story_precheck_status": "allowed",
+          "story_ready": true,
+          "technical_health_ok": true,
+          "technical_health_source": "v1_readiness"
+        }
+      ],
+      "blocked_accounts": [],
+      "blocker_counts": {},
+      "checked_at": "2026-07-16T11:33:08.594311",
+      "controlled_live_account_id": 140,
+      "counts": {
+        "accounts_considered": 1,
+        "active_or_stale_runs": 0,
+        "cooldown_blocked": 0,
+        "eligible_but_blocked": 0,
+        "frozen_or_blocked": 0,
+        "mention_candidates": 1037,
+        "missing_media_or_config": 1,
+        "rate_limited": 0,
+        "story_ready": 1
+      },
+      "dry_run": true,
+      "eligible_accounts": [
+        140
+      ],
+      "live_blockers": [
+        "missing_or_invalid_media"
+      ],
+      "live_gate_blockers": [
+        "explicit_operator_approval_required",
+        "confirmation_token_required",
+        "missing_or_invalid_media",
+        "fresh_story_auth_stale"
+      ],
+      "live_only_blocker_counts": {
+        "fresh_story_auth_stale": 1
+      },
+      "live_only_blockers": [
+        "fresh_story_auth_stale"
+      ],
+      "live_publish_allowed": false,
+      "live_run_allowed": false,
+      "media": {
+        "accepted_formats": [
+          ".jpg",
+          ".jpeg",
+          ".png",
+          ".webp",
+          ".mp4",
+          ".mov"
+        ],
+        "message": "Media is required before a live story run.",
+        "ok": false,
+        "path": null,
+        "required": true
+      },
+      "mentions": {
+        "available": 1037,
+        "avoid_duplicates_per_story": true,
+        "dry_run_mutates_history": false,
+        "implemented": true,
+        "mentions_per_story": 0,
+        "ok": true,
+        "prefer_never_mentioned_users": true,
+        "random_selection_implemented": true,
+        "required_for_estimated_run": 0,
+        "sample_candidates": [],
+        "selection_mode": "random",
+        "source_chat_id": null,
+        "warning": null
+      },
+      "missing_requested_account_ids": [],
+      "ok": false,
+      "ready_account_ids": [
+        140
+      ],
+      "requested_account_ids": [
+        140
+      ],
+      "requires_operator_approval": true,
+      "run_counts": {
+        "cancelled": 2,
+        "failed_stale": 3,
+        "skipped_empty": 1
+      },
+      "runs": [
+        {
+          "age_minutes": 72686.51,
+          "created_at": "2026-05-27T00:06:38.176068",
+          "hygiene_action": null,
+          "id": 6,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": null,
+          "media_path": "data/media/Screenshot_2026-05-27_at_01.22.37.png",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": null,
+          "status": "cancelled",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "cancelled"
+        },
+        {
+          "age_minutes": 72686.51,
+          "created_at": "2026-05-27T00:06:37.817634",
+          "hygiene_action": null,
+          "id": 5,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": null,
+          "media_path": "data/media/Screenshot_2026-05-27_at_01.22.37.png",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": null,
+          "status": "cancelled",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "cancelled"
+        },
+        {
+          "age_minutes": 72842.94,
+          "created_at": "2026-05-26T21:30:12.197826",
+          "hygiene_action": null,
+          "id": 4,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": null,
+          "media_path": "data/media/Screenshot_2026-05-27_at_01.22.37.png",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": null,
+          "status": "skipped_empty",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "skipped_empty"
+        },
+        {
+          "age_minutes": 133278.23,
+          "created_at": "2026-04-14T22:14:44.861791",
+          "hygiene_action": null,
+          "id": 3,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": "2026-04-14T22:14:54.683762",
+          "media_path": "/opt/autostory/data/media/test.jpg",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": "2026-04-14T22:14:54.674593",
+          "status": "failed_stale",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "failed_stale"
+        },
+        {
+          "age_minutes": 133297.05,
+          "created_at": "2026-04-14T21:55:25.696333",
+          "hygiene_action": null,
+          "id": 2,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": "2026-04-14T21:56:05.786505",
+          "media_path": "/opt/autostory/data/media/test.jpg",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": "2026-04-14T21:56:05.774704",
+          "status": "failed_stale",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "failed_stale"
+        },
+        {
+          "age_minutes": 133868.41,
+          "created_at": "2026-04-14T12:24:12.707370",
+          "hygiene_action": null,
+          "id": 1,
+          "is_pending_empty": false,
+          "is_stale_running": false,
+          "last_tick_at": "2026-04-14T12:24:44.135757",
+          "media_path": "/opt/autostory/data/media/test.jpg",
+          "mode": "once",
+          "pool_id": null,
+          "started_at": "2026-04-14T12:24:44.103152",
+          "status": "failed_stale",
+          "stories_failed": 0,
+          "stories_ok": 0,
+          "ui_status": "failed_stale"
+        }
+      ],
+      "sample_accounts": [
+        {
+          "account_id": 140,
+          "blockers": [],
+          "dry_run_ready": true,
+          "fresh_story_auth_ok": false,
+          "health_status": "error",
+          "live_only_blockers": [
+            "fresh_story_auth_stale"
+          ],
+          "live_ready": false,
+          "next_allowed_at": null,
+          "purpose": "both",
+          "readiness_fresh": true,
+          "readiness_status": "READY",
+          "safety_human": "Health status=error. Alive != story-ready.",
+          "safety_reason": "auth_required",
+          "status": "active",
+          "story_precheck_checked_at": "2026-06-05T12:01:51.508637",
+          "story_precheck_stale": true,
+          "story_precheck_status": "allowed",
+          "story_ready": true,
+          "technical_health_ok": true,
+          "technical_health_source": "v1_readiness"
+        }
+      ],
+      "selected_mention_candidates": [],
+      "settings": {
+        "all_ready_accounts_mode": true,
+        "max_accounts": null,
+        "max_stories_per_account_per_day": 1,
+        "mention_strategy": "random",
+        "per_account_cooldown_minutes": 60,
+        "pool_id": null,
+        "pool_name": null,
+        "pool_optional": true,
+        "purpose_filter": null
+      }
+    },
+    "purpose": "both",
+    "readiness_snapshot": {
+      "checked_at": "2026-07-16T11:23:26.374635",
+      "expires_at": "2026-07-16T12:23:26.374635",
+      "reason": "readiness_worker_ok",
+      "status": "READY"
+    },
+    "session_readiness": "canonical_ok",
+    "status": "active",
+    "stories_today": 0,
+    "story_blocked_until": null,
+    "story_precheck_checked_at": "2026-06-05T12:01:51.508637",
+    "story_precheck_reason": "CanSendStory OK",
+    "story_precheck_status": "allowed",
+    "story_status": "ok",
+    "story_status_reason": null
+  },
+  "generated_at": "2026-07-16T11:33:09.634542",
+  "mode": "apply",
+  "phase": "P10.19",
+  "probe": {
+    "checked_at": "2026-07-16T11:33:09.465324Z",
+    "reason": "CanSendStory OK",
+    "retry_after_seconds": null,
+    "status": "allowed"
+  },
+  "safety": {
+    "account_scope": [
+      140
+    ],
+    "no_join": true,
+    "no_publish": true,
+    "no_send": true,
+    "updates_only_story_precheck_cache": true
+  }
+}
