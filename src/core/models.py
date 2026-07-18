@@ -67,10 +67,18 @@ class Account(Base):
 
     # Story precheck results (written by /api/accounts/story-precheck)
     story_precheck_status = Column(String(50), nullable=True)   # allowed / frozen / not_authorized
+    story_precheck_reason = Column(String(255), nullable=True)
     story_precheck_checked_at = Column(DateTime, nullable=True) # UTC timestamp of last story precheck
+    story_status = Column(String(20), nullable=True)
+    story_status_reason = Column(String(255), nullable=True)
+    story_status_checked_at = Column(DateTime, nullable=True)
+    story_blocked_until = Column(DateTime, nullable=True)
+    last_story_attempt_at = Column(DateTime, nullable=True)
+    last_story_success_at = Column(DateTime, nullable=True)
 
     # Account purpose — controls which subsystems use this account
-    purpose = Column(String(20), nullable=True, default="both")  # autostory / messaging / both
+    # autostory | messaging | both | ai_agent (ai_agent: negotiation desk only, no scheduler/stories)
+    purpose = Column(String(20), nullable=True, default="both")
 
     # Rate limiting counters
     stories_today = Column(Integer, default=0)
@@ -318,6 +326,8 @@ class StoryRun(Base):
     mentions_per_story = Column(Integer, default=5)
     max_stories = Column(Integer, nullable=True)       # None = unlimited
     mention_source_chat_id = Column(Integer, nullable=True)  # None = all groups
+    # Approved mention plan from Dry Run (list of {user_id, username, ...}); immutable intent.
+    mention_plan = Column(JSON, nullable=True)
 
     # State (updated by worker)
     status = Column(String(20), default="pending")     # pending|running|completed|failed|cancelled

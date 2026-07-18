@@ -222,6 +222,7 @@
                         <option value="">— All groups —</option>
                     </select>
                     <div class="text-muted small mt-1" id="sched-mention-source-count"></div>
+                    <div class="small mt-2 d-none" id="ops-mention-plan-summary"></div>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label small mb-1">Mentions</label>
@@ -285,8 +286,8 @@
                     <div class="col-md-4">
                         <label class="form-label small mb-1">Mention pick</label>
                         <select class="form-select form-select-sm" id="sched-mention-strategy" onchange="onEligibilityInputChange()">
-                            <option value="random" selected>Random</option>
-                            <option value="oldest">Oldest never-mentioned</option>
+                            <option value="random" selected>Random at Dry Run (locked for live)</option>
+                            <option value="oldest">Oldest never-mentioned (locked for live)</option>
                         </select>
                     </div>
                     <div class="col-12">
@@ -897,6 +898,10 @@ function onPoolChange() {
 }
 
 function onEligibilityInputChange() {
+    // Audience/media changes invalidate the locked Dry Run mention plan.
+    _approvedMentionPlan = null;
+    const sum = document.getElementById('ops-mention-plan-summary');
+    if (sum) { sum.classList.add('d-none'); sum.textContent = ''; }
     invalidatePrecheck('settings changed');
 }
 
@@ -1409,6 +1414,7 @@ function toggleInterval() {
 }
 
 let _activeRunId = null;
+let _approvedMentionPlan = null; // locked Dry Run selection for live handoff
 
 function buildStoryRunPayload() {
     const mediaPath = (document.getElementById('sched-media-path-resolved').value || '').trim();
@@ -1433,7 +1439,8 @@ function buildStoryRunPayload() {
     const strategySel = document.getElementById('sched-mention-strategy');
     const approvalBox = document.getElementById('sched-approval-checkbox');
     const confirmationToken = document.getElementById('sched-confirmation-token');
-    return {
+    const mentionsPerStory = parseInt(document.getElementById('sched-mentions').value) || 0;
+    const payload = {
         account_ids: Number.isFinite(accountVal) ? [accountVal] : null,
         pool_id: poolId,
         purpose_filter: purposeFilter,
@@ -1441,7 +1448,7 @@ function buildStoryRunPayload() {
         interval_minutes: mode === 'continuous' ? interval : null,
         media_path: mediaPath,
         caption: document.getElementById('sched-caption').value || null,
-        mentions_per_story: parseInt(document.getElementById('sched-mentions').value) || 0,
+        mentions_per_story: mentionsPerStory,
         max_stories: (() => {
             const raw = document.getElementById('sched-max-stories').value;
             if (!raw) return null;
@@ -1460,7 +1467,57 @@ function buildStoryRunPayload() {
         max_stories_per_account_per_day: 1,
         explicit_operator_approval: !!(approvalBox && approvalBox.checked),
         confirmation_token: confirmationToken ? confirmationToken.value.trim() : '',
+        require_all_mentions: mentionsPerStory > 0,
     };
+    // Carry the exact Dry Run selection into live — never imply live may reselect.
+    if (_approvedMentionPlan && _approvedMentionPlan.length) {
+        payload.selected_mention_candidates = _approvedMentionPlan;
+    }
+    return payload;
+}
+
+function renderMentionPlanSummary(precheckOrPlan) {
+    const el = document.getElementById('ops-mention-plan-summary');
+    if (!el) return;
+    const plan = (precheckOrPlan && precheckOrPlan.mention_plan)
+        || (precheckOrPlan && precheckOrPlan.plan && precheckOrPlan.plan.mention_plan)
+        || null;
+    const selected = (precheckOrPlan && precheckOrPlan.selected_mention_candidates)
+        || (plan && plan.mentions_selected)
+        || [];
+    const requested = parseInt(document.getElementById('sched-mentions')?.value || '0', 10) || 0;
+    if (requested <= 0) {
+        el.classList.add('d-none');
+        el.textContent = '';
+        _approvedMentionPlan = null;
+        return;
+    }
+    el.classList.remove('d-none');
+    if (plan && plan.operator_summary) {
+        el.textContent = plan.operator_summary;
+        el.className = plan.mention_plan_ok
+            ? 'small mt-2 text-success'
+            : 'small mt-2 text-warning';
+    } else if (selected && selected.length) {
+        const first = selected[0];
+        const uname = first.username ? `@${first.username}` : '(no username)';
+        const source = first.source_chat_title || 'All groups';
+        el.className = 'small mt-2 text-success';
+        el.textContent = `Selected mention: ${uname} · Source: ${source} · Status: Ready`;
+    } else {
+        el.className = 'small mt-2 text-warning';
+        el.textContent = 'Mention could not be prepared. Choose another candidate or publish without mentions.';
+    }
+    if (selected && selected.length && (!plan || plan.mention_plan_ok)) {
+        _approvedMentionPlan = selected.map(c => ({
+            user_id: c.user_id || c.peer_id,
+            username: c.username || null,
+            source_chat_id: c.source_chat_id || null,
+            source_chat_title: c.source_chat_title || null,
+        }));
+    } else {
+        _approvedMentionPlan = null;
+    }
 }
 
 function storyEscapeHtml(value) {
@@ -1488,6 +1545,10 @@ function compactStoryBlockerLabel(blocker) {
     if (blocker === 'readiness_snapshot_expired') return 'Readiness expired — refresh status';
     if (blocker === 'auth_required') return 'Run an authentication check';
     if (blocker === 'no_story_ready_accounts') return 'No account is currently ready for live publishing';
+    if (blocker === 'story_mention_candidate_missing') return 'No mention candidate available';
+    if (blocker === 'story_mention_username_missing') return 'Selected mention has no username';
+    if (blocker === 'story_mention_peer_unresolvable') return 'Mention peer could not be resolved';
+    if (blocker === 'story_mention_plan_mismatch') return 'Live must use the Dry Run mention plan';
     return String(blocker).replaceAll('_', ' ');
 }
 
@@ -1511,6 +1572,7 @@ function renderStoryPrecheck(precheck, {quiet = false} = {}) {
     const ok = !!precheck.ok;
     const mediaOk = !!(precheck.media && precheck.media.ok);
     applyMediaCompatUi(precheck.media || null);
+    renderMentionPlanSummary(precheck);
     // Never claim missing media when the form currently has media selected.
     const blockers = (precheck.live_blockers || []).filter(b => {
         if (b === 'missing_or_invalid_media' && hasMediaSelected() && mediaOk) return false;

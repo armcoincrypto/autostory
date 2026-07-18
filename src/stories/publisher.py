@@ -57,25 +57,19 @@ class StoryPublisher:
         client_wrapper: TelegramClientWrapper,
         media_path: str,
         caption: Optional[str] = None,
-        mentions: Optional[List[Union[int, str]]] = None,
+        mentions: Optional[List[Union[int, str, dict]]] = None,
         privacy: str = StoryPrivacy.PUBLIC,
         pin_to_profile: bool = False,
         campaign_id: Optional[int] = None,
+        require_all_mentions: bool = False,
     ) -> Dict[str, Any]:
         """
-        Publish a story with optional mentions
+        Publish a story with optional caption @username mentions.
 
-        Args:
-            client_wrapper: The Telegram client wrapper
-            media_path: Path to media file (photo/video)
-            caption: Story caption
-            mentions: List of user IDs or usernames to mention
-            privacy: Privacy setting
-            pin_to_profile: Pin story to profile
-            campaign_id: Associated campaign ID
-
-        Returns:
-            Dict with story details or error
+        Mentions may be user ids, usernames, or candidate dicts
+        ``{user_id, username}``. Resolution prefers username (session-cache
+        safe). Applied mentions are written into the caption and passed as
+        ``MessageEntityMention`` on ``SendStoryRequest``.
         """
         client = client_wrapper.client
         account = client_wrapper.account
@@ -84,6 +78,11 @@ class StoryPublisher:
             ACTION_STORY_PUBLISH,
             guard_blocked_story_publish,
             require_execution_allowed,
+        )
+        from src.stories.mention_plan import (
+            build_caption_with_mention_entities,
+            empty_mention_result,
+            normalize_mention_plan,
         )
 
         blocked = require_execution_allowed(
@@ -109,26 +108,60 @@ class StoryPublisher:
             if not media_type:
                 return {"success": False, "error": "Unsupported media type"}
 
-            # Process mentions
-            mentioned_entities = []
-            mentioned_user_ids = []
-            mentioned_usernames = []
+            selected = normalize_mention_plan(mentions or [])[
+                : settings.telegram.max_mentions_per_story
+            ]
+            mention_result = empty_mention_result(requested=len(selected))
+            mention_result["mentions_selected"] = [
+                {"username": c.get("username"), "peer_id": c.get("user_id")}
+                for c in selected
+            ]
+            mention_result["mentions_requested"] = len(selected)
 
-            if mentions:
-                for mention in mentions[:settings.telegram.max_mentions_per_story]:
-                    try:
-                        entity = await client.get_entity(mention)
-                        mentioned_entities.append(entity)
-                        mentioned_user_ids.append(entity.id)
-                        if hasattr(entity, 'username') and entity.username:
-                            mentioned_usernames.append(entity.username)
-                    except Exception as e:
-                        logger.warning("Could not resolve mention", mention=mention, error=str(e))
+            applied: list[dict] = []
+            skipped: list[dict] = []
+            for cand in selected:
+                resolved = await self._resolve_mention_candidate(client, cand)
+                if resolved.get("ok"):
+                    applied.append(resolved["applied"])
+                else:
+                    skipped.append(
+                        {
+                            "username": cand.get("username"),
+                            "peer_id": cand.get("user_id"),
+                            "reason": resolved.get("reason") or "story_mention_peer_unresolvable",
+                        }
+                    )
 
-            # Build caption with mentions
-            formatted_caption = self._format_caption_with_mentions(
-                caption or "",
-                mentioned_entities
+            mention_result["mentions_applied"] = [
+                {"username": a.get("username"), "peer_id": a.get("user_id")} for a in applied
+            ]
+            mention_result["mentions_skipped"] = skipped
+            mention_result["mention_skip_reasons"] = [s.get("reason") for s in skipped]
+            # Compatibility: only applied peer ids
+            mention_result["mentions"] = [int(a["user_id"]) for a in applied]
+
+            if require_all_mentions and selected and skipped:
+                logger.warning(
+                    "story_publish_blocked_require_all_mentions",
+                    account_id=account.id,
+                    selected=len(selected),
+                    applied=len(applied),
+                    skipped=len(skipped),
+                )
+                return {
+                    "success": False,
+                    "error": "story_mention_peer_unresolvable",
+                    "message": (
+                        "Approved mention(s) could not be applied; Story was not published "
+                        "(require_all_mentions=true)."
+                    ),
+                    **mention_result,
+                }
+
+            formatted_caption, caption_entities = build_caption_with_mention_entities(
+                caption,
+                applied,
             )
 
             # Upload media
@@ -136,7 +169,9 @@ class StoryPublisher:
                 "Uploading story media",
                 account_id=account.id,
                 media_type=media_type,
-                mentions=len(mentioned_entities)
+                mentions_selected=len(selected),
+                mentions_applied=len(applied),
+                mentions_skipped=len(skipped),
             )
 
             uploaded_media = await client.upload_file(str(media_file))
@@ -159,7 +194,8 @@ class StoryPublisher:
             result = await client(functions.stories.SendStoryRequest(
                 peer=types.InputPeerSelf(),
                 media=media,
-                caption=formatted_caption,
+                caption=formatted_caption or None,
+                entities=caption_entities or None,
                 privacy_rules=privacy_rules,
                 pinned=pin_to_profile,
             ))
@@ -172,6 +208,9 @@ class StoryPublisher:
                         story_id = update.story.id
                         break
 
+            mentioned_user_ids = [int(a["user_id"]) for a in applied]
+            mentioned_usernames = [a.get("username") for a in applied if a.get("username")]
+
             # Save to database
             with get_db_context() as db:
                 story = Story(
@@ -179,7 +218,7 @@ class StoryPublisher:
                     campaign_id=campaign_id,
                     media_type=media_type,
                     media_path=str(media_path),
-                    caption=caption,
+                    caption=formatted_caption or caption,
                     mentioned_user_ids=mentioned_user_ids,
                     mentioned_usernames=mentioned_usernames,
                     story_id=story_id,
@@ -213,12 +252,22 @@ class StoryPublisher:
                 mentions=len(mentioned_user_ids)
             )
 
+            warning = None
+            if skipped and not require_all_mentions:
+                warning = "Story published with mention warning(s); see mentions_skipped."
+
             return {
                 "success": True,
                 "story_id": story_id,
                 "db_id": story_db_id,
-                "mentions": mentioned_user_ids,
-                "message": f"Story published with {len(mentioned_user_ids)} mentions"
+                "message": (
+                    f"Story published with {len(mentioned_user_ids)} mention(s)"
+                    if mentioned_user_ids
+                    else "Story published with 0 mentions"
+                ),
+                "warning": warning,
+                "caption_sent": formatted_caption,
+                **mention_result,
             }
 
         except Exception as e:
@@ -387,6 +436,56 @@ class StoryPublisher:
 
         return None
 
+    async def _resolve_mention_candidate(self, client, cand: dict) -> dict:
+        """Resolve a mention candidate; prefer username over bare user id."""
+        username = (cand.get("username") or "").strip().lstrip("@") or None
+        user_id = cand.get("user_id")
+        if not username and user_id is None:
+            return {"ok": False, "reason": "story_mention_candidate_missing"}
+        if not username:
+            return {"ok": False, "reason": "story_mention_username_missing"}
+
+        # Prefer username — bare PeerUser ids are often absent from the session cache.
+        try:
+            entity = await client.get_entity(username)
+            resolved_username = getattr(entity, "username", None) or username
+            return {
+                "ok": True,
+                "applied": {
+                    "user_id": int(entity.id),
+                    "username": resolved_username,
+                },
+            }
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve mention by username",
+                username=username,
+                user_id=user_id,
+                error=str(exc),
+            )
+
+        if user_id is not None:
+            try:
+                entity = await client.get_entity(int(user_id))
+                resolved_username = getattr(entity, "username", None) or username
+                if not resolved_username:
+                    return {"ok": False, "reason": "story_mention_username_missing"}
+                return {
+                    "ok": True,
+                    "applied": {
+                        "user_id": int(entity.id),
+                        "username": resolved_username,
+                    },
+                }
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve mention by user_id",
+                    username=username,
+                    user_id=user_id,
+                    error=str(exc),
+                )
+        return {"ok": False, "reason": "story_mention_peer_unresolvable"}
+
     def _get_media_type(self, media_file: Path) -> Optional[str]:
         """Determine media type from file extension"""
         ext = media_file.suffix.lower()
@@ -412,7 +511,7 @@ class StoryPublisher:
         caption: str,
         entities: List
     ) -> str:
-        """Format caption with mention tags"""
+        """Format caption with mention tags (legacy helper; prefer mention_plan)."""
         if not entities:
             return caption
 

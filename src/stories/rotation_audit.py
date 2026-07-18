@@ -547,6 +547,24 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         count=mentions_per_story,
         strategy=mention_strategy,
     )
+    from src.stories.mention_plan import (
+        evaluate_mention_plan_local,
+        extract_approved_mention_plan,
+        normalize_mention_plan,
+    )
+
+    # If the operator locked an approved Dry Run plan, never reselect.
+    approved_plan = extract_approved_mention_plan(payload)
+    if approved_plan is not None:
+        selected_mentions = normalize_mention_plan(approved_plan)[: max(0, mentions_per_story)]
+    mention_plan_eval = evaluate_mention_plan_local(
+        selected_mentions,
+        mentions_requested=mentions_per_story,
+    )
+    if mentions_per_story > 0:
+        for b in mention_plan_eval.get("live_blockers") or []:
+            if b not in live_blockers:
+                live_blockers.append(b)
     live_only_blockers = sorted(set(live_only_blocker_counts.elements()))
     live_publish_allowed, live_gate_blockers = live_gate_allowed(
         payload,
@@ -603,6 +621,7 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         "media": media,
         "mentions": mentions,
         "selected_mention_candidates": selected_mentions,
+        "mention_plan": mention_plan_eval,
         "runs": runs,
         "run_counts": dict(run_counts),
     }
@@ -639,6 +658,7 @@ def build_story_dry_run_plan(db: Session, payload: dict[str, Any] | None = None)
         "caption": (payload or {}).get("caption"),
         "mention_strategy": precheck["settings"]["mention_strategy"],
         "selected_mention_candidates": mention_candidates,
+        "mention_plan": precheck.get("mention_plan"),
         "story_count": len(execution_order),
         "execution_order": execution_order,
         "cooldown": {

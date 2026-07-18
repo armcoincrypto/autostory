@@ -196,8 +196,11 @@ def init_db() -> None:
     import src.dashboard.models  # noqa: F401 - ensures dashboard_users table
     import src.core.ai_agent_models  # noqa: F401 - AI Agent additive tables
     import src.telegram_gateway.models  # noqa: F401 - Telegram gateway job queue
+    import src.core.campaign_governance_models  # noqa: F401 - P9.71 campaign governance
+    import src.governance.models  # noqa: F401 - P10.21 account runtime governance
     from sqlalchemy import text
     Base.metadata.create_all(bind=engine)
+    _ensure_account_governance_tables()
     _ensure_ai_agent_tasks_negotiation_stage_column()
     _ensure_ai_agent_tasks_auto_loop_columns()
     _ensure_accounts_purpose_column()
@@ -211,6 +214,7 @@ def init_db() -> None:
     _ensure_discovered_users_source_username_column()
     _ensure_scheduled_jobs_lease_columns()
     _ensure_message_deliveries_send_intent_columns()
+    _ensure_story_runs_mention_plan_column()
     logger.info("Database initialized", tables=list(Base.metadata.tables.keys()))
     if _is_sqlite(settings.database.url):
         try:
@@ -395,6 +399,28 @@ def _ensure_message_deliveries_send_intent_columns() -> None:
             )
 
 
+def _ensure_story_runs_mention_plan_column() -> None:
+    """Persist Dry Run approved mention plan on story_runs (additive JSON)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "story_runs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("story_runs")}
+    if "mention_plan" in cols:
+        return
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE story_runs ADD COLUMN mention_plan JSON"))
+            conn.commit()
+        logger.info("Added story_runs.mention_plan column")
+    except Exception as e:
+        logger.warning(
+            "Could not add story_runs.mention_plan (may already exist)",
+            error=str(e),
+        )
+
+
 def _ensure_healthcheck_run_columns() -> None:
     """Add results, progress, error_message to healthcheck_runs if missing (for background jobs)."""
     from sqlalchemy import text, inspect
@@ -562,6 +588,99 @@ def _ensure_accounts_safety_columns() -> None:
             logger.info("Added accounts safety column", column=name)
         except Exception as e:
             logger.warning("Could not add accounts column %s (may already exist)", name, error=str(e))
+
+
+def _ensure_account_governance_tables() -> None:
+    """Idempotent governance table ensure (SQLite-safe)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    tables = {
+        "account_runtime_roles": """
+            CREATE TABLE IF NOT EXISTS account_runtime_roles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                role VARCHAR(64) NOT NULL,
+                created_at DATETIME NOT NULL,
+                created_by VARCHAR(128),
+                reason TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                FOREIGN KEY (account_id) REFERENCES accounts(id),
+                UNIQUE (account_id, role)
+            )
+        """,
+        "account_runtime_tags": """
+            CREATE TABLE IF NOT EXISTS account_runtime_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                tag VARCHAR(64) NOT NULL,
+                created_at DATETIME NOT NULL,
+                created_by VARCHAR(128),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                FOREIGN KEY (account_id) REFERENCES accounts(id),
+                UNIQUE (account_id, tag)
+            )
+        """,
+        "account_governance_audit_logs": """
+            CREATE TABLE IF NOT EXISTS account_governance_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER,
+                action VARCHAR(64) NOT NULL,
+                target_type VARCHAR(32) NOT NULL,
+                target_value VARCHAR(128) NOT NULL,
+                reason TEXT,
+                actor VARCHAR(128),
+                payload_json TEXT,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY (account_id) REFERENCES accounts(id)
+            )
+        """,
+        "account_pinned": """
+            CREATE TABLE IF NOT EXISTS account_pinned (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL UNIQUE,
+                pinned_at DATETIME NOT NULL,
+                pinned_by VARCHAR(128),
+                note TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                FOREIGN KEY (account_id) REFERENCES accounts(id)
+            )
+        """,
+        "account_cohorts": """
+            CREATE TABLE IF NOT EXISTS account_cohorts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug VARCHAR(64) NOT NULL UNIQUE,
+                name VARCHAR(128) NOT NULL,
+                description TEXT,
+                created_at DATETIME NOT NULL,
+                created_by VARCHAR(128),
+                active BOOLEAN NOT NULL DEFAULT 1
+            )
+        """,
+        "account_cohort_members": """
+            CREATE TABLE IF NOT EXISTS account_cohort_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cohort_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                added_at DATETIME NOT NULL,
+                added_by VARCHAR(128),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                FOREIGN KEY (cohort_id) REFERENCES account_cohorts(id),
+                FOREIGN KEY (account_id) REFERENCES accounts(id),
+                UNIQUE (cohort_id, account_id)
+            )
+        """,
+    }
+    for name, ddl in tables.items():
+        if name in insp.get_table_names():
+            continue
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(ddl))
+                conn.commit()
+            logger.info("Created governance table", table=name)
+        except Exception as e:
+            logger.warning("Could not create governance table", table=name, error=str(e))
 
 
 def _ensure_account_risk_events_table() -> None:
