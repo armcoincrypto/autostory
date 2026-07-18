@@ -1153,6 +1153,14 @@ function renderAdvancedDiagnostics(precheck) {
     if (precheck) {
         lines.push(`<div class="mt-2"><strong>Last precheck${_precheckStale ? ' (STALE)' : ''}</strong></div>`);
         lines.push(`<div class="text-muted">ok=${!!precheck.ok} · media_ok=${!!(precheck.media && precheck.media.ok)} · path=${storyEscapeHtml((precheck.media && precheck.media.path) || _precheckMediaPath || '—')} · live_blockers=${storyEscapeHtml((precheck.live_blockers || []).join(', ') || 'none')}</div>`);
+        const m = precheck.media || {};
+        if (m.path) {
+            lines.push(`<div class="mt-2"><strong>Media technical</strong></div>`);
+            lines.push(`<div class="text-muted">format=${storyEscapeHtml(m.media_format || '—')} · ${m.media_width || '—'}×${m.media_height || '—'} · mode=${storyEscapeHtml(m.media_color_mode || '—')} · vertical=${!!m.media_vertical} · decodes=${!!m.media_decodes} · story_compatible=${!!m.media_story_compatible} · blocker=${storyEscapeHtml(m.compat_blocker || 'none')}</div>`);
+            if (m.technical_note) {
+                lines.push(`<div class="text-muted">note=${storyEscapeHtml(m.technical_note)}</div>`);
+            }
+        }
     }
     body.innerHTML = lines.join('');
 }
@@ -1463,6 +1471,10 @@ function storyEscapeHtml(value) {
 
 function compactStoryBlockerLabel(blocker) {
     if (blocker === 'missing_or_invalid_media') return 'Upload a valid media file';
+    if (blocker === 'story_media_decode_failed') return 'Image could not be decoded — replace media';
+    if (blocker === 'story_media_not_vertical') return 'Image is not vertical — normalize or replace';
+    if (blocker === 'story_media_format_unsupported') return 'Unsupported Story media format';
+    if (blocker === 'story_media_normalization_required') return 'Normalize or replace media before publishing';
     if (blocker === 'fresh_story_auth_stale') return 'Account authentication needs refresh';
     if (blocker === 'fresh_story_auth_required' || String(blocker).startsWith('fresh_story_precheck_required')) {
         return 'Run an authentication check';
@@ -1498,6 +1510,7 @@ function renderStoryPrecheck(precheck, {quiet = false} = {}) {
     if (!panel) return;
     const ok = !!precheck.ok;
     const mediaOk = !!(precheck.media && precheck.media.ok);
+    applyMediaCompatUi(precheck.media || null);
     // Never claim missing media when the form currently has media selected.
     const blockers = (precheck.live_blockers || []).filter(b => {
         if (b === 'missing_or_invalid_media' && hasMediaSelected() && mediaOk) return false;
@@ -1511,6 +1524,8 @@ function renderStoryPrecheck(precheck, {quiet = false} = {}) {
             : 'Dry-run passed · review live requirements before publishing';
     } else if (blockers.includes('missing_or_invalid_media') && !hasMediaSelected()) {
         panel.textContent = 'Dry-run blocked · upload media to continue';
+    } else if (blockers.some(b => String(b).startsWith('story_media_'))) {
+        panel.textContent = 'Dry-run blocked · This image is not prepared for Telegram Stories. Normalize or replace it before publishing.';
     } else {
         panel.textContent = `Dry-run blocked · ${blockers.slice(0, 2).map(compactStoryBlockerLabel).join('; ') || 'review required'}`;
     }
@@ -1683,11 +1698,59 @@ async function cancelActiveRun() {
     } catch (e) { alert('Failed: ' + e.message); }
 }
 
+function formatBytesShort(n) {
+    const bytes = Number(n) || 0;
+    if (bytes <= 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatMediaCardSummary(media, fallbackSizeTxt) {
+    if (!media || !media.media_decodes) {
+        if (media && media.compat_blocker) {
+            return 'This image is not prepared for Telegram Stories. Normalize or replace it before publishing.';
+        }
+        return fallbackSizeTxt || '';
+    }
+    const w = media.media_width;
+    const h = media.media_height;
+    const parts = [];
+    if (w && h) parts.push(`${w} × ${h}`);
+    if (media.media_vertical && media.media_story_compatible) parts.push('Vertical Story image');
+    else if (media.media_vertical === false) parts.push('Not vertical');
+    // Size is not always on precheck; keep upload size when present.
+    if (fallbackSizeTxt && !/server path/i.test(fallbackSizeTxt)) parts.push(fallbackSizeTxt);
+    return parts.filter(Boolean).join(' · ') || (fallbackSizeTxt || 'Media ready');
+}
+
+function applyMediaCompatUi(media) {
+    const sizeEl = document.getElementById('media-selected-size');
+    const chip = document.getElementById('media-status-chip');
+    if (!sizeEl) return;
+    const prev = sizeEl.dataset.fallbackSize || sizeEl.textContent || '';
+    if (media && media.ok && media.media_story_compatible) {
+        sizeEl.textContent = formatMediaCardSummary(media, prev);
+        if (chip) {
+            chip.textContent = 'Media ready';
+            chip.classList.add('ready');
+        }
+    } else if (media && !media.ok && hasMediaSelected()) {
+        sizeEl.textContent = 'This image is not prepared for Telegram Stories. Normalize or replace it before publishing.';
+        if (chip) {
+            chip.textContent = 'Media not Story-ready';
+            chip.classList.remove('ready');
+        }
+    }
+}
+
 // ── Media upload / browser ─────────────────────────────────────────────────
 function setMediaSelection(path, filename, sizeTxt, isVideo) {
     document.getElementById('sched-media-path-resolved').value = path;
     document.getElementById('media-selected-name').textContent = filename;
-    document.getElementById('media-selected-size').textContent = sizeTxt;
+    const sizeEl = document.getElementById('media-selected-size');
+    sizeEl.textContent = sizeTxt;
+    sizeEl.dataset.fallbackSize = sizeTxt || '';
     document.getElementById('media-selected-icon').textContent = isVideo ? '🎬' : '🖼️';
     document.getElementById('media-selected-display').classList.remove('d-none');
     document.getElementById('media-browser').classList.add('d-none');

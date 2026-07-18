@@ -80,6 +80,24 @@ class StoryPublisher:
         client = client_wrapper.client
         account = client_wrapper.account
 
+        from src.core.execution_guard import (
+            ACTION_STORY_PUBLISH,
+            guard_blocked_story_publish,
+            require_execution_allowed,
+        )
+
+        blocked = require_execution_allowed(
+            ACTION_STORY_PUBLISH,
+            account_id=int(getattr(account, "id", 0) or 0),
+        )
+        if blocked is not None:
+            logger.warning(
+                "story_publisher_blocked_execution_guard",
+                account_id=getattr(account, "id", None),
+                reason=blocked.reason_code,
+            )
+            return guard_blocked_story_publish(blocked)
+
         try:
             # Validate media
             media_file = Path(media_path)
@@ -204,12 +222,24 @@ class StoryPublisher:
             }
 
         except Exception as e:
+            rpc_code = getattr(e, "code", None)
+            rpc_message = getattr(e, "message", None)
             logger.error(
                 "Failed to publish story",
                 account_id=account.id,
-                error=str(e)
+                error=str(e),
+                error_class=type(e).__name__,
+                rpc_error_code=rpc_code,
+                rpc_error_message=rpc_message,
+                media_path=str(media_path),
+                media_type=locals().get("media_type"),
+                request="SendStoryRequest",
             )
-            return {"success": False, "error": str(e)}
+            # Preserve Telethon human message; include class for operators/logs.
+            detail = str(e)
+            if type(e).__name__ and type(e).__name__ not in detail:
+                detail = f"{type(e).__name__}: {detail}"
+            return {"success": False, "error": detail}
 
     async def publish_batch(
         self,
