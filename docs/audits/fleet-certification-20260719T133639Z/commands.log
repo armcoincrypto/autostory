@@ -1,0 +1,18 @@
+cd /opt/autostory
+git rev-parse --show-toplevel
+git rev-parse HEAD
+git branch --show-current
+git status --short --branch
+git merge-base --is-ancestor 154574bf2e6b644a968ec2e99181d1368c0e67a8 HEAD
+.venv/bin/python -m py_compile src/stories/fleet_certification.py tests/test_storyfleet_fleet_certification.py
+.venv/bin/python -m pytest tests/test_storyfleet_fleet_certification.py -q
+.venv/bin/python -m pytest tests/test_stories_precheck.py tests/test_p10_19_story_authorization.py tests/test_p10_18_story_runtime_integration.py tests/test_p4b_controlled_live_gate.py -q
+.venv/bin/python -m src.stories.fleet_certification --read-only --timeout-seconds 15
+
+Production audit behavior:
+- Loaded canonical inventory from database accounts table
+- Verified all publishing and mutation flags locked before and after
+- Probed sequentially using disposable SQLite session backups
+- Invoked only allowlisted read-only/state-refresh Telegram operations
+- Disconnected each client in finally cleanup
+- Compared source-session hashes and production counters before/after

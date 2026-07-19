@@ -1,0 +1,39 @@
+Syntax validation
+-----------------
+Command:
+  .venv/bin/python -m py_compile src/stories/fleet_certification.py tests/test_storyfleet_fleet_certification.py
+Result:
+  PASS (exit 0)
+
+Focused safety/classification tests
+-----------------------------------
+Command:
+  .venv/bin/python -m pytest tests/test_storyfleet_fleet_certification.py -q
+Result:
+  PASS — 22 passed, 5 deprecation warnings
+
+Nearest existing Story regression suite
+---------------------------------------
+Command:
+  .venv/bin/python -m pytest tests/test_stories_precheck.py tests/test_p10_19_story_authorization.py tests/test_p10_18_story_runtime_integration.py tests/test_p4b_controlled_live_gate.py -q
+Result:
+  BASELINE WARNINGS — 19 passed, 5 failed, 28 warnings
+
+The five failures reproduced unchanged during canonicalization and are in
+pre-existing, previously committed Story media/UI
+expectations (fake JPEG fixtures now fail local media decode checks; one UI
+test expects older "Technical details" copy). The fleet audit adds no changes
+to those modules and the focused audit suite passes.
+
+Production evidence validation
+------------------------------
+- Canonical accounts in database: 104
+- Account rows in fleet-readiness.json: 104
+- Duplicate account IDs: 0
+- Secret/session-path scan: PASS (no api_hash, session_string, auth_key, or
+  absolute production session directory found)
+- Source session hash mismatches: 0
+- Pre/post Story rows: 7 / 7
+- Pre/post controlled-live logs: 2 / 2
+- Pre/post .env SHA-256:
+  7f7fbd01b966bf3306091ee5e4e880586de0f2921fc958adf9456519ba3f029d
