@@ -5,6 +5,7 @@ Used by ClientManager and StoryPublisher so production uses one consistent code 
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -17,6 +18,7 @@ logger = structlog.get_logger(__name__)
 ERR_EMPTY_SESSION = "empty_session"
 ERR_SESSION_FILE_MISSING = "session_file_missing"
 ERR_INVALID_SESSION_FORMAT = "invalid_session_format"
+ERR_LEGACY_SQLITE_SESSION_FORMAT = "legacy_sqlite_session_format"
 
 
 def _strip_file_url(s: str) -> str:
@@ -44,8 +46,14 @@ def _looks_like_filesystem_path(raw: str) -> bool:
     return False
 
 
-def _sqlite_session_from_file_path(path: Path) -> SQLiteSession:
-    """Telethon stores SQLite as <base>.session; normalize if path ends with .session."""
+def _sqlite_session_from_file_path(path: Path) -> Tuple[Optional[SQLiteSession], Optional[str]]:
+    """
+    Telethon stores SQLite as <base>.session; normalize if path ends with .session.
+
+    Returns:
+        (session, None) on success, or (None, ERR_LEGACY_SQLITE_SESSION_FORMAT) when the file
+        exists but Telethon cannot read it (schema mismatch, corruption, foreign DB).
+    """
     p = path
     try:
         p = path.resolve()
@@ -55,7 +63,10 @@ def _sqlite_session_from_file_path(path: Path) -> SQLiteSession:
         base = str(p.with_suffix(""))
     else:
         base = str(p)
-    return SQLiteSession(base)
+    try:
+        return SQLiteSession(base), None
+    except (ValueError, sqlite3.DatabaseError, sqlite3.OperationalError):
+        return None, ERR_LEGACY_SQLITE_SESSION_FORMAT
 
 
 def probe_telethon_session_kind(account: Any) -> Tuple[str, Optional[str]]:
@@ -134,9 +145,15 @@ def probe_telethon_session_kind(account: Any) -> Tuple[str, Optional[str]]:
     return "empty", ERR_EMPTY_SESSION
 
 
-def resolve_telethon_session(account: Any) -> Tuple[Any, str, Optional[str]]:
+def resolve_telethon_session(
+    account: Any, *, prefer_string_over_file: bool = False
+) -> Tuple[Any, str, Optional[str]]:
     """
     Build a Telethon session object for this account.
+
+    Args:
+        prefer_string_over_file: When True (Kathleen listener only), try a non-path
+            ``session_string`` as ``StringSession`` before any SQLite file.
 
     Returns:
         (session, session_kind, error_code)
@@ -147,6 +164,19 @@ def resolve_telethon_session(account: Any) -> Tuple[Any, str, Optional[str]]:
     session_path_attr = getattr(account, "session_path", None)
     sp = (session_path_attr or "").strip() if session_path_attr else ""
     account_id = getattr(account, "id", None)
+
+    if prefer_string_over_file and ss:
+        raw = _strip_file_url(ss)
+        if not _looks_like_filesystem_path(raw):
+            try:
+                return StringSession(ss), "string", None
+            except Exception as e:
+                logger.info(
+                    "StringSession rejected",
+                    account_id=account_id,
+                    session_kind_guessed="string",
+                    error=str(e),
+                )
 
     paths_to_try: list[Tuple[str, Path]] = []
 
@@ -172,6 +202,7 @@ def resolve_telethon_session(account: Any) -> Tuple[Any, str, Optional[str]]:
             pass
 
     seen: set[str] = set()
+    saw_legacy_sqlite = False
     for _label, path in paths_to_try:
         key = str(path)
         if key in seen:
@@ -179,7 +210,17 @@ def resolve_telethon_session(account: Any) -> Tuple[Any, str, Optional[str]]:
         seen.add(key)
         try:
             if path.is_file():
-                return _sqlite_session_from_file_path(path), "file", None
+                session, sqlite_err = _sqlite_session_from_file_path(path)
+                if sqlite_err == ERR_LEGACY_SQLITE_SESSION_FORMAT:
+                    saw_legacy_sqlite = True
+                    logger.info(
+                        "telethon_sqlite_session_unreadable",
+                        account_id=account_id,
+                        error_code=sqlite_err,
+                    )
+                    continue
+                if session is not None:
+                    return session, "file", None
         except OSError:
             continue
 
@@ -201,7 +242,12 @@ def resolve_telethon_session(account: Any) -> Tuple[Any, str, Optional[str]]:
                 session_kind_guessed="string",
                 error=str(e),
             )
+            if saw_legacy_sqlite:
+                return None, "file", ERR_LEGACY_SQLITE_SESSION_FORMAT
             return None, "string", ERR_INVALID_SESSION_FORMAT
+
+    if saw_legacy_sqlite:
+        return None, "file", ERR_LEGACY_SQLITE_SESSION_FORMAT
 
     return None, "empty", ERR_EMPTY_SESSION
 
@@ -214,6 +260,7 @@ def human_message_for_code(code: Optional[str]) -> str:
         ERR_EMPTY_SESSION: "No session: empty session_string and no usable session file",
         ERR_SESSION_FILE_MISSING: "Session file missing",
         ERR_INVALID_SESSION_FORMAT: "Invalid session format (not a valid Telethon string session)",
+        ERR_LEGACY_SQLITE_SESSION_FORMAT: "Legacy or incompatible Telegram session format",
         "unauthorized_session": "Session not authorized with Telegram",
         "failed_connect": "Failed to connect to Telegram",
         "failed_connect_network": "Network or transport error connecting to Telegram (retry)",

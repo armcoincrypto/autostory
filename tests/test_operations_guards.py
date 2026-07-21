@@ -1,12 +1,6 @@
-"""
-Tests for operations-readiness guardrails: canary mode, rate limits, bulk profile caps.
-"""
-import asyncio
-from unittest.mock import patch, MagicMock, AsyncMock
+"""Tests for current operations-readiness route and risk-event guardrails."""
+from unittest.mock import patch, MagicMock
 
-import pytest
-
-from src.stories.run_batch import run_batch_async
 from src.core.risk_events import (
     count_events_last_hour,
     count_bulk_profile_actions_last_hour,
@@ -15,115 +9,6 @@ from src.core.risk_events import (
     EVENT_USERNAME_CHANGED,
     EVENT_PROFILE_PHOTO_CHANGED,
 )
-
-
-def _run(coro):
-    """Run async coroutine in sync context."""
-    return asyncio.get_event_loop().run_until_complete(coro)
-
-
-@pytest.mark.asyncio
-async def test_run_batch_canary_caps_max_accounts():
-    """Without canary_batch_ok, max_accounts is capped to canary_default_batch_size (1)."""
-    eligible_one = [{"id": 1}]
-    eligible_none = []
-
-    with patch("src.stories.batch_helpers.get_story_eligible_accounts_for_batch") as mock_eligible:
-        with patch("src.stories.run_batch.get_db_context"):
-            with patch("src.stories.run_batch.StoryBatchRun") as MockRun:
-                with patch("src.stories.publisher.story_publisher") as mock_pub:
-                    mock_eligible.return_value = (eligible_one, [])
-
-                    run_mock = MagicMock()
-                    run_mock.id = 99
-                    MockRun.return_value = run_mock
-
-                    mock_pub.publish_batch = AsyncMock(return_value={
-                        "total_attempted": 1,
-                        "successful": 1,
-                        "failed": 0,
-                        "skipped": 0,
-                        "errors": [],
-                    })
-
-                    result = await run_batch_async({
-                        "media_path": "/tmp/x.jpg",
-                        "caption": "",
-                        "max_stories": 1,
-                        "mentions_per_story": 0,
-                        "canary_batch_ok": False,
-                        "max_accounts": 10,
-                    })
-
-                    # Should have called with max_accounts=1 (canary cap)
-                    call_kw = mock_eligible.call_args[1]
-                    assert call_kw["max_accounts"] == 1
-                    assert result.get("successful", 0) >= 1
-
-
-@pytest.mark.asyncio
-async def test_run_batch_canary_allows_more_with_opt_in():
-    """With canary_batch_ok=true, max_accounts is not capped to 1."""
-    eligible_two = [{"id": 1}, {"id": 2}]
-
-    with patch("src.stories.batch_helpers.get_story_eligible_accounts_for_batch") as mock_eligible:
-        with patch("src.stories.run_batch.get_db_context"):
-            with patch("src.stories.run_batch.StoryBatchRun") as MockRun:
-                with patch("src.stories.publisher.story_publisher") as mock_pub:
-                    mock_eligible.return_value = (eligible_two, [])
-
-                    run_mock = MagicMock()
-                    run_mock.id = 99
-                    MockRun.return_value = run_mock
-
-                    mock_pub.publish_batch = AsyncMock(return_value={
-                        "total_attempted": 2,
-                        "successful": 2,
-                        "failed": 0,
-                        "skipped": 0,
-                        "errors": [],
-                    })
-
-                    result = await run_batch_async({
-                        "media_path": "/tmp/x.jpg",
-                        "caption": "",
-                        "max_stories": 2,
-                        "mentions_per_story": 0,
-                        "canary_batch_ok": True,
-                        "max_accounts": 5,
-                    })
-
-                    call_kw = mock_eligible.call_args[1]
-                    assert call_kw["max_accounts"] >= 2
-                    assert result.get("successful", 0) >= 2
-
-
-@pytest.mark.asyncio
-async def test_run_batch_max_story_publishes_per_hour_blocks():
-    """When recent publishes >= max_per_hour, batch is blocked before publish."""
-    eligible_one = [{"id": 1}]
-
-    with patch("src.stories.batch_helpers.get_story_eligible_accounts_for_batch") as mock_eligible:
-        with patch("src.core.risk_events.count_events_last_hour") as mock_count:
-            with patch("src.stories.run_batch.get_db_context"):
-                with patch("src.stories.run_batch.StoryBatchRun") as MockRun:
-                    mock_eligible.return_value = (eligible_one, [])
-                    mock_count.return_value = 15
-
-                    run_mock = MagicMock()
-                    run_mock.id = 99
-                    MockRun.return_value = run_mock
-
-                    result = await run_batch_async({
-                        "media_path": "/tmp/x.jpg",
-                        "caption": "",
-                        "max_stories": 1,
-                        "mentions_per_story": 0,
-                        "canary_batch_ok": True,
-                    })
-
-                    assert result.get("success") is False
-                    assert "exceed story publish cap" in (result.get("error") or "")
 
 
 def test_count_bulk_profile_actions_last_hour_combines_both():

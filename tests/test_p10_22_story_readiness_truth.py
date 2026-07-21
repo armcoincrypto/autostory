@@ -8,9 +8,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.core.database import Base
+from src.core.account_protection import PROTECTED_IDS
 from src.core.models import Account, AccountStatus
 from src.core.scheduler_models import AccountReadinessSnapshot
-from src.recovery.p9_83_governance_observability import PROTECTED_IDS
 from src.stories import rotation_audit
 from src.stories.rotation_audit import CONTROLLED_LIVE_ACCOUNT_ID
 from src.stories.story_auth_state import resolve_story_auth_state
