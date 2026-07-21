@@ -4,7 +4,10 @@ STORYFLEET Control Dashboard
 """
 import os
 import sys
+import threading
+import time
 import traceback
+from collections import defaultdict, deque
 from datetime import timezone
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +31,10 @@ logger = structlog.get_logger(__name__)
 
 login_manager = LoginManager()
 csrf = CSRFProtect()
+_diagnostic_rate_lock = threading.Lock()
+_diagnostic_rate_events: dict[str, deque[float]] = defaultdict(deque)
+_DIAGNOSTIC_RATE_WINDOW_SEC = 60.0
+_DIAGNOSTIC_RATE_MAX = 30
 
 
 def _production_environment() -> bool:
@@ -545,23 +552,52 @@ def _ensure_p3_discovery_api_guards(app: Flask) -> None:
 
 
 def _ensure_p3_deep_health_route(app: Flask) -> None:
-    """GET /api/health/deep — lock matrix, queue snapshot, emergency status."""
+    """GET /api/health/deep — restricted lock, queue, and emergency status."""
     if "api_health_deep" in app.view_functions:
         return
 
     @app.route("/api/health/deep", methods=["GET"], endpoint="api_health_deep")
     def api_health_deep():
-        from src.core.database import get_db_context
-        from src.core.execution_guard import build_execution_lock_matrix, execution_emergency_lock_active
-        from src.core.scheduler_models import JobStatus, ScheduledJob
-        from src.recovery.p9_83_governance_observability import build_lock_snapshot
+        from src.dashboard.auth_access import operator_api_authorized
+
+        if not operator_api_authorized():
+            response = make_response(
+                jsonify({"ok": False, "error": "unauthorized"}), 401
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        now = time.monotonic()
+        client_key = request.remote_addr or "unknown"
+        with _diagnostic_rate_lock:
+            events = _diagnostic_rate_events[client_key]
+            while events and now - events[0] >= _DIAGNOSTIC_RATE_WINDOW_SEC:
+                events.popleft()
+            if len(events) >= _DIAGNOSTIC_RATE_MAX:
+                response = make_response(
+                    jsonify({"ok": False, "error": "rate_limited"}), 429
+                )
+                response.headers["Cache-Control"] = "no-store"
+                response.headers["Retry-After"] = "60"
+                return response
+            events.append(now)
 
         queue: dict[str, int] = {}
         running_stale = 0
+        emergency_lock = None
+        lock_snapshot: dict[str, Any] = {}
+        execution_lock_matrix: dict[str, Any] = {}
         try:
             from datetime import datetime
 
             from sqlalchemy import func
+            from src.core.database import get_db_context
+            from src.core.execution_guard import (
+                build_execution_lock_matrix,
+                execution_emergency_lock_active,
+            )
+            from src.core.scheduler_models import JobStatus, ScheduledJob
+            from src.recovery.p9_83_governance_observability import build_lock_snapshot
 
             with get_db_context() as db:
                 rows = (
@@ -579,24 +615,32 @@ def _ensure_p3_deep_health_route(app: Flask) -> None:
                     )
                     .count()
                 )
+            emergency_lock = execution_emergency_lock_active()
+            lock_snapshot = build_lock_snapshot()
+            execution_lock_matrix = build_execution_lock_matrix()
         except Exception as exc:
+            logger.warning(
+                "deep_health_queue_query_failed",
+                error_type=type(exc).__name__,
+            )
             queue = {"_error": 1}
             running_stale = -1
-            body_err = str(exc)
 
         body = {
             "service": "storyfleet",
-            "status": "healthy",
+            "status": "healthy" if running_stale >= 0 else "degraded",
             "deep": True,
-            "execution_emergency_lock": execution_emergency_lock_active(),
-            "lock_snapshot": build_lock_snapshot(),
-            "execution_lock_matrix": build_execution_lock_matrix(),
+            "execution_emergency_lock": emergency_lock,
+            "lock_snapshot": lock_snapshot,
+            "execution_lock_matrix": execution_lock_matrix,
             "scheduled_jobs_by_status": queue,
             "stale_running_jobs": int(running_stale),
         }
         if running_stale < 0:
-            body["queue_error"] = body_err
-        return jsonify(body)
+            body["queue_error"] = "dependency_query_failed"
+        response = make_response(jsonify(body), 200)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     logger.info("p3_deep_health_route_installed")
 

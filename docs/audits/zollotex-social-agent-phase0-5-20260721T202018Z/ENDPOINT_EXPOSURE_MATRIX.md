@@ -1,0 +1,45 @@
+# Endpoint Exposure Matrix
+
+Runtime listeners were verified without calling endpoints: AutoStory gunicorn `127.0.0.1:8000`, Swaperex admin `127.0.0.1:8001`, and Fastify backend-signals `0.0.0.0:4001`. Nginx exposes `ex.zellotex.com` to port 8000 and DEX routes under `dex.kobbex.com`. Firewall/security-group reachability of direct `:4001` remains unverified.
+
+Abbreviations: public `P`; restricted/private `R`; `RL` rate limit; `C` cache.
+
+| Method/path | Service | Auth / authorization | P/R and data classification | RL / C | Upstream / timeout / retry | Response and known consumer | Owner | Risk / recommended action |
+|---|---|---|---|---|---|---|---|---|
+| `GET ex.zellotex.com/api/health` | AutoStory `:8000` | none | P; liveness | none / none | local / immediate / none | currently service/status; generic monitors | AutoStory | Medium: patch prepared to preserve `status=healthy` while removing the service identifier |
+| `GET ex.zellotex.com/api/health/deep` | AutoStory `:8000` | currently none | P but should be R; internal locks, queue, error details | none / none | local DB / request-bound / none | lock matrix and scheduler topology; operator-only intent | AutoStory | High: patch prepared for explicit admin/header auth, timing-safe compare, 30/min process limit, `no-store` |
+| `GET|POST|PUT|DELETE ex.zellotex.com/api/*` | AutoStory `:8000` | mixed session/token/route guards; active legacy routes partly bytecode-loaded | mixed operator and mutation data | inconsistent / none | DB/Telegram | 181 scheduler-prefixed rules plus account/story/AI routes | AutoStory | High unknown-consumer surface; immutable source parity and generated route inventory required before contract changes |
+| `GET|HEAD /`, SPA/assets/version | nginx static DEX | none | P; public assets | none / immutable assets; no-store index | filesystem | browser SPA | DEX frontend/ops | Low; deny source maps and no-cache SPA fallback |
+| `GET /api/v1/health`, `/api/health` | Fastify `:4001` | none | P; provider/service diagnostics; `PUBLIC_INFORMATIONAL_PROXY` | nominal global 600/min shared behind nginx / none | DexScreener+GoPlus sequential, 3s each, no retry | status/version/uptime/provider states; frontend health stores | backend-signals | High amplification; cache 15–30s, concurrent checks, route-specific RL |
+| `GET /api/v1/signals` | Fastify | none; public `debug` flag | P; token market/security data; `PUBLIC_PRODUCT_DEPENDENCY` | global / 120–300s partial caches | DexScreener+GoPlus, 8s orchestration, no abort/retry | normalized severity/provider details; `useSignals` | backend-signals | High; validate chain/address, gate debug, abort timed-out requests |
+| `POST /api/v1/wallet/scan-summary` | Fastify | none | P; pseudonymous wallet/token data; `PUBLIC_PRODUCT_DEPENDENCY` | global / 60s request cache | up to 150 GoPlus calls, 5s each, no retry | normalized risk summaries; wallet enrichment | backend-signals | Critical amplification; cap combinations/concurrency and apply low route RL |
+| `POST /rpc/:chain` | Fastify | method allowlist only | P; public chain/wallet activity; `PUBLIC_PRODUCT_DEPENDENCY` | global / none | public RPC pools, 10s each sequential failover | upstream JSON-RPC; balances/history hooks | backend-signals | High; cap batch/method cost/log ranges and total deadline |
+| `GET /rpc/test` | Fastify | none | P diagnostic; `UNSAFE_PUBLIC_EXPOSURE` | global / none | four RPCs sequential, up to ~32s | upstream URLs/errors/latency; no frontend consumer | backend-signals/ops | High; remove from public routing or operator/IP protect |
+| `GET /explorer/:chain` | Fastify | none; arbitrary module/action forwarded | P; public chain activity using private quota; `PUBLIC_PRODUCT_DEPENDENCY` | global / frontend only | Etherscan V2, 15s, no retry | upstream response; transaction history | backend-signals | High general key proxy; allowlist account actions and bounds |
+| `GET /explorer/test` | Fastify | none | P diagnostic; `UNSAFE_PUBLIC_EXPOSURE` | global / none | four explorers sequential, up to ~60s | key-presence/errors/latency; manual only | backend-signals/ops | Critical; make unavailable publicly |
+| `GET /coingecko/markets` | Fastify | none | P market data; `PUBLIC_INFORMATIONAL_PROXY` | global / 60s + stale fallback | CoinGecko, 15s, no retry | array; token screener | backend-signals | Medium; category allowlist/length and cache eviction |
+| `GET /coingecko/simple/price` | Fastify | none | P market data; `PUBLIC_INFORMATIONAL_PROXY` | global / 60s + stale fallback | CoinGecko, 10s, no retry | price object; portfolio | backend-signals | Medium-high; cap IDs/currencies and fix currency-less cache key |
+| `GET /oneinch/swap/v6.0/:chain/:resource` | Fastify | public caller; server bearer upstream key; chain/resource allowlist | P quote/unsigned tx data; `PUBLIC_PRODUCT_DEPENDENCY` | global / none | 1inch, 25s, no server retry | quote/swap/approval upstream schema; DEX quote/tx builders | backend-signals | High private-quota proxy; validate bounds, route RL, redact query/error details |
+| `GET /health`, legacy `/api/signals` | direct Fastify | none | intended private/direct; `LEGACY_UNKNOWN_CONSUMER` | global | local/redirect | process status or 301 | backend-signals | Direct exposure possible because bind is `0.0.0.0`; bind loopback |
+| `POST /api/v1/monitoring/events` | FastAPI admin `:8001` via nginx | optional ingest key; effectively none when unset | P; confidential pseudonymous telemetry; `UNSAFE_PUBLIC_EXPOSURE` | none / none | local SQLite, nginx 15s | stores up to 200 events/512KB; browser outbox | Swaperex telemetry | Critical unauthenticated persistence; add edge/app RL, strict event schemas, quotas/retention |
+| `GET /api/v1/admin/health` | FastAPI admin | mandatory `X-Admin-Token`, timing-safe; fail closed if server token absent | R; minimal operator health; `INTERNAL_OPERATOR_TOOL` | none / none | local | simple admin health; login probe | Swaperex admin | Medium; add auth-failure RL and `no-store`; rotate exposed token |
+| `GET /api/v1/admin/{overview,events,swaps,revenue,revenue-normalized,revenue-reconciliation,swap-lifecycles,health-alerts,failures,wallet-reconnect,operator-intelligence}` | FastAPI admin | same single shared token; no RBAC | R; confidential operational/financial telemetry; `INTERNAL_OPERATOR_TOOL` | none / none | SQLite scans, nginx 15s | aggregates/raw events; admin SPA | Swaperex admin | High; remove build-time token, add session/RBAC, route budgets/time windows, `no-store`, audit |
+| `GET /api/v1/admin/operator-intelligence?persistDaily=true` | FastAPI admin | admin token | R but state-mutating GET | none / none | local DB | may persist daily snapshot | Swaperex admin | High semantic defect; split into explicit authorized POST |
+| `GET /api/v1/admin/lifecycle` | no mounted backend route | frontend expects token auth | R intent; stale client contract | n/a | n/a | frontend panels expect missing route | Swaperex | Medium; migrate client to `/swap-lifecycles` or compatibility adapter |
+| `GET /health[/detailed]`, `/api/v1/health[/detailed]` on `:8001` | FastAPI admin direct loopback | app boundary/private | R; operational/config metadata | none / none | local | process/detailed health | Swaperex ops | Keep loopback-only; detailed response must remain private/no-store |
+| Legacy/custodial `/api/v1/deposits/*`, `/admin/*`, `/api/v1/hd/*`, `/api/v1/withdraw/*`, `/api/v1/webhooks/*` | Swaperex legacy app configured for `:8000`/Docker | route-specific/mixed | private financial/custodial mutation APIs | unknown | databases/providers | deposits, users, balances, withdrawals, xpub/webhooks | Swaperex custodial | Critical collision potential with `ex.zellotex.com -> 127.0.0.1:8000`; enforce distinct loopback ports, host validation, enumerated routes |
+
+## Cross-cutting findings
+
+- Fastify’s `origin: true` CORS reflects arbitrary origins; an unused allowlist does not protect routes.
+- Fastify lacks trusted-proxy configuration, so nginx traffic may share one localhost rate bucket.
+- Nginx provides no route-specific `limit_req`, response cache, retry policy, or circuit breaker for these APIs.
+- The frontend can embed an admin token through `VITE_ADMIN_API_TOKEN`; this must be removed. Session storage is also exposed to same-origin XSS.
+- Generic quote/price/RPC/explorer responses are upstream passthrough/informational data, never authoritative Exswaping business content.
+- Runtime currently confirms port 8000 is AutoStory gunicorn, but the ownership collision remains a deployment hazard.
+
+## Gate
+
+The inventory is complete for the active nginx/Fastify/admin groupings, but critical Swaperex changes are owned by another repository and are not implemented on this AutoStory branch. Unknown consumers remain for direct `:4001`, diagnostic routes, legacy AutoStory bytecode routes, and unused 1inch resources.
+
+`ZOLLOTEX_PHASE0_5_ENDPOINT_BOUNDARY_PASS` is **not claimed** until critical public ingest/amplification routes are hardened and ownership/consumer decisions are approved.

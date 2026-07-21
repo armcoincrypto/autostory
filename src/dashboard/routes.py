@@ -276,8 +276,8 @@ def maybe_proxy_api():
 
 @api.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "service": "storyfleet"})
+    """Minimal public liveness; dependency details live behind operator auth."""
+    return jsonify({"status": "healthy"})
 
 
 @api.route('/stats', methods=['GET'])
