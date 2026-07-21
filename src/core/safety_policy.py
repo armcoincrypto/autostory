@@ -8,7 +8,7 @@ Principles:
 - Prefer false-negative over risky false-positive
 """
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.utils.helpers import utc_now
 from typing import Any, Optional
@@ -66,10 +66,18 @@ def _parse_dt(val: Any) -> Optional[datetime]:
     if val is None:
         return None
     if hasattr(val, "year"):
-        return val
+        dt = val
+        if getattr(dt, "tzinfo", None) is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     try:
-        s = str(val).replace("Z", "").split("+")[0].strip()
-        return datetime.fromisoformat(s)
+        raw = str(val).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except Exception:
         return None
 

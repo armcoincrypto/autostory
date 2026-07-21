@@ -29,6 +29,39 @@ from src.core.scheduler_models import (
 from src.scheduler import executor as executor_mod
 
 
+@pytest.fixture(autouse=True)
+def _scheduler_gate_proceed(monkeypatch):
+    """Unit tests mock Telethon; bypass operational-state gate for send-path assertions."""
+    monkeypatch.setattr(
+        "src.scheduler.runtime_preflight.classify_scheduler_runtime_gate",
+        lambda _db, _account: {
+            "action": "proceed",
+            "primary_blocker": None,
+            "primary_label": "Eligible",
+            "lifecycle_state": "READY",
+            "permanent_blockers": [],
+            "temporary_blockers": [],
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+def _execution_guard_allow_send(monkeypatch):
+    from src.core.execution_guard import ExecutionGuardDecision, RESULT_ALLOW
+
+    def _allow(*_a, **kw):
+        action = _a[0] if _a else kw.get("action_type", "telegram_send")
+        return ExecutionGuardDecision(
+            allowed=True,
+            action=str(action),
+            result=RESULT_ALLOW,
+            reason_code="test_bypass",
+            message="test bypass",
+        )
+
+    monkeypatch.setattr("src.core.execution_guard.can_execute_action", _allow)
+
+
 @pytest.fixture
 def idem_db(monkeypatch):
     from src.core import database as database_module
@@ -132,6 +165,16 @@ async def test_execute_job_skips_client_when_sent_delivery_exists(idem_db, monke
         }
 
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
+    monkeypatch.setattr(
+        "src.scheduler.runtime_preflight.classify_scheduler_runtime_gate",
+        lambda db, account: {
+            "action": "proceed",
+            "primary_blocker": None,
+            "lifecycle_state": "OPERATIONAL",
+            "permanent_blockers": [],
+            "temporary_blockers": [],
+        },
+    )
 
     db = SessionFactory()
     db.add(
@@ -148,8 +191,12 @@ async def test_execute_job_skips_client_when_sent_delivery_exists(idem_db, monke
     db.commit()
     db.close()
 
-    # Minimal template resolution: patch _get_template_body to avoid template DB fan-out
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hello {account_name}")
+    # Minimal template resolution: patch _resolve_template_for_job to avoid template DB fan-out
+    monkeypatch.setattr(
+        executor_mod,
+        "_resolve_template_for_job",
+        lambda *a, **k: ("hello {account_name}", None),
+    )
 
     mock_add = AsyncMock()
     monkeypatch.setattr(executor_mod.client_manager, "add_account", mock_add)

@@ -4,7 +4,7 @@ Canonical Telethon session paths and read-only story/session projections for API
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -145,10 +145,17 @@ def _parse_datetime_safe(val: Any) -> Optional[datetime]:
     if val is None:
         return None
     if hasattr(val, "year"):
+        if getattr(val, "tzinfo", None) is not None:
+            return val.astimezone(timezone.utc).replace(tzinfo=None)
         return val
     try:
-        s = str(val).replace("Z", "").split("+")[0].strip()
-        return datetime.fromisoformat(s)
+        raw = str(val).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except Exception:
         return None
 

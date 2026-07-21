@@ -27,6 +27,40 @@ from src.core.scheduler_models import (
 from src.scheduler import executor as executor_mod
 
 
+@pytest.fixture(autouse=True)
+def _scheduler_gate_proceed(monkeypatch):
+    """Unit tests mock Telethon; bypass operational-state gate for send-path assertions."""
+    monkeypatch.setattr(
+        "src.scheduler.runtime_preflight.classify_scheduler_runtime_gate",
+        lambda _db, _account: {
+            "action": "proceed",
+            "primary_blocker": None,
+            "primary_label": "Eligible",
+            "lifecycle_state": "READY",
+            "permanent_blockers": [],
+            "temporary_blockers": [],
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+def _execution_guard_allow_send(monkeypatch):
+    """Allow send-path unit tests; production default remains DENY."""
+    from src.core.execution_guard import ExecutionGuardDecision, RESULT_ALLOW
+
+    def _allow(*_a, **kw):
+        action = _a[0] if _a else kw.get("action_type", "telegram_send")
+        return ExecutionGuardDecision(
+            allowed=True,
+            action=str(action),
+            result=RESULT_ALLOW,
+            reason_code="test_bypass",
+            message="test bypass",
+        )
+
+    monkeypatch.setattr("src.core.execution_guard.can_execute_action", _allow)
+
+
 @pytest.fixture
 def si_db(monkeypatch):
     from sqlalchemy import create_engine
@@ -85,7 +119,7 @@ async def test_sending_row_exists_before_send_message_invoked(si_db, monkeypatch
     SessionFactory = si_db
     jid, *_ = _seed_runnable_job(SessionFactory)
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "x {account_name}")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("x {account_name}", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     observed = []
@@ -128,7 +162,7 @@ async def test_success_updates_same_row_to_sent(si_db, monkeypatch):
     SessionFactory = si_db
     jid, *_ = _seed_runnable_job(SessionFactory)
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hi")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("hi", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     async def fake_execute(_fn, _ent, _body):
@@ -153,7 +187,7 @@ async def test_timeout_marks_uncertain(si_db, monkeypatch):
     SessionFactory = si_db
     jid, *_ = _seed_runnable_job(SessionFactory)
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hi")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("hi", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     w = MagicMock()
@@ -182,7 +216,7 @@ async def test_known_telethon_failure_marks_failed(si_db, monkeypatch):
     SessionFactory = si_db
     jid, *_ = _seed_runnable_job(SessionFactory)
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hi")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("hi", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     w = MagicMock()
@@ -220,7 +254,7 @@ async def test_active_sending_and_lease_blocks_second_send(si_db, monkeypatch):
     db.close()
 
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hi")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("hi", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     mock_add = AsyncMock()
@@ -251,7 +285,7 @@ async def test_uncertain_row_blocks_and_fails_job(si_db, monkeypatch):
     db.close()
 
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hi")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("hi", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     mock_add = AsyncMock()
@@ -311,7 +345,7 @@ async def test_stale_sending_cleared_then_new_attempt_succeeds(si_db, monkeypatc
     db.close()
 
     monkeypatch.setattr("src.scheduler.pacing.get_send_pacing_decision", _pace_allow)
-    monkeypatch.setattr(executor_mod, "_get_template_body", lambda *a, **k: "hi")
+    monkeypatch.setattr(executor_mod, "_resolve_template_for_job", lambda *a, **k: ("hi", None))
     monkeypatch.setattr(executor_mod, "_resolve_send_entity", AsyncMock(return_value=object()))
 
     async def fake_execute(_fn, _ent, _body):

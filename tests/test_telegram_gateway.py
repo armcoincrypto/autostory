@@ -202,6 +202,11 @@ def test_single_sender_gateway_never_calls_direct(monkeypatch):
     monkeypatch.setattr(settings, "ai_agent_account_ids", "")
     import src.ai_agent.telegram_single_sender as mod
 
+    def _allow(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("src.core.execution_guard.require_execution_allowed", _allow)
+
     mod._gateway_enabled_logged = False
 
     class FakeGw:
@@ -227,6 +232,7 @@ def test_single_sender_gateway_never_calls_direct(monkeypatch):
     )
 
     sender = mod.TelegramSingleSender()
+    monkeypatch.setattr(mod, "_ai_agent_account_gate_passes", lambda _aid: True)
     monkeypatch.setattr(sender, "_gw", lambda: FakeGw())
 
     send_out = sender.send_message(1, "@u", "hi")
@@ -241,6 +247,11 @@ def test_single_sender_direct_path_uses_transport(monkeypatch):
     monkeypatch.setattr(settings, "ai_agent_account_ids", "")
     import src.ai_agent.telegram_single_sender as mod
 
+    def _allow(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("src.core.execution_guard.require_execution_allowed", _allow)
+
     mod._gateway_enabled_logged = False
 
     async def fake_send(self, account_id, target, text):
@@ -254,6 +265,7 @@ def test_single_sender_direct_path_uses_transport(monkeypatch):
     monkeypatch.setattr(mod.TelegramDirectTransport, "send_message_async", fake_send)
 
     sender = mod.TelegramSingleSender()
+    monkeypatch.setattr(mod, "_ai_agent_account_gate_passes", lambda _aid: True)
     out = sender.send_message(2, "@peer", "x")
     assert out["ok"] is True
     assert out.get("telegram_message_id") == 55

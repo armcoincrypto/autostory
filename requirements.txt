@@ -1,5 +1,5 @@
 # Telegram API Libraries
-telethon>=1.34.0
+telethon>=1.43.2,<1.44
 pyrogram>=2.0.106
 tgcrypto>=1.2.5
 

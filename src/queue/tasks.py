@@ -55,6 +55,21 @@ def publish_story_task(
         task_id=self.request.id
     )
 
+    from src.core.execution_guard import (
+        ACTION_STORY_PUBLISH,
+        guard_blocked_story_publish,
+        require_execution_allowed,
+    )
+
+    blocked = require_execution_allowed(ACTION_STORY_PUBLISH, account_id=int(account_id))
+    if blocked is not None:
+        logger.warning(
+            "publish_story_task_blocked_execution_guard",
+            account_id=int(account_id),
+            reason=blocked.reason_code,
+        )
+        return guard_blocked_story_publish(blocked)
+
     # Update task status in database
     with get_db_context() as db:
         task = db.query(Task).filter(
@@ -69,7 +84,10 @@ def publish_story_task(
         client = await client_manager.get_client(account_id)
 
         if not client:
-            return {"success": False, "error": "Client not found"}
+            return {
+                "success": False,
+                "error": "Client not available (session missing, invalid, or unauthorized)",
+            }
 
         if not client.is_connected:
             connected = await client.connect()

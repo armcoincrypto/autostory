@@ -1,8 +1,12 @@
+# P9.38 draft restore — source-backed from Cursor snapshots (not byte-matched to archive .pyc).
+# Do not restart scheduler until import probe + tests pass and operator approves.
+
 """
 Telegram Client Manager - Multi-Account Orchestration
 Handles concurrent user sessions using Telethon
 """
 import asyncio
+import contextlib
 import sqlite3
 import threading
 import time
@@ -12,7 +16,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Callable, Any, Union, Tuple
 
 from telethon import TelegramClient
-from telethon.sessions import StringSession
+from telethon.sessions import StringSession, SQLiteSession
 from telethon.tl import functions, types
 from telethon.tl.types import Channel, Chat
 from telethon.errors import (
@@ -33,7 +37,10 @@ import structlog
 from config.settings import settings
 from src.core.models import Account, AccountStatus
 from src.core.database import get_db_context
-from src.core.session_paths import get_canonical_session_path
+from sqlalchemy.exc import IntegrityError
+
+from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
+from src.core.session_paths import get_canonical_session_path, get_sessions_dir
 from .rate_limiter import RateLimiter
 from .session_resolve import (
     resolve_telethon_session,
@@ -45,7 +52,24 @@ from .session_resolve import (
 )
 from src.core.session_lock import acquire_session_lock, SessionLockHandle
 
+BLOCKED_MSG = "blocked_by_p9_source_recovery_no_telethon_connect"
+
 logger = structlog.get_logger(__name__)
+
+_SESSION_LOCK_HEARTBEAT_SEC = 12.0
+
+
+async def _session_lock_heartbeat_loop(handle: SessionLockHandle) -> None:
+    """Update lock sidecar heartbeat while Telethon holds the flock (diagnostic only)."""
+    try:
+        while True:
+            await asyncio.sleep(_SESSION_LOCK_HEARTBEAT_SEC)
+            try:
+                handle.heartbeat()
+            except Exception:
+                pass
+    except asyncio.CancelledError:
+        return
 
 # Telethon connect retries (deep readiness only; not used by add_account).
 _CONNECT_ATTEMPTS = 4
@@ -86,6 +110,20 @@ def _mask_phone(phone: Optional[str], account_id: int) -> str:
         return f"#{account_id}"
     return f"+{digits[:3]}*****{digits[-3:]}" if len(digits) >= 6 else f"#{account_id}"
 
+
+def _release_wrapper_session_lock(wrapper: Any) -> None:
+    """Release optional session file lock held for SQLite-backed Telethon sessions."""
+    h = getattr(wrapper, "_session_lock_handle", None)
+    if h is None:
+        return
+    try:
+        h.release()
+    except Exception:
+        pass
+    try:
+        wrapper._session_lock_handle = None
+    except Exception:
+        pass
 
 
 def _existing_session_source_for_healthcheck(account) -> tuple[object | None, str | None]:
@@ -137,6 +175,7 @@ class TelegramClientWrapper:
         self.rate_limiter = rate_limiter
         self.is_connected = False
         self._lock = asyncio.Lock()
+        self._session_lock_handle: Optional[SessionLockHandle] = None
 
     async def connect(self) -> bool:
         """Connect to Telegram"""
@@ -225,6 +264,8 @@ class ClientManager:
         self, account: Union[Account, int]
     ) -> Tuple[Optional[TelegramClientWrapper], Optional[str]]:
         """Add a new account to the manager. Accepts Account instance or account id (int)."""
+        if account is None:
+            raise RuntimeError(f"{BLOCKED_MSG}: add_account")
         async with self._lock:
             if isinstance(account, int):
                 with get_db_context() as db:
@@ -235,11 +276,18 @@ class ClientManager:
                 return self._clients[account.id], None
 
             try:
-                # Create session from string or file
-                if account.session_string:
-                    session = StringSession(account.session_string)
-                else:
-                    session = StringSession()
+                session, kind, err = resolve_telethon_session(
+                    account, prefer_string_over_file=False,
+                )
+                if err or session is None:
+                    code = err or "empty_session"
+                    logger.warning(
+                        "add_account_session_unresolved",
+                        account_id=account.id,
+                        session_kind=kind,
+                        error_code=code,
+                    )
+                    return None, code
 
                 # Create Telethon client
                 client = TelegramClient(
@@ -271,6 +319,8 @@ class ClientManager:
         When deep=False: path / StringSession probe only (no SQLiteSession, no Telegram connect).
         When deep=True: connect + is_user_authorized per account.
         """
+        if deep:
+            raise RuntimeError(f"{BLOCKED_MSG}: collect_accounts_readiness(deep=True)")
         from src.clients import readiness_store
         from src.core.scheduler_models import AccountReadinessSnapshot
 
@@ -345,7 +395,9 @@ class ClientManager:
             base["failure_code"] = None
             return base
 
-        session, kind, err = resolve_telethon_session(account)
+        session, kind, err = resolve_telethon_session(
+            account, prefer_string_over_file=False,
+        )
         session_exists = err is None and kind in ("file", "string")
 
         base = {
@@ -359,18 +411,25 @@ class ClientManager:
             "error": err,
         }
 
-        if err in (ERR_SESSION_FILE_MISSING, ERR_INVALID_SESSION_FORMAT, ERR_EMPTY_SESSION):
+        if err is not None:
             base["ready"] = False
+            base["session_exists"] = False
             base["error"] = human_message_for_code(err)
+            base["readiness_failure_kind"] = "session_material"
+            base["failure_code"] = err
             return base
 
         base["readiness_failure_kind"] = None
         base["failure_code"] = None
 
         deep_lock: Optional[SessionLockHandle] = None
+        hb_task: Optional[asyncio.Task] = None
         if kind == "file":
             ok_lock, lock_handle, lock_err = acquire_session_lock(
-                account.id, timeout_sec=45.0,
+                account.id,
+                timeout_sec=45.0,
+                subsystem="readiness_worker",
+                operation="deep_check",
             )
             if not ok_lock:
                 base["authorized"] = None
@@ -382,6 +441,9 @@ class ClientManager:
                     base["error"] = f"{base['error']} ({lock_err})"
                 return base
             deep_lock = lock_handle
+
+        if deep_lock is not None:
+            hb_task = asyncio.create_task(_session_lock_heartbeat_loop(deep_lock))
 
         client = TelegramClient(
             session,
@@ -436,6 +498,10 @@ class ClientManager:
                     base["readiness_failure_kind"] = "auth"
                     base["failure_code"] = "unauthorized_session"
         finally:
+            if hb_task is not None:
+                hb_task.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await hb_task
             try:
                 await client.disconnect()
             except Exception:
@@ -448,12 +514,130 @@ class ClientManager:
 
         return base
 
+    async def connect_account(
+        self,
+        account_id: int,
+        *,
+        session_lock_timeout_sec: float = 45.0,
+    ) -> Tuple[Optional[TelegramClientWrapper], Optional[str]]:
+        """
+        Connect a Telethon client for ``account_id`` using the same session resolution
+        as deep readiness (file canonical path preferred over string).
+
+        Returns:
+            (wrapper, None) when connected and ``is_user_authorized()`` is True.
+            (None, reason_code) on resolver failures, lock timeout, connect failures,
+            or unauthorized session. Does not send messages or mutate Account rows.
+        """
+        aid = int(account_id)
+        with get_db_context() as db:
+            account = db.query(Account).filter(Account.id == aid).first()
+        if account is None:
+            return None, "missing_account"
+
+        session, kind, err = resolve_telethon_session(
+            account, prefer_string_over_file=False,
+        )
+        if err is not None:
+            return None, err
+
+        deep_lock: Optional[SessionLockHandle] = None
+        hb_task: Optional[asyncio.Task] = None
+        if kind == "file":
+            ok_lock, lock_handle, _lock_err = acquire_session_lock(
+                aid,
+                timeout_sec=float(session_lock_timeout_sec),
+                subsystem="connect_account",
+                operation="connect",
+            )
+            if not ok_lock or lock_handle is None:
+                return None, "session_lock_timeout"
+            deep_lock = lock_handle
+
+        if deep_lock is not None:
+            hb_task = asyncio.create_task(_session_lock_heartbeat_loop(deep_lock))
+
+        client = TelegramClient(
+            session,
+            settings.telegram.api_id,
+            settings.telegram.api_hash,
+            proxy=account.proxy_config if account.proxy_config else None,
+            device_model="STORYFLEET",
+            app_version="1.0.0",
+            system_version="Linux",
+            lang_code="en",
+        )
+        last_exc: Optional[BaseException] = None
+        auth: Optional[bool] = None
+        try:
+            for attempt in range(1, _CONNECT_ATTEMPTS + 1):
+                try:
+                    await client.connect()
+                    auth = await client.is_user_authorized()
+                    last_exc = None
+                    break
+                except Exception as e:
+                    last_exc = e
+                    try:
+                        if client.is_connected():
+                            await client.disconnect()
+                    except Exception:
+                        pass
+                    if attempt >= _CONNECT_ATTEMPTS:
+                        auth = None
+                        break
+                    delay = min(
+                        _CONNECT_BACKOFF_CAP_S,
+                        _CONNECT_BACKOFF_BASE_S * (2 ** (attempt - 1)),
+                    )
+                    await asyncio.sleep(delay)
+
+            if auth is None:
+                fc = _connect_failure_code(last_exc)
+                return None, fc
+            if not auth:
+                return None, "unauthorized_session"
+
+            wrapper = TelegramClientWrapper(account, client, self._rate_limiter)
+            wrapper.is_connected = True
+            wrapper._session_lock_handle = deep_lock
+            deep_lock = None
+
+            async with self._lock:
+                old = self._clients.pop(aid, None)
+            if old is not None:
+                try:
+                    await old.disconnect()
+                except Exception:
+                    pass
+                _release_wrapper_session_lock(old)
+            async with self._lock:
+                self._clients[aid] = wrapper
+            return wrapper, None
+        finally:
+            if hb_task is not None:
+                hb_task.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await hb_task
+            if auth is None or auth is False:
+                try:
+                    if client.is_connected():
+                        await client.disconnect()
+                except Exception:
+                    pass
+                if deep_lock is not None:
+                    try:
+                        deep_lock.release()
+                    except Exception:
+                        pass
+
     async def remove_account(self, account_id: int) -> bool:
         """Remove an account from the manager"""
         async with self._lock:
             if account_id in self._clients:
                 wrapper = self._clients[account_id]
                 await wrapper.disconnect()
+                _release_wrapper_session_lock(wrapper)
                 del self._clients[account_id]
                 logger.info("Account removed", account_id=account_id)
                 return True
@@ -1304,22 +1488,132 @@ class ClientManager:
             await client.disconnect()
 
 
-# Pending QR logins: token -> {url, status, account_id?, error?}
+# Pending QR logins: token -> state dict (new account or repair file).
 _pending_qr: Dict[str, Dict[str, Any]] = {}
 _qr_lock = threading.Lock()
 
 
-def _qr_login_thread(token: str) -> None:
-    """Background thread: create client, qr_login, wait for scan, save account."""
+def _normalize_e164_digits(phone: Optional[str]) -> str:
+    if not phone:
+        return ""
+    return "".join(c for c in str(phone).strip() if c.isdigit())
+
+
+def _phone_string_from_tl_user(me: Any) -> str:
+    """E.164-ish ``+digits`` from Telethon / TL User."""
+    p = getattr(me, "phone", None)
+    if p is None:
+        return ""
+    digits = "".join(c for c in str(p) if c.isdigit())
+    return f"+{digits}" if digits else ""
+
+
+def verify_qr_repair_identity(me: Any, account: Account) -> Tuple[bool, str]:
+    """
+    Decide whether the QR-scanned Telegram user may be written to ``account_<id>.new.session``.
+
+    - If ``account.user_id`` is set, it must match ``me.id``.
+    - Else require non-empty phone on both sides and identical digit-normalized numbers.
+    """
+    me_id = int(getattr(me, "id", 0) or 0)
+    db_uid = getattr(account, "user_id", None)
+    if db_uid is not None:
+        if int(db_uid) != me_id:
+            return False, "Telegram user id does not match this account (wrong account scanned)."
+        return True, ""
+
+    logged = _phone_string_from_tl_user(me)
+    db_raw = getattr(account, "phone_number", None) or ""
+    ld = _normalize_e164_digits(logged)
+    dd = _normalize_e164_digits(db_raw)
+    if ld and dd and ld == dd:
+        return True, ""
+    if not ld:
+        return False, "Cannot verify identity: account.user_id unset and Telegram user has no phone."
+    return False, "Phone from Telegram does not match account row (and user_id unset)."
+
+
+def _qr_repair_validate_start(repair_account_id: Optional[int]) -> Optional[str]:
+    """Return human-readable error or None when repair request may proceed."""
+    if repair_account_id is None:
+        return None
+    aid = int(repair_account_id)
+    if aid in RESERVED_AI_AGENT_ACCOUNT_IDS:
+        return (
+            "QR session repair is disabled for reserved controller accounts "
+            f"{sorted(RESERVED_AI_AGENT_ACCOUNT_IDS)}."
+        )
+    with get_db_context() as db:
+        if db.get(Account, aid) is None:
+            return f"Account #{aid} not found."
+    return None
+
+
+def _qr_login_thread(token: str, repair_account_id: Optional[int] = None) -> None:
+    """Background thread: QR login → new Account OR ``account_<id>.new.session`` repair file."""
+
     async def _run():
         client = None
+        new_session_path: Optional[Path] = None
         try:
+            api_id = int(settings.telegram.api_id)
+            api_hash = (settings.telegram.api_hash or "").strip()
+            if not api_id or not api_hash:
+                raise RuntimeError("Missing TELEGRAM_API_ID / TELEGRAM_API_HASH.")
+
+            if repair_account_id is not None:
+                aid = int(repair_account_id)
+                with get_db_context() as db:
+                    acc_row = db.get(Account, aid)
+                    if acc_row is None:
+                        raise RuntimeError(f"Account #{aid} not found.")
+                new_session_path = get_sessions_dir() / f"account_{aid}.new.session"
+                if new_session_path.exists():
+                    raise RuntimeError(
+                        "A repair session file already exists — remove or rename it first: "
+                        + str(new_session_path)
+                    )
+                new_session_path.parent.mkdir(parents=True, exist_ok=True)
+                sqlite_base = str(new_session_path.with_suffix(""))
+                session = SQLiteSession(sqlite_base)
+                client = TelegramClient(session, api_id, api_hash)
+                await client.connect()
+                if await client.is_user_authorized():
+                    raise RuntimeError(
+                        "Target path already has an authorized session — delete stale "
+                        + str(new_session_path)
+                        + " first."
+                    )
+                qr = await client.qr_login()
+                with _qr_lock:
+                    _pending_qr[token]["url"] = qr.url
+                    _pending_qr[token]["status"] = "waiting"
+                user = await qr.wait(timeout=120)
+                with get_db_context() as db:
+                    acc2 = db.get(Account, aid)
+                    if acc2 is None:
+                        if new_session_path.is_file():
+                            new_session_path.unlink()
+                        raise RuntimeError(f"Account #{aid} not found after scan.")
+                    ok, verr = verify_qr_repair_identity(user, acc2)
+                    if not ok:
+                        if new_session_path.is_file():
+                            new_session_path.unlink()
+                        raise RuntimeError(verr)
+                with _qr_lock:
+                    _pending_qr[token]["status"] = "success"
+                    _pending_qr[token]["account_id"] = aid
+                    _pending_qr[token]["mode"] = "repair"
+                    _pending_qr[token]["new_session_path"] = str(new_session_path.resolve())
+                    _pending_qr[token]["repair_message"] = (
+                        f"Repair file created for account #{aid}. Primary session unchanged. "
+                        "Next: dry-run ``regenerate_telethon_session.py`` then ``--execute`` if compatible. "
+                        "See scripts/ops/P8_7_6_SESSION_REGENERATION.md."
+                    )
+                return
+
             session = StringSession()
-            client = TelegramClient(
-                session,
-                settings.telegram.api_id,
-                settings.telegram.api_hash,
-            )
+            client = TelegramClient(session, api_id, api_hash)
             await client.connect()
             qr = await client.qr_login()
             with _qr_lock:
@@ -1329,6 +1623,12 @@ def _qr_login_thread(token: str) -> None:
             me = await client.get_me()
             phone = f"+{me.phone}" if me.phone else f"user_{me.id}"
             with get_db_context() as db:
+                existing = db.query(Account).filter(Account.phone_number == phone).first()
+                if existing is not None:
+                    raise RuntimeError(
+                        f"This phone already exists as account #{existing.id}. "
+                        f"Use **Repair session via QR** on the Accounts page for account #{existing.id} instead."
+                    )
                 acc = Account(
                     phone_number=phone,
                     session_string=session.save(),
@@ -1340,12 +1640,22 @@ def _qr_login_thread(token: str) -> None:
                     last_active=datetime.utcnow(),
                 )
                 db.add(acc)
-                db.commit()
+                try:
+                    db.commit()
+                except IntegrityError:
+                    db.rollback()
+                    dup = db.query(Account).filter(Account.phone_number == phone).first()
+                    dup_id = dup.id if dup else "?"
+                    raise RuntimeError(
+                        f"This phone already exists as account #{dup_id}. "
+                        f"Use **Repair session via QR** for account #{dup_id} instead."
+                    )
                 db.refresh(acc)
             _, _ = await client_manager.add_account(acc)
             with _qr_lock:
                 _pending_qr[token]["status"] = "success"
                 _pending_qr[token]["account_id"] = acc.id
+                _pending_qr[token]["mode"] = "new_account"
         except asyncio.TimeoutError:
             with _qr_lock:
                 _pending_qr[token]["status"] = "expired"
@@ -1353,11 +1663,23 @@ def _qr_login_thread(token: str) -> None:
         except SessionPasswordNeededError:
             with _qr_lock:
                 _pending_qr[token]["status"] = "error"
-                _pending_qr[token]["error"] = "2FA password required. Use Import from tdata or Phone+Code instead."
+                _pending_qr[token]["error"] = (
+                    "2FA password required. Use Import from tdata, Phone+Code, or CLI session tool instead."
+                )
+            if new_session_path and new_session_path.is_file():
+                try:
+                    new_session_path.unlink()
+                except OSError:
+                    pass
         except Exception as e:
             with _qr_lock:
                 _pending_qr[token]["status"] = "error"
                 _pending_qr[token]["error"] = str(e)
+            if new_session_path and new_session_path.is_file():
+                try:
+                    new_session_path.unlink()
+                except OSError:
+                    pass
         finally:
             if client:
                 await client.disconnect()
@@ -1365,36 +1687,72 @@ def _qr_login_thread(token: str) -> None:
     asyncio.run(_run())
 
 
-def start_qr_login() -> Dict[str, Any]:
-    """Start QR login. Returns token and URL. Background thread waits for scan."""
-    api_id = getattr(settings.telegram, "api_id", None) or int(__import__("os").environ.get("TELEGRAM_API_ID", 0) or 0)
-    api_hash = getattr(settings.telegram, "api_hash", None) or __import__("os").environ.get("TELEGRAM_API_HASH", "")
+def start_qr_login(repair_account_id: Optional[int] = None) -> Dict[str, Any]:
+    """Start QR login. ``repair_account_id`` writes ``account_<id>.new.session`` only (no INSERT)."""
+    api_id = getattr(settings.telegram, "api_id", None) or int(
+        __import__("os").environ.get("TELEGRAM_API_ID", 0) or 0
+    )
+    api_hash = getattr(settings.telegram, "api_hash", None) or __import__(
+        "os"
+    ).environ.get("TELEGRAM_API_HASH", "")
     if not api_id or not api_hash:
-        return {"success": False, "error": "TELEGRAM_API_ID and TELEGRAM_API_HASH required. Run sync_db_from_server with --env."}
+        return {
+            "success": False,
+            "error": "TELEGRAM_API_ID and TELEGRAM_API_HASH required. Run sync_db_from_server with --env.",
+        }
+    pre = _qr_repair_validate_start(repair_account_id)
+    if pre:
+        return {"success": False, "error": pre}
     token = str(uuid.uuid4())
     with _qr_lock:
-        _pending_qr[token] = {"url": None, "status": "starting"}
-    t = threading.Thread(target=_qr_login_thread, args=(token,))
+        _pending_qr[token] = {
+            "url": None,
+            "status": "starting",
+            "repair_account_id": repair_account_id,
+        }
+    t = threading.Thread(target=_qr_login_thread, args=(token, repair_account_id))
     t.daemon = True
     t.start()
     for _ in range(50):
         time.sleep(0.2)
         with _qr_lock:
             if _pending_qr[token].get("url"):
-                return {"success": True, "token": token, "url": _pending_qr[token]["url"]}
+                out: Dict[str, Any] = {
+                    "success": True,
+                    "token": token,
+                    "url": _pending_qr[token]["url"],
+                }
+                if repair_account_id is not None:
+                    out["mode"] = "repair"
+                    out["repair_account_id"] = int(repair_account_id)
+                return out
             if _pending_qr[token].get("status") == "error":
                 return {"success": False, "error": _pending_qr[token].get("error", "Unknown error")}
     return {"success": False, "error": "QR login failed to start"}
 
 
 def check_qr_login(token: str) -> Dict[str, Any]:
-    """Check if QR login completed."""
+    """Poll QR login status (new account or repair file)."""
     with _qr_lock:
         if token not in _pending_qr:
             return {"success": False, "error": "Invalid or expired token"}
         p = _pending_qr[token]
         if p["status"] == "success":
-            return {"success": True, "account_id": p.get("account_id")}
+            out: Dict[str, Any] = {
+                "success": True,
+                "account_id": p.get("account_id"),
+                "mode": p.get("mode", "new_account"),
+            }
+            if p.get("mode") == "repair":
+                out["new_session_path"] = p.get("new_session_path")
+                out["message"] = p.get("repair_message", "Repair session file created.")
+                out["next_steps"] = (
+                    "Dry-run: ./venv/bin/python scripts/ops/regenerate_telethon_session.py "
+                    f"--account-id {p.get('account_id')} --new-session-file "
+                    f"{p.get('new_session_path') or 'data/sessions/account_<id>.new.session'} ; "
+                    "only add ``--execute`` if compatible."
+                )
+            return out
         if p["status"] in ("error", "expired"):
             return {"success": False, "error": p.get("error", "Login failed")}
         return {"success": False, "status": "waiting"}

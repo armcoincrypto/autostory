@@ -1,3 +1,6 @@
+# P9.38 draft restore — source-backed from Cursor snapshots (not byte-matched to archive .pyc).
+# Do not restart scheduler until import probe + tests pass and operator approves.
+
 """
 Scheduler job executor - sends messages via Telethon
 """
@@ -5,7 +8,7 @@ import asyncio
 import os
 import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional, Tuple
 
 import structlog
@@ -63,6 +66,9 @@ from src.core.scheduler_models import (
     ScheduledJob, MessageDelivery, ChatTarget,
     MessageTemplate, AccountTargetBinding, DeliveryStatus, JobStatus,
     SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER,
+    SCHEDULED_JOB_CAMPAIGN_PILOT_MARKER,
+    SCHEDULED_JOB_P4C_CERTIFICATION_MARKER,
+    SCHEDULED_JOB_P5A_CERTIFICATION_MARKER,
 )
 from src.clients.manager import client_manager
 from src.core.account_runtime_state import mark_account_active, unmark_account_active
@@ -381,6 +387,7 @@ def _finalize_delivery_failed(
 async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
     """Execute a single scheduled job. Returns True if sent successfully."""
     effective_send_test = bool(is_send_test)
+    preserved_job_marker = ""
     with get_db_context() as db:
         job = db.query(ScheduledJob).filter(ScheduledJob.id == job_id).first()
         if not job:
@@ -458,7 +465,104 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             _mark_job_skipped(job_id, "account_reserved_for_ai_agent")
             return False
 
-        if str(job.last_error or "").strip() == SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER:
+        from src.scheduler.runtime_preflight import classify_scheduler_runtime_gate
+        from src.clients.session_resolve import ERR_LEGACY_SQLITE_SESSION_FORMAT
+
+        job_marker = str(job.last_error or "").strip()
+        preserved_job_marker = job_marker
+        is_operator_send_test_job = job_marker in (
+            SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER,
+            SCHEDULED_JOB_CAMPAIGN_PILOT_MARKER,
+            SCHEDULED_JOB_P4C_CERTIFICATION_MARKER,
+            SCHEDULED_JOB_P5A_CERTIFICATION_MARKER,
+        )
+        gate = classify_scheduler_runtime_gate(db, account)
+        if (
+            is_operator_send_test_job
+            and gate.get("action") == "defer_temp_lock"
+            and gate.get("primary_blocker") == ERR_LEGACY_SQLITE_SESSION_FORMAT
+        ):
+            logger.info(
+                "p9_40_operator_send_test_runtime_gate_override",
+                job_id=int(job_id),
+                account_id=int(account.id),
+                prior_blockers=gate.get("temporary_blockers"),
+            )
+            gate = {
+                **gate,
+                "action": "proceed",
+                "primary_blocker": None,
+                "primary_label": "Operator send test (controlled)",
+                "temporary_blockers": [],
+            }
+        logger.info(
+            "scheduler_account_selected",
+            job_id=int(job_id),
+            account_id=int(account.id),
+            gate_action=gate.get("action"),
+            lifecycle_state=gate.get("lifecycle_state"),
+            primary_blocker=gate.get("primary_blocker"),
+        )
+        if gate.get("action") == "defer_temp_lock":
+            prev_lo, prev_lu = job.lease_owner, job.lease_until
+            now = datetime.utcnow()
+            defer_sec = int(os.environ.get("SCHEDULER_TEMP_LOCK_DEFER_SEC", "90"))
+            job.run_at = max(job.run_at or now, now) + timedelta(seconds=max(10, defer_sec))
+            job.status = JobStatus.PENDING.value
+            job.lease_until = None
+            job.lease_owner = None
+            job.last_error = "TEMP_LOCK_DEFERRED"
+            job.updated_at = now
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="defer_temp_lock")
+            logger.warning(
+                "scheduler_account_temp_busy",
+                job_id=int(job_id),
+                account_id=int(account.id),
+                temporary_blockers=gate.get("temporary_blockers"),
+                primary_blocker=gate.get("primary_blocker"),
+            )
+            try:
+                from src.core.session_lock import inspect_session_lock
+
+                ls = inspect_session_lock(int(account.id))
+                logger.info(
+                    "scheduler_lock_owner",
+                    job_id=int(job_id),
+                    account_id=int(account.id),
+                    lock_held=ls.held,
+                    subsystem=ls.subsystem,
+                    operation=ls.operation,
+                    meta_pid=ls.meta_pid,
+                    stale=ls.stale,
+                )
+            except Exception as exc:
+                logger.warning("scheduler_lock_owner_inspect_failed", job_id=job_id, error=str(exc))
+            logger.info(
+                "scheduler_job_deferred_temp_lock",
+                job_id=int(job_id),
+                account_id=int(account.id),
+                defer_sec=defer_sec,
+            )
+            return False
+        if gate.get("action") == "skip_permanent":
+            logger.warning(
+                "scheduler_job_blocked_no_eligible_accounts",
+                job_id=int(job_id),
+                account_id=int(account.id),
+                primary_blocker=gate.get("primary_blocker"),
+                permanent_blockers=gate.get("permanent_blockers"),
+                lifecycle_state=gate.get("lifecycle_state"),
+            )
+            reason = f"scheduler_ineligible:{gate.get('primary_blocker') or 'unknown'}"
+            _mark_job_skipped(job_id, reason[:500])
+            return False
+
+        if job_marker in (
+            SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER,
+            SCHEDULED_JOB_CAMPAIGN_PILOT_MARKER,
+            SCHEDULED_JOB_P4C_CERTIFICATION_MARKER,
+            SCHEDULED_JOB_P5A_CERTIFICATION_MARKER,
+        ):
             effective_send_test = True
             job.last_error = None
             job.updated_at = datetime.utcnow()
@@ -488,10 +592,36 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
                 return False
 
         # Get template body (must stay inside this session: job/account/target are not valid after close)
-        template_body = _get_template_body(job, account, target, binding)
+        template_body, template_err = _resolve_template_for_job(
+            db, job, account, target, binding
+        )
+        if template_err:
+            _mark_job_failed(job_id, template_err[:500])
+            return False
         if not template_body:
             _mark_job_failed(job_id, "No template found")
             return False
+
+        if job_marker == SCHEDULED_JOB_CAMPAIGN_PILOT_MARKER:
+            from src.scheduler.campaign_governance import check_governed_campaign_send_allowed
+
+            allowed, block_reason = check_governed_campaign_send_allowed(
+                db,
+                int(job.account_id),
+                int(job.target_id),
+                job_marker=job_marker,
+            )
+            if not allowed:
+                reason = (block_reason or "campaign_execution_blocked")[:500]
+                logger.warning(
+                    "campaign_governance_send_blocked",
+                    job_id=job_id,
+                    account_id=int(job.account_id),
+                    target_id=int(job.target_id),
+                    reason=reason,
+                )
+                _mark_job_failed(job_id, reason)
+                return False
 
         if _reconcile_job_if_sent_delivery_exists(job_id):
             return True
@@ -521,6 +651,9 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         db.expunge(job)
         db.expunge(binding)
 
+    is_p4c_certification_job = preserved_job_marker == SCHEDULED_JOB_P4C_CERTIFICATION_MARKER
+    is_p5a_certification_job = preserved_job_marker == SCHEDULED_JOB_P5A_CERTIFICATION_MARKER
+
     if effective_send_test:
         mark_account_active(int(account.id))
         logger.info("send_test_started", job_id=job_id, account_id=int(account.id))
@@ -534,6 +667,28 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             return False
         if pre == "already_sending":
             logger.info("scheduler_delivery_already_sending", job_id=job_id)
+            return False
+
+        from src.core.execution_guard import ACTION_TELEGRAM_SEND, can_execute_action
+
+        with get_db_context() as _guard_db:
+            _job_row = _guard_db.query(ScheduledJob).filter(ScheduledJob.id == job_id).first()
+            _guard_decision = can_execute_action(
+                ACTION_TELEGRAM_SEND,
+                account_id=int(account.id),
+                target_id=int(getattr(_job_row, "target_id", None) or target.id),
+                db=_guard_db,
+                job_marker=preserved_job_marker or None,
+                job_id=int(job_id),
+            )
+        if not _guard_decision.allowed:
+            logger.warning(
+                "scheduler_send_blocked_execution_guard",
+                job_id=job_id,
+                account_id=int(account.id),
+                reason=_guard_decision.reason_code,
+            )
+            _mark_job_skipped(job_id, f"execution_guard:{_guard_decision.reason_code}"[:500])
             return False
 
         wrapper, fail_reason = await client_manager.add_account(account)
@@ -578,9 +733,10 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             UserBannedInChannelError,
             SlowModeWaitError,
         )
+        max_send_attempts = 1 if (is_p4c_certification_job or is_p5a_certification_job) else 2
 
         try:
-            for attempt in (0, 1):
+            for attempt in range(max_send_attempts):
                 try:
                     async def _invoke_send():
                         return await wrapper.execute(
@@ -591,6 +747,32 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
 
                     msg = await asyncio.wait_for(_invoke_send(), timeout=timeout_sec)
                     _finalize_delivery_sent(delivery_id, job_id, int(msg.id), rendered)
+                    if is_p4c_certification_job:
+                        try:
+                            from src.core.p4c_send_counter import record_p4c_live_send
+
+                            record_p4c_live_send(
+                                job_id=int(job_id),
+                                account_id=int(account.id),
+                                target_id=int(target.id),
+                            )
+                        except Exception:
+                            logger.warning("p4c_send_counter_record_failed", job_id=job_id)
+                    if is_p5a_certification_job:
+                        try:
+                            from src.core.p5a_send_counter import record_p5a_live_send
+                            from src.core.p5a_authorization import load_manifest
+
+                            manifest = load_manifest() or {}
+                            record_p5a_live_send(
+                                job_id=int(job_id),
+                                account_id=int(account.id),
+                                target_id=int(target.id),
+                                authorization_id=str(manifest.get("authorization_id") or ""),
+                                tg_message_id=int(msg.id),
+                            )
+                        except Exception:
+                            logger.warning("p5a_send_counter_record_failed", job_id=job_id)
                     logger.info("Message sent", job_id=job_id, tg_msg_id=msg.id)
                     try:
                         from src.clients.readiness_store import mark_account_ready_after_success
@@ -698,32 +880,65 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             unmark_account_active(int(account.id))
 
 
-def _get_template_body(job, account, target, binding) -> Optional[str]:
-    """Resolve best template: binding > target > account > global"""
+def _resolve_template_for_job(
+    db,
+    job,
+    account,
+    target,
+    binding,
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (body, error). Campaign pilot jobs fail closed on ambiguity."""
+    from src.scheduler.campaign_pilot_template import (
+        is_campaign_pilot_job,
+        resolve_campaign_pilot_template_body,
+    )
+
+    if is_campaign_pilot_job(job):
+        body, err = resolve_campaign_pilot_template_body(
+            db, job, account, target, binding
+        )
+        return body, err
+    return _get_template_body_legacy(db, job, account, target, binding), None
+
+
+def _get_template_body_legacy(db, job, account, target, binding) -> Optional[str]:
+    """Resolve best template: binding > target > account > global (random within scope)."""
     import random
-    with get_db_context() as db:
-        for scope_id, scope in [(binding.id, "BINDING"), (target.id, "TARGET"), (account.id, "ACCOUNT"), (None, "GLOBAL")]:
-            q = db.query(MessageTemplate).filter(
-                MessageTemplate.type == job.type,
-                MessageTemplate.scope == scope,
-                MessageTemplate.is_active == True
+
+    for scope_id, scope in [
+        (binding.id, "BINDING"),
+        (target.id, "TARGET"),
+        (account.id, "ACCOUNT"),
+        (None, "GLOBAL"),
+    ]:
+        q = db.query(MessageTemplate).filter(
+            MessageTemplate.type == job.type,
+            MessageTemplate.scope == scope,
+            MessageTemplate.is_active == True,
+        )
+        if scope == "BINDING":
+            q = q.filter(MessageTemplate.binding_id == scope_id)
+        elif scope == "TARGET":
+            q = q.filter(MessageTemplate.target_id == scope_id)
+        elif scope == "ACCOUNT":
+            q = q.filter(MessageTemplate.account_id == scope_id)
+        elif scope == "GLOBAL":
+            q = q.filter(
+                MessageTemplate.account_id.is_(None),
+                MessageTemplate.target_id.is_(None),
+                MessageTemplate.binding_id.is_(None),
             )
-            if scope == "BINDING":
-                q = q.filter(MessageTemplate.binding_id == scope_id)
-            elif scope == "TARGET":
-                q = q.filter(MessageTemplate.target_id == scope_id)
-            elif scope == "ACCOUNT":
-                q = q.filter(MessageTemplate.account_id == scope_id)
-            elif scope == "GLOBAL":
-                q = q.filter(
-                    MessageTemplate.account_id.is_(None),
-                    MessageTemplate.target_id.is_(None),
-                    MessageTemplate.binding_id.is_(None)
-                )
-            templates = q.order_by(MessageTemplate.weight.desc()).all()
-            if templates:
-                return random.choice(templates).body
+        templates = q.order_by(MessageTemplate.weight.desc()).all()
+        if templates:
+            return random.choice(templates).body
     return None
+
+
+def _get_template_body(job, account, target, binding) -> Optional[str]:
+    """Backward-compatible wrapper (legacy callers / tests)."""
+    with get_db_context() as db:
+        body, _err = _resolve_template_for_job(db, job, account, target, binding)
+    return body
 
 
 def _mark_job_sent(job_id: int, tg_message_id: int, rendered: str) -> None:

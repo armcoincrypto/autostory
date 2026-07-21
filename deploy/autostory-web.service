@@ -7,7 +7,10 @@ Type=simple
 WorkingDirectory=/opt/autostory
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/opt/autostory/.env
-ExecStart=/opt/autostory/venv/bin/gunicorn -w 2 -b 127.0.0.1:8000 --timeout 600 wsgi:app
+# Readiness worker runs as a dedicated systemd service. One web worker avoids
+# duplicate SQLite session probes and duplicate AI Agent background threads.
+Environment=READINESS_WORKER_ENABLED=false
+ExecStart=/opt/autostory/venv/bin/gunicorn -w 1 -b 127.0.0.1:8000 --timeout 600 wsgi:app
 Restart=always
 RestartSec=5
 

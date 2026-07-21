@@ -10,6 +10,7 @@ from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
 from .generator import generate_jobs_for_date
 from .executor import execute_job
 from .job_claim import claim_due_job
+from src.stories.scheduler_integration import maybe_tick_story_rotation, story_execution_enabled
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -31,6 +32,7 @@ async def run_scheduler_loop():
     logger.info(
         "Scheduler worker started",
         reserved_ai_account_ids=sorted(RESERVED_AI_AGENT_ACCOUNT_IDS),
+        story_execution_enabled=story_execution_enabled(),
     )
 
     while True:
@@ -43,8 +45,12 @@ async def run_scheduler_loop():
                 # Per-profile local calendar day is resolved inside the generator.
                 created = generate_jobs_for_date(None)
                 LAST_GEN_DATE = today_utc
-                if created:
-                    logger.info("Generated jobs for date", date=str(today_utc), count=created)
+                logger.info(
+                    "Generator cycle complete",
+                    date=str(today_utc),
+                    jobs_inserted=created,
+                    production_no_go=True,
+                )
 
             claimed_ids: list[int] = []
             for _ in range(10):
@@ -72,6 +78,10 @@ async def run_scheduler_loop():
                 except Exception as e:
                     logger.error("Job execution failed", job_id=jid, error=str(e))
                 await asyncio.sleep(2)
+
+            # P10.18: keep Story Rotation integration visible but disabled until
+            # explicit operator approval sets STORY_EXECUTION_ENABLED=true.
+            await maybe_tick_story_rotation()
 
         except Exception as e:
             logger.error("Scheduler loop error", error=str(e))

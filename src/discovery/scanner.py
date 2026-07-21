@@ -427,8 +427,21 @@ class UserDiscovery:
         days_back: int = 365,
         limit_per_channel: int = 500,
         progress_callback=None,
+        *,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Discover users from multiple groups"""
+        from src.core.execution_guard import (
+            ACTION_DISCOVERY_SCAN,
+            guard_blocked_discovery,
+            require_execution_allowed,
+        )
+
+        blocked = require_execution_allowed(ACTION_DISCOVERY_SCAN, dry_run=dry_run)
+        if blocked is not None:
+            logger.warning("discovery_scan_blocked_execution_guard", reason=blocked.reason_code)
+            return guard_blocked_discovery(blocked)
+
         return await self._scanner.scan_multiple_groups(
             group_usernames,
             days_back=days_back,
@@ -451,12 +464,23 @@ class UserDiscovery:
             progress_callback=progress_callback,
         )
 
-    async def join_channel(self, channel: str) -> Dict[str, Any]:
+    async def join_channel(self, channel: str, *, dry_run: bool = False) -> Dict[str, Any]:
         """
         Join a Telegram channel/group using the first available active account.
         This is needed so that account sessions cache the access hash for
         private/ID-based channel resolution (required for scanning).
         """
+        from src.core.execution_guard import (
+            ACTION_DISCOVERY_JOIN,
+            guard_blocked_discovery,
+            require_execution_allowed,
+        )
+
+        blocked = require_execution_allowed(ACTION_DISCOVERY_JOIN, dry_run=dry_run)
+        if blocked is not None:
+            logger.warning("discovery_join_blocked_execution_guard", reason=blocked.reason_code)
+            return guard_blocked_discovery(blocked)
+
         from telethon.tl.functions.channels import JoinChannelRequest
         from telethon.tl.functions.messages import ImportChatInviteRequest
 

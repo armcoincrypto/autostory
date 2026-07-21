@@ -9,7 +9,6 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 from telethon.tl.functions.stories import (
     SendStoryRequest,
     GetAllStoriesRequest,
@@ -37,6 +36,7 @@ sys.path.insert(0, '/home/user/autostory')
 from config.settings import settings
 from src.core.models import Account, Story, DiscoveredUser, AccountStatus
 from src.core.database import get_db_context
+from src.clients.session_resolve import resolve_telethon_session, human_message_for_code
 
 logger = structlog.get_logger(__name__)
 
@@ -93,13 +93,22 @@ class StoryPublisher:
         # Get account from database
         with get_db_context() as db:
             account = db.query(Account).filter(Account.id == account_id).first()
-            if not account or not account.session_string:
+            if not account:
                 return None
-            session_string = account.session_string
 
-        # Create client
+        session, kind, err = resolve_telethon_session(account)
+        if err:
+            logger.warning(
+                "Cannot build Telegram session for story publisher",
+                account_id=account_id,
+                session_kind=kind,
+                reason=err,
+                detail=human_message_for_code(err),
+            )
+            return None
+
         client = TelegramClient(
-            StringSession(session_string),
+            session,
             settings.telegram.api_id,
             settings.telegram.api_hash
         )
@@ -107,7 +116,11 @@ class StoryPublisher:
         await client.connect()
 
         if not await client.is_user_authorized():
-            logger.warning("Account not authorized", account_id=account_id)
+            logger.warning(
+                "Account not authorized",
+                account_id=account_id,
+                session_kind=kind,
+            )
             return None
 
         self._clients[account_id] = client
@@ -144,6 +157,21 @@ class StoryPublisher:
             "error": None,
         }
 
+        from src.core.execution_guard import (
+            ACTION_STORY_PUBLISH,
+            guard_blocked_story_publish,
+            require_execution_allowed,
+        )
+
+        blocked = require_execution_allowed(ACTION_STORY_PUBLISH, account_id=int(account_id))
+        if blocked is not None:
+            logger.warning(
+                "story_publisher_blocked_execution_guard",
+                account_id=int(account_id),
+                reason=blocked.reason_code,
+            )
+            return {**result, **guard_blocked_story_publish(blocked)}
+
         mention_user_ids = mention_user_ids or []
 
         # Check rate limit
@@ -159,7 +187,7 @@ class StoryPublisher:
         # Get client
         client = await self.get_client_for_account(account_id)
         if not client:
-            result["error"] = "Failed to get client for account"
+            result["error"] = "Failed to get client for account (session missing, invalid, or unauthorized)"
             return result
 
         for attempt in range(retry_count):

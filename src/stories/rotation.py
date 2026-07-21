@@ -29,6 +29,7 @@ from src.core.models import (
     StoryPool, StoryPoolMember, StoryRun, StoryRunStep,
 )
 from src.core.database import get_db_context
+from src.ai_agent.account_allowlist import scheduler_telethon_excluded_account_ids
 
 logger = structlog.get_logger(__name__)
 
@@ -83,6 +84,8 @@ class StoryRotationEngine:
         Falls back to all story-ready active accounts when pool_id is None.
         purpose_filter: 'autostory' | 'both' | None (None = exclude messaging-only)
         """
+        excluded_ids = scheduler_telethon_excluded_account_ids(db)
+
         if pool_id:
             members = db.query(StoryPoolMember).filter(
                 StoryPoolMember.pool_id == pool_id,
@@ -91,20 +94,32 @@ class StoryRotationEngine:
             account_ids = [m.account_id for m in members]
             if not account_ids:
                 return None
-            candidates = db.query(Account).filter(
-                Account.id.in_(account_ids)
-            ).order_by(Account.last_active.asc().nullsfirst()).all()
+            from sqlalchemy import func
+
+            q = (
+                db.query(Account)
+                .filter(
+                    Account.id.in_(account_ids),
+                    func.lower(func.coalesce(Account.purpose, "both")) != "ai_agent",
+                )
+            )
+            if excluded_ids:
+                q = q.filter(~Account.id.in_(tuple(excluded_ids)))
+            candidates = q.order_by(Account.last_active.asc().nullsfirst()).all()
         else:
-            from sqlalchemy import or_
+            from sqlalchemy import func, or_
             q = db.query(Account).filter(
                 Account.status == AccountStatus.ACTIVE,
                 Account.story_precheck_status == 'allowed',
+                func.lower(func.coalesce(Account.purpose, "both")) != "ai_agent",
             )
+            if excluded_ids:
+                q = q.filter(~Account.id.in_(tuple(excluded_ids)))
             if purpose_filter in ('autostory', 'both'):
                 # exact match
                 q = q.filter(Account.purpose == purpose_filter)
             else:
-                # default: exclude messaging-only accounts
+                # default: exclude messaging-only and AI-Agent-only accounts
                 q = q.filter(
                     or_(
                         Account.purpose.in_(['autostory', 'both']),
@@ -198,14 +213,40 @@ class StoryRotationEngine:
                 mentions_per_story, db, mention_source_chat_id
             )
 
+        from src.core.execution_guard import (
+            ACTION_STORY_PUBLISH,
+            guard_blocked_story_publish,
+            require_execution_allowed,
+        )
+
+        blocked = require_execution_allowed(ACTION_STORY_PUBLISH, account_id=int(account_id))
+        if blocked is not None:
+            logger.warning(
+                "story_rotation_blocked_execution_guard",
+                run_id=run_id,
+                account_id=int(account_id),
+                reason=blocked.reason_code,
+            )
+            payload = guard_blocked_story_publish(blocked)
+            await self._record_step(
+                run_id,
+                account_id,
+                'failed',
+                str(payload.get('error_code') or 'execution_guard'),
+                mode,
+                interval_minutes,
+                count_failure=True,
+            )
+            return {'success': False, 'error': payload.get('error_code'), 'account_id': account_id}
+
         # ── Get or reconnect client ────────────────────────────────────────
-        client_wrapper = await client_manager.get_client(account_id)
+        client_wrapper, conn_err = await client_manager.connect_account(account_id)
         if not client_wrapper:
-            try:
-                await client_manager.connect_account(account_id)
-                client_wrapper = await client_manager.get_client(account_id)
-            except Exception as e:
-                logger.warning('Could not connect account', account_id=account_id, error=str(e))
+            logger.warning(
+                'Could not connect account',
+                account_id=account_id,
+                reason=conn_err,
+            )
 
         if not client_wrapper:
             await self._record_step(run_id, account_id, 'failed', 'client_unavailable',
