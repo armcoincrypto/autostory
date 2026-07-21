@@ -55,6 +55,14 @@ coverage.xml
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*env*.bak
+*env*.backup*
+*env*_backup*
+*env*_preflight*
 .venv
 env/
 venv/
