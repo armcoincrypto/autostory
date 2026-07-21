@@ -10,6 +10,8 @@ from sqlalchemy import (
     ForeignKey, JSON, Enum as SQLEnum, Float
 )
 from sqlalchemy.orm import relationship
+from src.security.session_material import EncryptedSessionText
+
 from .database import Base
 
 
@@ -45,7 +47,7 @@ class Account(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     phone_number = Column(String(20), unique=True, nullable=False, index=True)
-    session_string = Column(Text, nullable=True)  # Encrypted session data
+    session_string = Column(EncryptedSessionText(), nullable=True)
 
     # Account info
     user_id = Column(Integer, nullable=True, index=True)  # Telegram user ID
