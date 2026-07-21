@@ -44,7 +44,7 @@ Overall endpoint gate: not passed because critical public exposures remain in an
 ## Secret incident result
 
 - Tracked artifacts: three secret backups plus one example; secret backups introduced in `99b04be8`, present on remote branch/tag
-- Untracked artifacts: 18 additional real environment/backup artifacts plus non-secret examples in inspected scope
+- Untracked artifacts: 19 real environment/backup artifacts plus two untracked non-secret examples in inspected scope
 - Permission corrections: 21 files changed `0644` → `0600`; zero real artifacts remain group/world readable in scanned scope
 - Exposure categories: Telegram bot/app, dashboard/operator, provider/OpenAI, database/Redis/storage configuration, and session material
 - Rotation status: pending; Swaperex admin token now urgent due evidence-capture exposure
