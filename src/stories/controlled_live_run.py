@@ -15,7 +15,7 @@ from src.stories.rotation_audit import (
     CONTROLLED_LIVE_ACCOUNT_ID,
     build_story_rotation_precheck,
 )
-from src.stories.scheduler_integration import story_execution_enabled
+from src.stories.scheduler_integration import controlled_story_execution_allowed
 
 logger = structlog.get_logger(__name__)
 
@@ -58,11 +58,14 @@ def evaluate_controlled_live_run_gates(
     report: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, int | None]:
     """Return ``(error_body, status)`` when blocked, else ``(None, None)``."""
-    if not story_execution_enabled():
+    execution_allowed, execution_reason = controlled_story_execution_allowed(
+        CONTROLLED_LIVE_ACCOUNT_ID
+    )
+    if not execution_allowed:
         return _error_response(
-            "story_execution_disabled",
+            execution_reason,
             403,
-            message="Story execution is disabled. Set STORY_EXECUTION_ENABLED=true for controlled live only.",
+            message="Controlled Story execution is disabled or scoped to another account.",
         )
 
     env_account = os.getenv("CONTROLLED_STORY_ACCOUNT_ID", "").strip()
@@ -175,13 +178,12 @@ async def _execute_controlled_live_story_run(
     payload: dict[str, Any],
     report: dict[str, Any],
 ) -> dict[str, Any]:
-    from src.clients.manager import client_manager
     from src.stories.mention_plan import (
         extract_approved_mention_plan,
         normalize_mention_plan,
-        require_all_mentions_flag,
     )
     from src.stories.publisher import story_publisher
+    from src.stories.client_lifecycle import open_controlled_story_client
 
     account_id = CONTROLLED_LIVE_ACCOUNT_ID
     media_path = str((report.get("media") or {}).get("path") or payload.get("media_path") or "").strip()
@@ -193,15 +195,15 @@ async def _execute_controlled_live_story_run(
         if mention_source_chat_id not in (None, "", "null")
         else None
     )
-    # Controlled canaries default to fail-closed on mention loss.
-    require_all = require_all_mentions_flag(payload, default=True)
+    # Controlled canaries always fail closed on requested mention loss.
+    require_all = mentions_per_story > 0
 
     approved = extract_approved_mention_plan(payload)
     if approved is not None:
         # Exact Dry Run plan — never reselect.
         candidates = normalize_mention_plan(approved)[: max(0, mentions_per_story)]
         selection_source = "approved_payload"
-    elif mentions_per_story > 0 and require_all:
+    elif mentions_per_story > 0:
         return {
             "ok": False,
             "published": False,
@@ -217,11 +219,8 @@ async def _execute_controlled_live_story_run(
             "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
         }
     else:
-        # Legacy / optional-mention path may use precheck selection.
-        candidates = normalize_mention_plan(report.get("selected_mention_candidates") or [])[
-            : max(0, mentions_per_story)
-        ]
-        selection_source = "precheck_reselect"
+        candidates = []
+        selection_source = "zero_mentions"
 
     mention_plan = candidates
     if mentions_per_story > 0 and require_all and len(mention_plan) < mentions_per_story:
@@ -262,7 +261,11 @@ async def _execute_controlled_live_story_run(
         require_execution_allowed,
     )
 
-    blocked = require_execution_allowed(ACTION_STORY_PUBLISH, account_id=int(account_id))
+    blocked = require_execution_allowed(
+        ACTION_STORY_PUBLISH,
+        account_id=int(account_id),
+        scope="controlled_live",
+    )
     if blocked is not None:
         logger.warning(
             "controlled_live_run_blocked_execution_guard",
@@ -290,8 +293,8 @@ async def _execute_controlled_live_story_run(
         require_all_mentions=require_all,
     )
 
-    client_wrapper, conn_err = await client_manager.connect_account(account_id)
-    if not client_wrapper:
+    lease, conn_err = await open_controlled_story_client(account_id)
+    if lease is None:
         return _finalize_run(
             run_id=run_id,
             account_id=account_id,
@@ -301,32 +304,41 @@ async def _execute_controlled_live_story_run(
             mention_plan=mention_plan,
         )
 
-    publish_result = await story_publisher.publish_story(
-        client_wrapper=client_wrapper,
-        media_path=media_path,
-        caption=caption,
-        mentions=mention_plan or None,
-        require_all_mentions=require_all,
-    )
-
-    if publish_result.get("success"):
-        return _finalize_run(
-            run_id=run_id,
-            account_id=account_id,
-            success=True,
-            error=None,
-            publish_result=publish_result,
-            mention_plan=mention_plan,
+    publish_result: dict[str, Any]
+    cleanup: dict[str, Any]
+    try:
+        publish_result = await story_publisher.publish_story(
+            client_wrapper=lease.wrapper,
+            media_path=media_path,
+            caption=caption,
+            mentions=mention_plan or None,
+            require_all_mentions=require_all,
+            execution_scope="controlled_live",
         )
+    except Exception as exc:
+        publish_result = {
+            "success": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    finally:
+        cleanup = await lease.close()
 
-    return _finalize_run(
+    result = _finalize_run(
         run_id=run_id,
         account_id=account_id,
-        success=False,
-        error=str(publish_result.get("error") or "publish_failed"),
+        success=bool(publish_result.get("success")),
+        error=(
+            None
+            if publish_result.get("success")
+            else str(publish_result.get("error") or "publish_failed")
+        ),
         publish_result=publish_result,
         mention_plan=mention_plan,
     )
+    result["cleanup"] = cleanup
+    if not cleanup.get("ok"):
+        result["cleanup_warning"] = "Telegram client/session cleanup reported errors."
+    return result
 
 
 def _finalize_run(
@@ -340,6 +352,7 @@ def _finalize_run(
 ) -> dict[str, Any]:
     now = datetime.utcnow()
     publish_result = publish_result or {}
+    ambiguous = bool(publish_result.get("ambiguous_no_retry"))
     mention_fields = {
         "mentions_requested": publish_result.get("mentions_requested"),
         "mentions_selected": publish_result.get("mentions_selected")
@@ -367,13 +380,16 @@ def _finalize_run(
             run_id=run_id,
             account_id=account_id,
             story_id=publish_result.get("db_id"),
-            status="ok" if success else "failed",
+            status="ambiguous_no_retry" if ambiguous else ("ok" if success else "failed"),
             error=error,
             executed_at=now,
         )
         db.add(step)
 
-        if success:
+        if ambiguous:
+            run.stories_failed = 1
+            run.status = "ambiguous_no_retry"
+        elif success:
             run.stories_ok = 1
             run.status = "completed"
         else:
@@ -387,6 +403,11 @@ def _finalize_run(
             "run_id": run_id,
             "account_id": account_id,
             "success": success,
+            "result_classification": (
+                "AMBIGUOUS_NO_RETRY"
+                if ambiguous
+                else ("CONFIRMED_PUBLISHED" if success else "CONFIRMED_NOT_PUBLISHED")
+            ),
             "error": error,
             "telegram_story_id": publish_result.get("story_id"),
             "db_story_id": publish_result.get("db_id"),
@@ -396,13 +417,44 @@ def _finalize_run(
         }
         db.add(
             SystemLog(
-                level="INFO" if success else "ERROR",
+                level="WARNING" if ambiguous else ("INFO" if success else "ERROR"),
                 component="controlled_live_story_run",
-                message="controlled_story_run_completed" if success else "controlled_story_run_failed",
+                message=(
+                    "controlled_story_run_ambiguous_no_retry"
+                    if ambiguous
+                    else (
+                        "controlled_story_run_completed"
+                        if success
+                        else "controlled_story_run_failed"
+                    )
+                ),
                 details=audit_details,
             )
         )
         db.commit()
+
+    if ambiguous:
+        logger.warning(
+            "controlled_story_run_ambiguous_no_retry",
+            run_id=run_id,
+            account_id=account_id,
+            telegram_story_id=publish_result.get("story_id"),
+        )
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "account_id": account_id,
+            "published": None,
+            "telegram_accepted": bool(publish_result.get("telegram_accepted")),
+            "story_id": publish_result.get("story_id"),
+            "db_id": publish_result.get("db_id"),
+            "error": "AMBIGUOUS_NO_RETRY",
+            "result_classification": "AMBIGUOUS_NO_RETRY",
+            "message": publish_result.get("error")
+            or "Telegram accepted the Story but local persistence is incomplete.",
+            "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+            **mention_fields,
+        }
 
     if success:
         logger.info(
@@ -467,4 +519,6 @@ def controlled_live_run_http_response(payload: dict[str, Any] | None) -> tuple[A
 
     if result.get("ok"):
         return jsonify(result), 200
+    if result.get("result_classification") == "AMBIGUOUS_NO_RETRY":
+        return jsonify(result), 409
     return jsonify(result), 500

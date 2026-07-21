@@ -2,6 +2,7 @@
 Flask Application Factory
 STORYFLEET Control Dashboard
 """
+import importlib
 import os
 import sys
 import threading
@@ -39,6 +40,28 @@ _DIAGNOSTIC_RATE_MAX = 30
 
 def _production_environment() -> bool:
     return settings.environment.strip().lower() in ("production", "prod")
+
+
+def _load_optional_blueprints(
+    app: Flask,
+    module_name: str,
+    attribute_names: tuple[str, ...],
+) -> list[Any]:
+    """Register an optional dashboard feature only when its source is complete."""
+    try:
+        module = importlib.import_module(module_name)
+        blueprints = [getattr(module, name) for name in attribute_names]
+    except Exception as exc:
+        logger.warning(
+            "optional_dashboard_feature_unavailable",
+            module=module_name,
+            error_class=type(exc).__name__,
+            error=str(exc),
+        )
+        return []
+    for blueprint in blueprints:
+        app.register_blueprint(blueprint)
+    return blueprints
 
 
 def _configure_reverse_proxy_and_session(app: Flask) -> None:
@@ -783,6 +806,17 @@ def create_app() -> Flask:
 
         return redirect(url_for("auth.login", next=request.full_path or request.path))
 
+    @app.before_request
+    def require_story_operator_authorization():
+        """Protect every current or legacy Story API before it reaches state."""
+        if not request.path.startswith("/api/stories"):
+            return None
+        from src.dashboard.auth_access import dashboard_api_authorized
+
+        if not dashboard_api_authorized():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return None
+
     # Ensure all DB tables exist (additive — never drops columns)
     from src.core.database import init_db
     init_db()
@@ -819,19 +853,41 @@ def create_app() -> Flask:
     except Exception as e:
         logger.warning("ai_agent_auto_loop_start_failed", error=str(e))
 
-    # Register blueprints (P9.13: operational_state_api before legacy routes.pyc)
-    from .scheduler_routes import scheduler_api
-    from .ai_agent_routes import ai_agent_api
-    from .operational_state_routes import operational_state_api
-    from .readiness_v2_routes import readiness_v2_api
-    from .accounts_v2_routes import accounts_v2_bp
+    # Story operator routes are part of the required clean runtime boundary.
     from .story_rotation_routes import story_rotation_api
-    from .governance_routes import governance_api
-    from .broadcast_routes import broadcast_bp, broadcast_api
-    from .ai_coding_routes import ai_coding_bp, ai_coding_api
-    from .operator_control_routes import operator_control_bp
+    app.register_blueprint(story_rotation_api)
 
-    app.register_blueprint(operational_state_api)
+    # Other dashboard subsystems are optional features. Their incomplete source
+    # must not prevent the core web/Story safety boundary from starting.
+    optional_blueprints: list[Any] = []
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.operational_state_routes", ("operational_state_api",)
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.scheduler_routes", ("scheduler_api",)
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.ai_agent_routes", ("ai_agent_api",)
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.readiness_v2_routes", ("readiness_v2_api",)
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.accounts_v2_routes", ("accounts_v2_bp",)
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.governance_routes", ("governance_api",)
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.broadcast_routes", ("broadcast_bp", "broadcast_api")
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.ai_coding_routes", ("ai_coding_bp", "ai_coding_api")
+    )
+    optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.operator_control_routes", ("operator_control_bp",)
+    )
+
     register_routes, api = _import_dashboard_routes()
     if register_routes is not None and api is not None:
         try:
@@ -854,31 +910,23 @@ def create_app() -> Flask:
     _ensure_p3_deep_health_route(app)
     _ensure_p10_17_accounts_api(app)
     _ensure_p10_17_story_precheck_compat(app)
-    _ensure_p10_19_story_run_gate(app)
     _ensure_p3_story_publish_gate(app)
-    app.register_blueprint(scheduler_api)
-    app.register_blueprint(ai_agent_api)
-    app.register_blueprint(readiness_v2_api)
-    app.register_blueprint(story_rotation_api)
-    app.register_blueprint(governance_api)
-    app.register_blueprint(accounts_v2_bp)
-    app.register_blueprint(ai_coding_bp)
-    app.register_blueprint(ai_coding_api)
-    app.register_blueprint(broadcast_bp)
-    app.register_blueprint(broadcast_api)
-    app.register_blueprint(operator_control_bp)
     _ensure_dexpert_audit_route(app)
-    from .accounts_legacy_redirect import ensure_accounts_legacy_redirect
+    try:
+        from .accounts_legacy_redirect import ensure_accounts_legacy_redirect
 
-    ensure_accounts_legacy_redirect(app)
-    csrf.exempt(scheduler_api)
-    csrf.exempt(ai_agent_api)
-    csrf.exempt(operational_state_api)
-    csrf.exempt(readiness_v2_api)
+        ensure_accounts_legacy_redirect(app)
+    except Exception as exc:
+        logger.warning(
+            "optional_accounts_redirect_unavailable",
+            error_class=type(exc).__name__,
+            error=str(exc),
+        )
+
     csrf.exempt(story_rotation_api)
-    csrf.exempt(governance_api)
-    csrf.exempt(ai_coding_api)
-    csrf.exempt(broadcast_api)
+    for blueprint in optional_blueprints:
+        if (blueprint.url_prefix or "").startswith("/api"):
+            csrf.exempt(blueprint)
 
     # Inject admin token into every template context so JS can send it
     @app.context_processor

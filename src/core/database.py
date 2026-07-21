@@ -2,6 +2,7 @@
 Database configuration and session management
 """
 import os
+import importlib
 import random
 import sys
 import sqlite3
@@ -189,15 +190,27 @@ def run_with_sqlite_lock_retry(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 
 
+def _import_optional_model_module(module_name: str) -> None:
+    """Register optional feature models when their source is installed."""
+    try:
+        importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        # Only suppress absence of the requested optional module itself. A
+        # missing dependency inside an installed module is a real startup bug.
+        if exc.name != module_name:
+            raise
+        logger.warning("optional_model_module_unavailable", module=module_name)
+
+
 def init_db() -> None:
     """Initialize database tables"""
     from . import models  # noqa: F401
     import src.core.scheduler_models  # noqa: F401 - ChatTarget, membership probe cache, etc.
     import src.dashboard.models  # noqa: F401 - ensures dashboard_users table
-    import src.core.ai_agent_models  # noqa: F401 - AI Agent additive tables
     import src.telegram_gateway.models  # noqa: F401 - Telegram gateway job queue
-    import src.core.campaign_governance_models  # noqa: F401 - P9.71 campaign governance
-    import src.governance.models  # noqa: F401 - P10.21 account runtime governance
+    _import_optional_model_module("src.core.ai_agent_models")
+    _import_optional_model_module("src.core.campaign_governance_models")
+    _import_optional_model_module("src.governance.models")
     from sqlalchemy import text
     Base.metadata.create_all(bind=engine)
     _ensure_account_governance_tables()

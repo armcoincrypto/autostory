@@ -9,7 +9,6 @@ import structlog
 from flask import request
 from flask_login import current_user
 
-
 logger = structlog.get_logger(__name__)
 
 

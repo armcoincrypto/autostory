@@ -10,11 +10,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS, scheduler_telethon_excluded_account_ids
+from src.core.account_protection import PROTECTED_IDS, PURPOSE_HOLD_IDS
 from src.core.models import Account, AccountStatus, DiscoveredUser, StoryPool, StoryPoolMember, StoryRun
 from src.core.scheduler_models import AccountReadinessSnapshot, JobStatus, ScheduledJob
 from src.core.session_paths import account_has_canonical_session
 from src.core.safety_policy import get_story_safety_decision
-from src.recovery.p9_83_governance_observability import PROTECTED_IDS, PURPOSE_HOLD_IDS
 from src.utils.helpers import validate_media
 
 STORY_PURPOSES = frozenset({"", "both", "story", "stories", "autostory"})

@@ -6,9 +6,9 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
+from src.core.account_protection import PROTECTED_IDS, PURPOSE_HOLD_IDS
 from src.core.models import Account
 from src.governance.governance_resolver import resolve_account_governance
-from src.recovery.p9_83_governance_observability import PROTECTED_IDS, PURPOSE_HOLD_IDS
 from src.stories.story_auth_state import resolve_story_auth_state
 from src.stories.rotation_audit import evaluate_account_story_runtime, story_purpose_compatible
 

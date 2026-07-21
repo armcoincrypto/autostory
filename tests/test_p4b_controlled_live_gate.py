@@ -26,7 +26,14 @@ def _write_valid_vertical_story_jpeg(path: Path, size: tuple[int, int] = (1080, 
 
 def _app(monkeypatch: pytest.MonkeyPatch, **env: str) -> object:
     monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setenv("STORY_EXECUTION_ENABLED", env.get("STORY_EXECUTION_ENABLED", "false"))
+    monkeypatch.setenv(
+        "CONTROLLED_STORY_EXECUTION_ENABLED",
+        env.get(
+            "CONTROLLED_STORY_EXECUTION_ENABLED",
+            env.get("STORY_EXECUTION_ENABLED", "false"),
+        ),
+    )
+    monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "false")
     monkeypatch.setenv(
         "CONTROLLED_STORY_ACCOUNT_ID",
         env.get("CONTROLLED_STORY_ACCOUNT_ID", ""),
@@ -62,7 +69,7 @@ def test_runs_locked_when_execution_disabled(monkeypatch: pytest.MonkeyPatch) ->
     assert resp.status_code == 403
     body = resp.get_json()
     assert body["ok"] is False
-    assert body["error"] == "story_execution_disabled"
+    assert body["error"] == "controlled_story_execution_disabled"
 
 
 def test_runs_wrong_account(monkeypatch: pytest.MonkeyPatch) -> None:

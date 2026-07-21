@@ -27,7 +27,14 @@ def _write_valid_vertical_story_jpeg(path: Path, size: tuple[int, int] = (1080, 
 
 def _app(monkeypatch, **env):
     monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setenv("STORY_EXECUTION_ENABLED", env.get("STORY_EXECUTION_ENABLED", "false"))
+    monkeypatch.setenv(
+        "CONTROLLED_STORY_EXECUTION_ENABLED",
+        env.get(
+            "CONTROLLED_STORY_EXECUTION_ENABLED",
+            env.get("STORY_EXECUTION_ENABLED", "false"),
+        ),
+    )
+    monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "false")
     monkeypatch.setenv("CONTROLLED_STORY_ACCOUNT_ID", env.get("CONTROLLED_STORY_ACCOUNT_ID", ""))
     from src.dashboard.app import create_app
 
@@ -193,5 +200,5 @@ def test_story_runs_api_returns_json_for_gate_blocks(monkeypatch) -> None:
 
     assert resp.status_code == 403
     assert resp.is_json
-    assert resp.get_json()["error"] == "story_execution_disabled"
+    assert resp.get_json()["error"] == "controlled_story_execution_disabled"
     assert "<!doctype" not in resp.get_data(as_text=True).lower()

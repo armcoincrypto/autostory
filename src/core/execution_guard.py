@@ -138,16 +138,13 @@ def _account_blocked(account_id: int | None) -> tuple[bool, list[str]]:
     if account_id is None:
         return False, []
     blockers: list[str] = []
-    try:
-        from src.recovery.p9_83_governance_observability import PROTECTED_IDS, PURPOSE_HOLD_IDS
+    from src.core.account_protection import PROTECTED_IDS, PURPOSE_HOLD_IDS
 
-        aid = int(account_id)
-        if aid in PROTECTED_IDS:
-            blockers.append("account_protected")
-        if aid in PURPOSE_HOLD_IDS:
-            blockers.append("account_held")
-    except Exception:
-        pass
+    aid = int(account_id)
+    if aid in PROTECTED_IDS:
+        blockers.append("account_protected")
+    if aid in PURPOSE_HOLD_IDS:
+        blockers.append("account_held")
     try:
         from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
 
@@ -660,17 +657,33 @@ def can_execute_action(
             decision = _allow(action, "telegram_join_ok", "Join permitted.", audit=audit_base)
 
     elif action == ACTION_STORY_PUBLISH:
-        from src.stories.scheduler_integration import story_execution_enabled
+        from src.stories.scheduler_integration import (
+            controlled_story_execution_allowed,
+            scheduler_story_execution_enabled,
+        )
 
-        if not story_execution_enabled():
+        if scope == "controlled_live":
+            allowed, reason = controlled_story_execution_allowed(account_id)
+        elif scope == "scheduler":
+            allowed = scheduler_story_execution_enabled()
+            reason = (
+                "scheduler_story_publish_ok"
+                if allowed
+                else "scheduler_story_execution_disabled"
+            )
+        else:
+            allowed = False
+            reason = "story_execution_purpose_required"
+
+        if not allowed:
             decision = _deny(
                 action,
-                "story_execution_disabled",
-                "STORY_EXECUTION_ENABLED=false; story publish blocked.",
+                reason,
+                "Story publishing requires an enabled, explicit execution purpose.",
                 audit=audit_base,
             )
         else:
-            decision = _allow(action, "story_publish_ok", "Story publish permitted.", audit=audit_base)
+            decision = _allow(action, reason, "Scoped Story publish permitted.", audit=audit_base)
 
     elif action == ACTION_CAMPAIGN_EXECUTE:
         from src.scheduler.campaign_governance import campaign_execution_enabled
@@ -772,12 +785,18 @@ def build_execution_lock_matrix() -> dict[str, Any]:
         scoped_send_test_allowlist_active,
     )
     from src.scheduler.campaign_governance import campaign_execution_enabled
-    from src.stories.scheduler_integration import story_execution_enabled
+    from src.stories.scheduler_integration import (
+        controlled_story_execution_enabled,
+        scheduler_story_execution_enabled,
+    )
 
     return {
         "execution_emergency_lock": execution_emergency_lock_active(),
         "scheduler_mutations_enabled": scheduler_mutations_enabled(),
-        "story_execution_enabled": story_execution_enabled(),
+        "controlled_story_execution_enabled": controlled_story_execution_enabled(),
+        "scheduler_story_execution_enabled": scheduler_story_execution_enabled(),
+        # Compatibility field: true only when scheduler mutation is explicitly enabled.
+        "story_execution_enabled": scheduler_story_execution_enabled(),
         "campaign_execution_enabled": campaign_execution_enabled(),
         "discovery_execution_enabled": discovery_execution_enabled(),
         "ai_coding_execute_enabled": os.environ.get("AI_CODING_EXECUTE_ENABLED", "false")

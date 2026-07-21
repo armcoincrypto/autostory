@@ -62,6 +62,7 @@ class StoryPublisher:
         pin_to_profile: bool = False,
         campaign_id: Optional[int] = None,
         require_all_mentions: bool = False,
+        execution_scope: str | None = None,
     ) -> Dict[str, Any]:
         """
         Publish a story with optional caption @username mentions.
@@ -88,6 +89,7 @@ class StoryPublisher:
         blocked = require_execution_allowed(
             ACTION_STORY_PUBLISH,
             account_id=int(getattr(account, "id", 0) or 0),
+            scope=execution_scope,
         )
         if blocked is not None:
             logger.warning(
@@ -199,6 +201,7 @@ class StoryPublisher:
                 privacy_rules=privacy_rules,
                 pinned=pin_to_profile,
             ))
+            telegram_accepted = True
 
             # Extract story ID from result
             story_id = None
@@ -284,6 +287,22 @@ class StoryPublisher:
                 media_type=locals().get("media_type"),
                 request="SendStoryRequest",
             )
+            # A successful SendStoryRequest followed by local persistence failure
+            # is never safe to retry automatically. Preserve the Telegram ID for
+            # reconciliation and make the ambiguity explicit to the run gateway.
+            if locals().get("telegram_accepted"):
+                return {
+                    "success": False,
+                    "ambiguous_no_retry": True,
+                    "telegram_accepted": True,
+                    "result_classification": "AMBIGUOUS_NO_RETRY",
+                    "story_id": locals().get("story_id"),
+                    "db_id": None,
+                    "error": f"local_story_persistence_failed:{type(e).__name__}: {e}",
+                    "caption_sent": locals().get("formatted_caption"),
+                    **locals().get("mention_result", {}),
+                }
+
             # Preserve Telethon human message; include class for operators/logs.
             detail = str(e)
             if type(e).__name__ and type(e).__name__ not in detail:

@@ -25,7 +25,8 @@ def _write_valid_vertical_story_jpeg(path: Path, size: tuple[int, int] = (1080, 
 
 def _app(monkeypatch):
     monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setenv("STORY_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("CONTROLLED_STORY_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "false")
     from src.dashboard.app import create_app
 
     app = create_app()
@@ -142,12 +143,12 @@ def test_empty_media_blocks_precheck(monkeypatch, tmp_path) -> None:
 
 
 def test_story_runtime_map_is_disabled_by_default(monkeypatch) -> None:
-    monkeypatch.setenv("STORY_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "false")
 
     integration = build_story_scheduler_integration_map()
 
     assert integration["story_execution_enabled"] is False
-    assert integration["env_flag"] == "STORY_EXECUTION_ENABLED"
+    assert integration["env_flag"] == "SCHEDULER_STORY_EXECUTION_ENABLED"
     assert integration["current_state"] == "disabled_no_live_story_execution"
 
 
