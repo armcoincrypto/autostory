@@ -3,11 +3,18 @@
 {% block title %}Dashboard - STORYFLEET{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-speedometer2"></i> Dashboard</h2>
-    <button class="btn btn-primary" onclick="refreshStats()">
-        <i class="bi bi-arrow-clockwise"></i> Refresh
-    </button>
+<div id="dashboard-session-alert" class="alert alert-warning d-none mb-3" role="alert">
+    <strong>Not signed in</strong> or your session expired. Dashboard data could not be loaded.
+    <a href="/login?next=/" class="alert-link">Sign in again</a> to continue.
+</div>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+    <h2 class="mb-0"><i class="bi bi-speedometer2"></i> Dashboard</h2>
+    <div class="d-flex flex-wrap gap-2">
+        <a href="/scheduler" class="btn btn-primary"><i class="bi bi-calendar-week"></i> Go to Scheduler</a>
+        <button class="btn btn-outline-secondary" type="button" onclick="refreshStats()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+    </div>
 </div>
 
 <!-- Stats Cards -->
@@ -54,14 +61,18 @@
                 <h5 class="mb-0"><i class="bi bi-lightning"></i> Quick Actions</h5>
             </div>
             <div class="card-body">
-                <div class="d-grid gap-2">
+                <div class="d-grid gap-2 mb-3">
                     <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
                         <i class="bi bi-plus-circle"></i> Add New Account
                     </button>
-                    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#publishStoryModal">
-                        <i class="bi bi-send"></i> Publish Story
-                    </button>
-                    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#scanChannelModal">
+                </div>
+                <div class="text-muted small text-uppercase mb-2" style="letter-spacing:.04em;">Advanced — server paths &amp; power tools</div>
+                <p class="small text-muted mb-2">Prefer <a href="/stories">Stories</a> or <a href="/scheduler">Scheduler</a> for routine publishing and campaigns.</p>
+                <div class="alert alert-secondary py-2 px-3 small mb-2 mb-0">
+                    <i class="bi bi-lock-fill me-1"></i> Live publishing is locked. Use <a href="/stories">Stories</a> dry-run first.
+                </div>
+                <div class="d-grid gap-2 mt-2">
+                    <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#scanChannelModal">
                         <i class="bi bi-search"></i> Scan Channel
                     </button>
                 </div>
@@ -132,12 +143,12 @@
     </div>
 </div>
 
-<!-- Publish Story Modal -->
-<div class="modal fade" id="publishStoryModal" tabindex="-1">
+<!-- Publish Story Modal (legacy — hidden while STORY_EXECUTION_ENABLED=false) -->
+<div class="modal fade d-none" id="publishStoryModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content bg-dark">
             <div class="modal-header">
-                <h5 class="modal-title">Publish Story</h5>
+                <h5 class="modal-title">Publish Story <span class="text-muted small fw-normal">(Advanced)</span></h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -166,7 +177,7 @@
     <div class="modal-dialog">
         <div class="modal-content bg-dark">
             <div class="modal-header">
-                <h5 class="modal-title">Scan Channel</h5>
+                <h5 class="modal-title">Scan Channel <span class="text-muted small fw-normal">(Advanced)</span></h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -189,10 +200,29 @@
 <script>
 let authData = {};
 
+function indexShowAuthRequiredBanner() {
+    const el = document.getElementById('dashboard-session-alert');
+    if (el) el.classList.remove('d-none');
+}
+
+async function indexApiFetch(url, options = {}) {
+    const opts = Object.assign({ credentials: 'same-origin' }, options);
+    const headers = new Headers(opts.headers || {});
+    if (ADMIN_TOKEN && !headers.has('X-Admin-Token')) {
+        headers.set('X-Admin-Token', ADMIN_TOKEN);
+    }
+    opts.headers = headers;
+    const response = await fetch(url, opts);
+    if (response.status === 401) {
+        indexShowAuthRequiredBanner();
+    }
+    return response;
+}
+
 async function refreshStats() {
     try {
-        const response = await fetch('/api/stats');
-        const stats = await response.json();
+        const response = await indexApiFetch('/api/stats');
+        const stats = await dashboardReadJson(response);
 
         document.getElementById('stat-accounts').textContent = stats.accounts.active;
         document.getElementById('stat-stories').textContent = stats.stories.total;
@@ -205,8 +235,8 @@ async function refreshStats() {
 
 async function loadRecentStories() {
     try {
-        const response = await fetch('/api/stories?per_page=5');
-        const data = await response.json();
+        const response = await indexApiFetch('/api/stories?per_page=5');
+        const data = await dashboardReadJson(response);
 
         const tbody = document.getElementById('recent-stories');
         if (data.stories.length === 0) {
@@ -231,12 +261,12 @@ async function loadRecentStories() {
 async function startAuth() {
     const phone = document.getElementById('phone-number').value;
     try {
-        const response = await fetch('/api/accounts/auth/start', {
+        const response = await indexApiFetch('/api/accounts/auth/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({phone_number: phone})
         });
-        const result = await response.json();
+        const result = await dashboardReadJson(response);
 
         if (result.success) {
             authData = result;
@@ -253,7 +283,7 @@ async function startAuth() {
 async function completeAuth() {
     const code = document.getElementById('auth-code').value;
     try {
-        const response = await fetch('/api/accounts/auth/complete', {
+        const response = await indexApiFetch('/api/accounts/auth/complete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -263,7 +293,7 @@ async function completeAuth() {
                 session_string: authData.session_string
             })
         });
-        const result = await response.json();
+        const result = await dashboardReadJson(response);
 
         if (result.success) {
             alert('Account added successfully!');
@@ -277,12 +307,14 @@ async function completeAuth() {
 }
 
 async function publishStory() {
+    alert('Live publishing is locked. Use Stories dry-run first.');
+    return;
     const accountId = document.getElementById('story-account').value;
     const mediaPath = document.getElementById('story-media').value;
     const caption = document.getElementById('story-caption').value;
 
     try {
-        const response = await fetch('/api/stories/publish', {
+        const response = await indexApiFetch('/api/stories/publish', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -291,7 +323,7 @@ async function publishStory() {
                 caption: caption
             })
         });
-        const result = await response.json();
+        const result = await dashboardReadJson(response);
 
         if (result.success) {
             alert('Story published!');
@@ -309,15 +341,15 @@ async function scanChannel() {
     const limit = document.getElementById('scan-limit').value;
 
     try {
-        const response = await fetch('/api/discovery/scan', {
+        const result = await dashboardFetchJson('/api/discovery/scan', {
             method: 'POST',
+            credentials: 'same-origin',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 channels: [channel],
                 limit: parseInt(limit)
             })
         });
-        const result = await response.json();
 
         alert(`Scan complete! Found ${result.total_new_users} new users.`);
     } catch (error) {

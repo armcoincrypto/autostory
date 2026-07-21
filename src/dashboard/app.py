@@ -253,9 +253,9 @@ def _ensure_p10_17_accounts_api(app: Flask) -> None:
             get_session_readiness,
             get_story_availability,
         )
+        from src.core.account_protection import PROTECTED_IDS, PURPOSE_HOLD_IDS
         from src.core.safety_policy import get_account_risk_level, get_story_safety_decision
         from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
-        from src.recovery.p9_83_governance_observability import PROTECTED_IDS, PURPOSE_HOLD_IDS
 
         limit = min(500, max(1, request.args.get("limit", 100, type=int)))
         purpose_filter = (request.args.get("purpose") or "").strip().lower()
@@ -854,7 +854,10 @@ def create_app() -> Flask:
         logger.warning("ai_agent_auto_loop_start_failed", error=str(e))
 
     # Story operator routes are part of the required clean runtime boundary.
+    from .auth_routes import auth
     from .story_rotation_routes import story_rotation_api
+
+    app.register_blueprint(auth)
     app.register_blueprint(story_rotation_api)
 
     # Other dashboard subsystems are optional features. Their incomplete source

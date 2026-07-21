@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% if live_route %}Accounts Diagnostics{% else %}Accounts Diagnostics — Offline Preview{% endif %}</title>
+  <link rel="stylesheet" href="{{ css_href }}">
+</head>
+<body class="accounts-v2-preview">
+  <header class="preview-banner">
+    <h1>{% if live_route %}Accounts Diagnostics{% else %}Accounts Diagnostics — Offline Preview{% endif %}</h1>
+    <p class="sub">
+      Recovery / readiness diagnostics — not the main account management page.
+      {% if live_route %}<a href="/accounts" style="color:var(--accent);font-weight:700">Return to Accounts</a>{% endif %}
+      <br>
+      Generated {{ generated_at }}
+      · Showing <strong>{{ total_shown }}</strong> of {{ total_after_filters }} filtered
+      ({{ total_discovered }} discovered{% if id_source == 'query_ids' %}, ids from query{% endif %})
+      {% if tier_filter %} · tier={{ tier_filter }}{% endif %}
+      {% if status_filter %} · status={{ status_filter }}{% endif %}
+      {% if limit is not none %} · offset={{ offset }} limit={{ limit }}{% endif %}
+    </p>
+  </header>
+
+  <div class="alert-strip danger" aria-live="polite">
+    {% if live_route %}
+    <strong>v1 readiness is authoritative; v2 is preview.</strong> Scheduler queue issues do not mean session/auth is broken. Read-only; all actions disabled.
+    {% else %}
+    <strong>v1 readiness is authoritative; v2 is preview.</strong> Dashboard and scheduler still use v1
+    <code>account_readiness_snapshots</code>. Scheduler queue issues do not mean session/auth is broken.
+    {% endif %}
+  </div>
+
+  {% if restart_guard_active %}
+  <div class="alert-strip danger">
+    <strong>Restart guard active</strong> — {{ restart_guard_message }}
+    {% if restart_guard_missing %}
+    <ul class="warnings" style="margin-top:0.5rem">
+      {% for f in restart_guard_missing %}
+      <li><code>{{ f }}</code></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="alert-strip ok">
+    <strong>Restart guard</strong> — required sources present (operator approval still required).
+  </div>
+  {% endif %}
+
+  {% if recovery_summary %}
+  <section class="recovery-summary-panel" aria-label="Fleet Recovery Summary">
+    <h2>Fleet Recovery Summary</h2>
+    <p class="summary-banner"><strong>Read-only summary — no recovery has been executed</strong></p>
+    <div class="summary-grid">
+      <div class="summary-stat">
+        <span class="label">Total accounts</span>
+        <span class="value">{{ recovery_summary.total_accounts_discovered }}</span>
+      </div>
+      <div class="summary-stat">
+        <span class="label">Recovery candidates</span>
+        <span class="value">{{ recovery_summary.recovery_candidates }}</span>
+        <span class="hint">RECOVERABLE_SCHEMA_V8</span>
+      </div>
+      <div class="summary-stat">
+        <span class="label">Protected</span>
+        <span class="value">{{ recovery_summary.protected_count }}</span>
+        <span class="hint">reserved + controller</span>
+      </div>
+      <div class="summary-stat">
+        <span class="label">Blocked / error</span>
+        <span class="value">{{ recovery_summary.blocked_error_count }}</span>
+      </div>
+    </div>
+    <div class="summary-batch">
+      <h3>Recommended first batch</h3>
+      {% if recovery_summary.recommended_first_batch %}
+      <ul>
+        {% for item in recovery_summary.recommended_first_batch %}
+        <li>
+          <strong>#{{ item.account_id }}</strong>
+          — <code>{{ item.recovery_class }}</code>
+          {% if item.reason %}<span class="muted">({{ item.reason }})</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="muted">Max {{ recovery_summary.recommended_first_batch_max }} accounts per batch (lab copy + inspect first).</p>
+      {% else %}
+      <p class="muted">No RECOVERABLE_SCHEMA_V8 candidates in scope.</p>
+      {% endif %}
+    </div>
+    {% if recovery_summary.warnings %}
+    <ul class="warnings summary-warnings">
+      {% for w in recovery_summary.warnings %}
+      <li>{{ w }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section class="accounts-grid" aria-label="Account cards">
+    {% for acct in accounts %}
+    <article class="account-card" data-account-id="{{ acct.account_id }}">
+      <header>
+        <h2>{{ acct.label }} <span style="color:var(--muted);font-weight:400">#{{ acct.account_id }}</span></h2>
+        <span class="badge badge-tier-{{ acct.tier_raw }}">{{ acct.tier }}</span>
+        <span class="status-pill {{ acct.status_css }}">{{ acct.display_status }}</span>
+        {% for badge in acct.governance_badges %}
+        <span class="status-pill" title="{{ badge.title }}" style="margin-left:.35rem;font-size:.72rem;">{{ badge.label }}</span>
+        {% endfor %}
+      </header>
+      {% if acct.governance_blocked_reasons %}
+      <p class="muted" style="font-size:.78rem;margin:.35rem 0 .6rem;">
+        Governance: {{ acct.governance_blocked_reasons | join(' · ') }}
+        {% if acct.requires_manual_override %} · manual override required{% endif %}
+      </p>
+      {% endif %}
+
+      <table class="meta-table">
+        <tr>
+          <th>v2 status</th>
+          <td><strong>{{ acct.v2_status or '—' }}</strong></td>
+        </tr>
+        <tr>
+          <th>v1 status (authoritative)</th>
+          <td>{{ acct.v1_status or '—' }}</td>
+        </tr>
+        <tr>
+          <th>v1 / v2 compare</th>
+          <td><code>{{ acct.mismatch_reason }}</code></td>
+        </tr>
+        {% if acct.v2_reason %}
+        <tr>
+          <th>v2 reason</th>
+          <td>{{ acct.v2_reason }}</td>
+        </tr>
+        {% endif %}
+        {% if acct.failure_code %}
+        <tr>
+          <th>failure code</th>
+          <td><code>{{ acct.failure_code }}</code></td>
+        </tr>
+        {% endif %}
+        <tr>
+          <th>schema</th>
+          <td>{{ acct.schema_version if acct.schema_version is not none else '—' }}</td>
+        </tr>
+        <tr>
+          <th>Session</th>
+          <td>{{ acct.session_label or '—' }}</td>
+        </tr>
+        <tr>
+          <th>Auth</th>
+          <td>{{ acct.auth_label or '—' }}</td>
+        </tr>
+        <tr>
+          <th>Resolver</th>
+          <td>{{ acct.resolver_label or (acct.resolver_code or 'ok') }}</td>
+        </tr>
+        <tr>
+          <th>Technical health</th>
+          <td>{{ acct.technical_health_label or '—' }}</td>
+        </tr>
+        <tr>
+          <th>Scheduler queue</th>
+          <td>
+            {{ acct.scheduler_queue_label or '—' }}
+            {% if acct.active_job_count %}<span class="muted">({{ acct.active_job_count }} active job{{ 's' if acct.active_job_count != 1 else '' }})</span>{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th>Purpose</th>
+          <td>{{ acct.purpose_label or '—' }}</td>
+        </tr>
+        <tr>
+          <th>Campaign eligibility</th>
+          <td>{{ acct.campaign_eligibility_label or '—' }}</td>
+        </tr>
+        <tr>
+          <th>scheduler eligible</th>
+          <td>{{ 'eligible' if acct.scheduler_eligible else 'blocked' }}</td>
+        </tr>
+        <tr>
+          <th>discovery</th>
+          <td>{{ 'eligible' if acct.discovery_eligible else 'blocked' }}</td>
+        </tr>
+        <tr>
+          <th>v2 checked</th>
+          <td>{{ acct.v2_checked_at or '—' }}</td>
+        </tr>
+        <tr>
+          <th>v1 checked</th>
+          <td>{{ acct.v1_checked_at or '—' }}</td>
+        </tr>
+        {% if acct.session_path %}
+        <tr>
+          <th>session</th>
+          <td><code style="word-break:break-all;font-size:0.7rem">{{ acct.session_path }}</code></td>
+        </tr>
+        {% endif %}
+      </table>
+
+      {% if acct.module_usability %}
+      <div class="module-usability glass-panel">
+        <h3 class="module-heading">Module usability</h3>
+        <p class="activation-status {{ acct.module_usability.activation.css }}">
+          <strong>{{ acct.module_usability.activation.label }}</strong>
+          {% if acct.module_usability.activation.detail %}
+          <span class="muted">{{ acct.module_usability.activation.detail }}</span>
+          {% endif %}
+        </p>
+        <ul class="module-grid">
+          {% for m in acct.module_usability.modules %}
+          <li>
+            <span class="module-name">{{ m.name }}</span>
+            <span class="mod-badge {{ m.css }}">{{ m.label }}</span>
+            {% if m.note %}<span class="module-note">{{ m.note }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        <ul class="safety-copy muted">
+          {% for line in acct.module_usability.safety_copy %}
+          <li>{{ line }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {% if acct.warnings %}
+      <ul class="warnings">
+        {% for w in acct.warnings %}
+        <li>{{ w }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      <div class="actions" aria-label="Disabled actions (preview only)">
+        <button type="button" class="btn-placeholder" disabled title="{% if live_route %}Disabled — preview only{% else %}Not available in offline preview{% endif %}">Connect</button>
+        <button type="button" class="btn-placeholder" disabled title="{% if live_route %}Disabled — preview only{% else %}Not available in offline preview{% endif %}">Convert session</button>
+        <button type="button" class="btn-placeholder" disabled title="{% if live_route %}Disabled — preview only{% else %}Not available in offline preview{% endif %}">Force ready</button>
+        <button type="button" class="btn-placeholder" disabled title="{% if live_route %}Disabled — preview only{% else %}Not available in offline preview{% endif %}">Recover</button>
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+
+  <footer class="preview-footer">
+    {% if live_route %}
+    STORYFLEET P10.13 · GET /accounts-v2 diagnostics · v1 authoritative / v2 preview · No Telethon · No DB writes.
+    {% else %}
+    STORYFLEET P9.8 offline preview · v2 API inactive until restart · No Telethon · No DB writes from this render.
+    {% endif %}
+  </footer>
+</body>
+</html>

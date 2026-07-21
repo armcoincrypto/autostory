@@ -1192,3 +1192,271 @@ def analytics_projects():
 @ai_coding_api.route("/analytics/releases", methods=["GET"])
 def analytics_releases():
     return _proxy_get("/api/v1/analytics/releases", action="analytics_releases")
+
+
+@ai_coding_api.route("/experiments", methods=["GET", "POST"])
+def factory_experiments_collection():
+    if request.method == "GET":
+        query = {}
+        if request.args.get("status"):
+            query["status"] = request.args.get("status")
+        if request.args.get("limit"):
+            query["limit"] = request.args.get("limit")
+        return _proxy_get("/api/v1/experiments", action="factory_experiments_listed", query=query or None)
+    body = request.get_json(silent=True) or {}
+    return _proxy_write("POST", "/api/v1/experiments", action="factory_experiment_created", json_body=body)
+
+
+@ai_coding_api.route("/experiments/<experiment_id>", methods=["GET"])
+def factory_experiment_detail(experiment_id: str):
+    return _proxy_get(
+        f"/api/v1/experiments/{experiment_id}",
+        action="factory_experiment_viewed",
+        experiment_id=experiment_id,
+    )
+
+
+@ai_coding_api.route("/experiments/<experiment_id>/pause", methods=["POST"])
+def factory_experiment_pause(experiment_id: str):
+    return _proxy_write(
+        "POST",
+        f"/api/v1/experiments/{experiment_id}/pause",
+        action="factory_experiment_paused",
+        experiment_id=experiment_id,
+    )
+
+
+@ai_coding_api.route("/experiments/<experiment_id>/cancel", methods=["POST"])
+def factory_experiment_cancel(experiment_id: str):
+    return _proxy_write(
+        "POST",
+        f"/api/v1/experiments/{experiment_id}/cancel",
+        action="factory_experiment_cancelled",
+        experiment_id=experiment_id,
+    )
+
+
+@ai_coding_api.route("/experiments/<experiment_id>/complete", methods=["POST"])
+def factory_experiment_complete(experiment_id: str):
+    return _proxy_write(
+        "POST",
+        f"/api/v1/experiments/{experiment_id}/complete",
+        action="factory_experiment_completed",
+        experiment_id=experiment_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates", methods=["GET"])
+def promotion_candidates_list():
+    query = {}
+    if request.args.get("status"):
+        query["status"] = request.args.get("status")
+    if request.args.get("limit"):
+        query["limit"] = request.args.get("limit")
+    return _proxy_get(
+        "/api/v1/promotion-candidates",
+        action="promotion_candidates_listed",
+        query=query or None,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>", methods=["GET"])
+def promotion_candidate_detail(candidate_id: str):
+    return _proxy_get(
+        f"/api/v1/promotion-candidates/{candidate_id}",
+        action="promotion_candidate_viewed",
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/approve", methods=["POST"])
+def promotion_candidate_approve(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/approve",
+        action="promotion_candidate_approved",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/reject", methods=["POST"])
+def promotion_candidate_reject(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/reject",
+        action="promotion_candidate_rejected",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/start-canary", methods=["POST"])
+def promotion_candidate_start_canary(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/start-canary",
+        action="promotion_canary_started",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/rollback", methods=["POST"])
+def promotion_candidate_rollback(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/rollback",
+        action="promotion_candidate_rolled_back",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/reviews/<build_id>/summary", methods=["GET"])
+def autonomous_review_summary(build_id: str):
+    return _proxy_get(
+        f"/api/v1/reviews/{build_id}/summary",
+        action="autonomous_review_summary_viewed",
+        build_id=build_id,
+    )
+
+
+@ai_coding_api.route("/reviews/<build_id>/findings", methods=["GET"])
+def autonomous_review_findings(build_id: str):
+    return _proxy_get(
+        f"/api/v1/reviews/{build_id}/findings",
+        action="autonomous_review_findings_viewed",
+        build_id=build_id,
+    )
+
+
+@ai_coding_api.route("/self-tuning/status", methods=["GET"])
+def self_tuning_status():
+    return _proxy_get("/api/v1/self-tuning/status", action="self_tuning_status_viewed")
+
+
+@ai_coding_api.route("/self-tuning/applications", methods=["GET"])
+def self_tuning_applications():
+    query = {}
+    if request.args.get("candidate_id"):
+        query["candidate_id"] = request.args.get("candidate_id")
+    if request.args.get("build_id"):
+        query["build_id"] = request.args.get("build_id")
+    if request.args.get("limit"):
+        query["limit"] = request.args.get("limit")
+    return _proxy_get(
+        "/api/v1/self-tuning/applications",
+        action="self_tuning_applications_listed",
+        query=query or None,
+    )
+
+
+@ai_coding_api.route("/self-tuning/candidates/<candidate_id>/metrics", methods=["GET"])
+def self_tuning_candidate_metrics(candidate_id: str):
+    return _proxy_get(
+        f"/api/v1/self-tuning/candidates/{candidate_id}/metrics",
+        action="self_tuning_candidate_metrics_viewed",
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/agents", methods=["GET"])
+def factory_agents_list():
+    return _proxy_get("/api/v1/agents", action="factory_agents_listed")
+
+
+@ai_coding_api.route("/agents/executions", methods=["GET"])
+def factory_agent_executions():
+    query = {}
+    if request.args.get("build_id"):
+        query["build_id"] = request.args.get("build_id")
+    if request.args.get("limit"):
+        query["limit"] = request.args.get("limit")
+    return _proxy_get(
+        "/api/v1/agents/executions",
+        action="factory_agent_executions_listed",
+        query=query or None,
+    )
+
+
+@ai_coding_api.route("/agents/summary", methods=["GET"])
+def factory_agents_summary():
+    return _proxy_get("/api/v1/agents/summary", action="factory_agents_summary_viewed")
+
+
+@ai_coding_api.route("/reviews/metrics", methods=["GET"])
+def autonomous_review_metrics():
+    query = {}
+    if request.args.get("project_id"):
+        query["project_id"] = request.args.get("project_id")
+    return _proxy_get(
+        "/api/v1/reviews/metrics",
+        action="autonomous_review_metrics_viewed",
+        query=query or None,
+    )
+
+
+@ai_coding_api.route("/agents/build/<build_id>", methods=["GET"])
+def factory_agent_build_chain(build_id: str):
+    return _proxy_get(
+        f"/api/v1/agents/build/{build_id}",
+        action="factory_agent_build_chain_viewed",
+        build_id=build_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/advance-canary", methods=["POST"])
+def promotion_candidate_advance_canary(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/advance-canary",
+        action="promotion_canary_advanced",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/mark-promoted", methods=["POST"])
+def promotion_candidate_mark_promoted(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/mark-promoted",
+        action="promotion_candidate_marked_promoted",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-candidates/<candidate_id>/pause", methods=["POST"])
+def promotion_candidate_pause(candidate_id: str):
+    body = request.get_json(silent=True) or {}
+    return _proxy_write(
+        "POST",
+        f"/api/v1/promotion-candidates/{candidate_id}/pause",
+        action="promotion_candidate_paused",
+        json_body=body,
+        candidate_id=candidate_id,
+    )
+
+
+@ai_coding_api.route("/promotion-rollouts", methods=["GET"])
+def promotion_rollouts_list():
+    query = {}
+    if request.args.get("limit"):
+        query["limit"] = request.args.get("limit")
+    return _proxy_get("/api/v1/promotion-rollouts", action="promotion_rollouts_listed", query=query or None)
+
+
+@ai_coding_api.route("/promotion-rollbacks", methods=["GET"])
+def promotion_rollbacks_list():
+    query = {}
+    if request.args.get("limit"):
+        query["limit"] = request.args.get("limit")
+    return _proxy_get("/api/v1/promotion-rollbacks", action="promotion_rollbacks_listed", query=query or None)

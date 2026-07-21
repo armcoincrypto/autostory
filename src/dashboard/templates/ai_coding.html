@@ -90,6 +90,7 @@
 </div>
 
 <div id="ai-code-alert"></div>
+<div class="ai-code-glass p-2 mb-2 small d-none" id="ai-factory-health-simple" aria-live="polite"></div>
 <div id="ai-operator-home" class="mb-3">
   <div class="ai-code-muted py-4 text-center small">Loading…</div>
 </div>
@@ -112,6 +113,7 @@
     <a class="btn btn-outline-success btn-sm" href="/ai-coding/executions"><i class="bi bi-bezier2"></i> AI Workflows</a>
     <a class="btn btn-outline-warning btn-sm" href="/ai-coding/deployments"><i class="bi bi-shield-check"></i> Release readiness</a>
     <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/audit-coverage"><i class="bi bi-journal-check"></i> Audit</a>
+    <a class="btn btn-outline-primary btn-sm" href="/ai-coding/factory-analytics"><i class="bi bi-speedometer2"></i> Factory Analytics</a>
     <span class="small ai-code-muted" id="ai-code-refreshed">Last synced: —</span>
     <button type="button" class="btn btn-outline-secondary btn-sm" id="ai-code-copy-diagnostics"><i class="bi bi-clipboard"></i> Copy diagnostics</button>
     <button type="button" class="btn btn-outline-light btn-sm" id="ai-code-refresh">
@@ -183,6 +185,30 @@
     <a class="btn btn-outline-warning btn-sm" href="/ai-coding/deployments">Release readiness</a>
     <a class="btn btn-outline-secondary btn-sm" href="/ai-coding/audit-coverage">Audit Coverage</a>
   </div>
+</div>
+
+<div class="ai-code-glass p-3 mb-3" id="ai-experimentation-panel">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+    <strong><i class="bi bi-bezier2"></i> Controlled Experiments</strong>
+    <span class="small ai-code-muted">Read-only A/B tests — operator promotes winners manually</span>
+  </div>
+  <div id="ai-experimentation-body" class="small ai-code-muted">Loading experiments…</div>
+</div>
+
+<div class="ai-code-glass p-3 mb-3" id="ai-promotion-governance-panel">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+    <strong><i class="bi bi-shield-check"></i> Promotion Governance</strong>
+    <span class="small ai-code-muted">Review-only — operator approves canary and rollback manually</span>
+  </div>
+  <div id="ai-promotion-governance-body" class="small ai-code-muted">Loading promotion candidates…</div>
+</div>
+
+<div class="ai-code-glass p-3 mb-3" id="ai-self-tuning-panel">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+    <strong><i class="bi bi-sliders"></i> Self-Tuning Governance</strong>
+    <span class="small ai-code-muted">Controlled canary — operator approval required</span>
+  </div>
+  <div id="ai-self-tuning-body" class="small ai-code-muted">Loading self-tuning status…</div>
 </div>
 
 <div class="mb-3" id="ai-code-wizard-panel">
@@ -907,6 +933,77 @@
     }
   }
 
+  async function loadExperiments() {
+    const body = document.getElementById('ai-experimentation-body');
+    if (!body) return true;
+    const OM = window.AiCodingOperatorMode;
+    try {
+      const rows = await dashboardFetchJson(`${API}/experiments?status=running`);
+      if (!rows || !rows.length) {
+        body.innerHTML = '<span class="ai-code-muted">No active experiments.</span>';
+        return true;
+      }
+      body.innerHTML = OM && OM.renderExperimentationCard
+        ? OM.renderExperimentationCard(rows)
+        : esc(JSON.stringify(rows));
+      return true;
+    } catch (_) {
+      body.innerHTML = '<span class="ai-code-muted">Experiments unavailable.</span>';
+      return false;
+    }
+  }
+
+  async function loadPromotionGovernance() {
+    const body = document.getElementById('ai-promotion-governance-body');
+    if (!body) return true;
+    const OM = window.AiCodingOperatorMode;
+    try {
+      const [candidates, rollouts, rollbacks] = await Promise.all([
+        dashboardFetchJson(`${API}/promotion-candidates`),
+        dashboardFetchJson(`${API}/promotion-rollouts`),
+        dashboardFetchJson(`${API}/promotion-rollbacks`),
+      ]);
+      body.innerHTML = OM && OM.renderPromotionGovernanceCard
+        ? OM.renderPromotionGovernanceCard(candidates, rollouts, rollbacks)
+        : esc(JSON.stringify(candidates));
+      return true;
+    } catch (_) {
+      body.innerHTML = '<span class="ai-code-muted">Promotion governance unavailable.</span>';
+      return false;
+    }
+  }
+
+  async function loadSelfTuningGovernance() {
+    const body = document.getElementById('ai-self-tuning-body');
+    if (!body) return true;
+    const OM = window.AiCodingOperatorMode;
+    try {
+      const [status, applications] = await Promise.all([
+        dashboardFetchJson(`${API}/self-tuning/status`),
+        dashboardFetchJson(`${API}/self-tuning/applications?limit=20`),
+      ]);
+      const metricsById = {};
+      const candidates = (status && status.candidates) || [];
+      await Promise.all(
+        candidates
+          .filter((c) => ['canary', 'promoted', 'needs_review'].includes(String(c.status || '')))
+          .slice(0, 8)
+          .map(async (c) => {
+            try {
+              metricsById[c.id] = await dashboardFetchJson(`${API}/self-tuning/candidates/${c.id}/metrics`);
+            } catch (_) { /* ignore */ }
+          })
+      );
+      body.innerHTML = OM && OM.renderSelfTuningGovernanceCard
+        ? OM.renderSelfTuningGovernanceCard(status, applications, metricsById)
+        : esc(JSON.stringify(status));
+      return true;
+    } catch (_) {
+      body.innerHTML = '<span class="ai-code-muted">Self-tuning governance unavailable.</span>';
+      return false;
+    }
+  }
+
   async function refreshAll() {
     if (loading) return;
     setLoading(true);
@@ -914,6 +1011,9 @@
       await loadHealth();
       await Promise.all([loadExecutions(), loadBuilds(), loadReviews()]);
       await loadOpsOverview();
+      await loadExperiments();
+      await loadPromotionGovernance();
+      await loadSelfTuningGovernance();
     } finally {
       setLoading(false);
     }

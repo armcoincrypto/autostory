@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% block title %}Dexpert audit · STORYFLEET{% endblock %}
+{% block extra_css %}
+<style>
+    .pill { font-size: 0.72rem; letter-spacing: 0.02em; }
+    .audit-table { font-size: 0.85rem; }
+    .audit-table td, .audit-table th { vertical-align: middle; }
+    .mono { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+    .section-title { font-size: 1.05rem; font-weight: 600; color: #e2e8f0; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="container-fluid px-2">
+    <div class="d-flex flex-wrap justify-content-between align-items-end mb-3 gap-2">
+        <div>
+            <h1 class="h4 mb-1">Dexpert audit</h1>
+            <p class="text-muted small mb-0">Read-only operator visibility (P8.4). No actions, no Telegram sends from this page.</p>
+        </div>
+        <div class="text-muted small">Route: <span class="mono">/dexpert</span></div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header py-2">Filters</div>
+        <div class="card-body py-3">
+            <form class="row g-2 align-items-end" method="get" action="/dexpert">
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Since (hours)</label>
+                    <input class="form-control form-control-sm" type="number" name="since_hours" min="1" max="2160"
+                           value="{{ since_hours }}">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Target contains</label>
+                    <input class="form-control form-control-sm" type="text" name="target" placeholder="@user"
+                           value="{{ target_filter }}">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Account id</label>
+                    <input class="form-control form-control-sm" type="text" name="account_id" placeholder="110"
+                           value="{{ account_id_filter }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small mb-0">Status</label>
+                    <input class="form-control form-control-sm" type="text" name="status" list="convStatuses"
+                           placeholder="pending_clarification or pending"
+                           value="{{ status_filter }}">
+                    <datalist id="convStatuses">
+                        {% for s in constants.conv_statuses %}
+                        <option value="{{ s }}"></option>
+                        {% endfor %}
+                        <option value="pending"></option>
+                        <option value="kathleen_plan_pending"></option>
+                    </datalist>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-primary btn-sm w-100">Apply</button>
+                </div>
+            </form>
+            <p class="small text-muted mt-2 mb-0">
+                Conversation status: exact match if you pick a full value (e.g. <span class="mono">pending_clarification</span>), otherwise substring.
+                Plan rows match substring on <span class="mono">kathleen_plan_*</span> message.
+            </p>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-md-3 col-6">
+            <div class="card"><div class="card-body py-2">
+                <div class="small text-muted">Expired conv. rows</div>
+                <div class="h5 mb-0">{{ safety.expired_rows_in_window }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-3 col-6">
+            <div class="card"><div class="card-body py-2">
+                <div class="small text-muted">Pending &amp; past expires_at</div>
+                <div class="h5 mb-0">{{ safety.orphan_pending_expired_clock }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-3 col-6">
+            <div class="card"><div class="card-body py-2">
+                <div class="small text-muted">Pending &gt; 24h old</div>
+                <div class="h5 mb-0">{{ safety.stale_pending_over_24h }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-3 col-6">
+            <div class="card"><div class="card-body py-2">
+                <div class="small text-muted">Duplicate rejections (window)</div>
+                <div class="h5 mb-0">{{ safety.duplicate_attempt_rows }}</div>
+            </div></div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header py-2 section-title">1 · Recent Dexpert conversations</div>
+        <div class="card-body p-0 table-responsive">
+            <table class="table table-sm table-dark audit-table mb-0">
+                <thead><tr>
+                    <th>Time (UTC)</th>
+                    <th>Owner</th>
+                    <th>Intent</th>
+                    <th>Target</th>
+                    <th>Acct</th>
+                    <th>Status</th>
+                    <th>Expires</th>
+                    <th>Goal</th>
+                </tr></thead>
+                <tbody>
+                {% for r in conversations %}
+                <tr>
+                    <td class="mono text-nowrap">{{ r.time }}</td>
+                    <td class="mono">{{ r.owner }}</td>
+                    <td>{{ r.intent }}</td>
+                    <td class="mono">{{ r.target }}</td>
+                    <td class="mono">{{ r.account }}</td>
+                    <td><span class="badge bg-{{ r.status_badge }} pill">{{ r.status }}</span></td>
+                    <td class="small">{{ r.expires_at }}</td>
+                    <td class="small text-muted">{{ r.goal_snip }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-3">No rows in this window / filters.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header py-2 section-title">2 · Recent Kathleen plans</div>
+        <div class="card-body p-0 table-responsive">
+            <table class="table table-sm table-dark audit-table mb-0">
+                <thead><tr>
+                    <th>Time</th>
+                    <th>Plan</th>
+                    <th>Type</th>
+                    <th>Target</th>
+                    <th>Account</th>
+                    <th>Status</th>
+                    <th>Fingerprint</th>
+                    <th>Notes</th>
+                </tr></thead>
+                <tbody>
+                {% for p in plans %}
+                <tr>
+                    <td class="mono text-nowrap">{{ p.time }}</td>
+                    <td class="mono">{{ p.plan_id }}</td>
+                    <td>{{ p.type }}</td>
+                    <td>{{ p.target }}</td>
+                    <td class="mono">{{ p.account }}</td>
+                    <td><span class="badge bg-{{ p.status_badge }} pill">{{ p.status }}</span></td>
+                    <td class="mono small">{{ p.fingerprint }}</td>
+                    <td class="small text-muted">{{ p.dup_note }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-3">No plan rows.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <p class="small text-muted px-3 py-2 mb-0">Validator-blocked duplicate previews appear in section 3 (no new <span class="mono">K-</span> id).</p>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header py-2 section-title">3 · Duplicate rejections (from conversation state)</div>
+        <div class="card-body p-0 table-responsive">
+            <table class="table table-sm table-dark audit-table mb-0">
+                <thead><tr>
+                    <th>Time</th>
+                    <th>Target</th>
+                    <th>Account</th>
+                    <th>Fingerprint summary</th>
+                    <th>Errors</th>
+                    <th>Log id</th>
+                </tr></thead>
+                <tbody>
+                {% for d in duplicate_events %}
+                <tr>
+                    <td class="mono text-nowrap">{{ d.time }}</td>
+                    <td class="mono">{{ d.target }}</td>
+                    <td class="mono">{{ d.account }}</td>
+                    <td class="mono small">{{ d.fingerprint }}</td>
+                    <td class="small">{{ d.errors }}</td>
+                    <td class="mono">{{ d.log_id }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-center text-muted py-3">No duplicate validation snapshots in window.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {% if repeated_dupes %}
+    <div class="card mb-3 border-warning">
+        <div class="card-header py-2 section-title">Repeated duplicate attempts (same fingerprint)</div>
+        <div class="card-body py-2">
+            <ul class="mb-0 small mono">
+                {% for x in repeated_dupes %}
+                <li>{{ x.fingerprint }} — {{ x.attempts }} attempts</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card mb-3">
+        <div class="card-header py-2 section-title">4 · Ready notifications (dexpert_ai_ready)</div>
+        <div class="card-body p-0 table-responsive">
+            <table class="table table-sm table-dark audit-table mb-0">
+                <thead><tr>
+                    <th>Time</th>
+                    <th>Task</th>
+                    <th>Owner</th>
+                    <th>Notify record</th>
+                    <th>Log id</th>
+                </tr></thead>
+                <tbody>
+                {% for n in ready_notifications %}
+                <tr>
+                    <td class="mono text-nowrap">{{ n.time }}</td>
+                    <td class="mono">#{{ n.task_id }}</td>
+                    <td class="mono">{{ n.owner }}</td>
+                    <td class="small text-muted">{{ n.send_outcome }}</td>
+                    <td class="mono">{{ n.log_id }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-center text-muted py-3">No notification dedupe rows.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header py-2 section-title">5 · Safety notes</div>
+        <div class="card-body small text-muted">
+            <ul class="mb-0">
+                <li>Counters above use the full time window for <span class="mono">dexpert_conversation_state</span> rows (ignores target/status filters).</li>
+                <li>“Pending &amp; past expires_at” flags rows still marked pending while <span class="mono">expires_at</span> is in the past (may be reconciled on next bot read).</li>
+                <li>Telegram DM success/failure for ready tasks is not persisted on the log row in v1; only dedupe logging after the notifier runs.</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}

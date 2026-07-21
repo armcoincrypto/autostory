@@ -1,0 +1,452 @@
+{% extends "base.html" %}
+
+{% block title %}Accounts - STORYFLEET{% endblock %}
+
+{% block extra_css %}
+<style>
+  .accounts-hero {
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background:
+      radial-gradient(circle at top left, rgba(99, 102, 241, 0.22), transparent 34rem),
+      linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+    border-radius: 24px;
+    padding: 1.35rem;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  }
+  .accounts-card {
+    background: rgba(15, 23, 42, 0.74);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 20px;
+    backdrop-filter: blur(18px);
+    overflow: hidden;
+  }
+  .accounts-table th {
+    color: #cbd5e1;
+    font-size: .74rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .accounts-table td { vertical-align: middle; }
+  .acct-primary { font-weight: 700; color: #f8fafc; }
+  .acct-secondary { color: #cbd5e1; font-size: .82rem; }
+  .ops-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    border-radius: 999px;
+    padding: .24rem .52rem;
+    font-size: .74rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .ops-success { color: #dcfce7; background: rgba(20, 83, 45, .86); border-color: rgba(74, 222, 128, .55); }
+  .ops-warning { color: #fef3c7; background: rgba(120, 53, 15, .86); border-color: rgba(251, 191, 36, .55); }
+  .ops-danger { color: #fee2e2; background: rgba(127, 29, 29, .86); border-color: rgba(248, 113, 113, .55); }
+  .ops-reserved { color: #f3e8ff; background: rgba(88, 28, 135, .86); border-color: rgba(216, 180, 254, .55); }
+  .ops-info { color: #dbeafe; background: rgba(30, 58, 138, .86); border-color: rgba(96, 165, 250, .55); }
+  .gov-badge { cursor: help; }
+  .gov-pin { color: #fde68a; margin-right: .2rem; }
+  .eligibility-panel {
+    border: 1px solid rgba(148, 163, 184, 0.20);
+    background: rgba(15, 23, 42, 0.72);
+    border-radius: 18px;
+    padding: .9rem 1rem;
+    margin-bottom: 1rem;
+  }
+  .module-stack { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .diag-link { color: #bfdbfe; text-decoration: none; }
+  .diag-link:hover { color: #dbeafe; text-decoration: underline; }
+  .accounts-action-panel {
+    border: 1px solid rgba(148, 163, 184, 0.20);
+    background:
+      radial-gradient(circle at top right, rgba(14, 165, 233, .18), transparent 26rem),
+      linear-gradient(135deg, rgba(15, 23, 42, .88), rgba(30, 41, 59, .74));
+    border-radius: 22px;
+    padding: 1rem;
+    backdrop-filter: blur(18px);
+  }
+  .action-tile {
+    border: 1px solid rgba(148, 163, 184, .18);
+    background: rgba(15, 23, 42, .62);
+    border-radius: 18px;
+    padding: .9rem;
+    min-height: 100%;
+  }
+  .action-tile p { color: #cbd5e1; font-size: .82rem; margin-bottom: .75rem; }
+  .route-warning { color: #fde68a; font-size: .78rem; margin-top: .45rem; font-weight: 700; }
+  .action-result { white-space: pre-wrap; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="accounts-hero mb-4">
+  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+    <div>
+      <p class="text-uppercase text-muted small fw-bold mb-2" style="letter-spacing:.16em">Operator Workspace</p>
+      <h1 class="h2 mb-2"><i class="bi bi-people"></i> Accounts</h1>
+      <p class="text-muted mb-0">
+        Daily account management view. Diagnostics are separated into
+        <a class="diag-link" href="/accounts-v2">Accounts Diagnostics / Recovery View</a>.
+      </p>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+      <span class="ops-badge ops-success">{{ total_accounts }} accounts</span>
+      <span class="ops-badge ops-success">{{ operational_count }} operational</span>
+      <span class="ops-badge {{ 'ops-warning' if scheduler_locked else 'ops-success' }}">
+        Scheduler {{ 'locked' if scheduler_locked else 'unlocked' }}
+      </span>
+      <span class="ops-badge {{ 'ops-warning' if campaigns_locked else 'ops-success' }}">
+        Campaigns {{ 'locked' if campaigns_locked else 'unlocked' }}
+      </span>
+    </div>
+  </div>
+</section>
+
+<section class="accounts-action-panel mb-4" aria-label="Account operator actions">
+  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+    <div>
+      <p class="text-uppercase text-muted small fw-bold mb-1" style="letter-spacing:.14em">Account Actions</p>
+      <h2 class="h5 mb-1">Safe Operator Action Area</h2>
+      <p class="text-muted small mb-0">Actions use existing authenticated backend routes. No scheduler, campaign, send, or join action is triggered by opening this panel.</p>
+    </div>
+    <span class="ops-badge ops-warning">Admin protected</span>
+  </div>
+  <div class="row g-3">
+    <div class="col-md-3">
+      <div class="action-tile">
+        <h3 class="h6"><i class="bi bi-plus-circle"></i> Add Account</h3>
+        <p>Start phone login for a Telegram account.</p>
+        <button class="btn btn-primary btn-sm w-100" data-bs-toggle="modal" data-bs-target="#accountActionModal" data-action-tab="phone" {% if not account_action_routes.add_account %}disabled{% endif %}>Add Account</button>
+        {% if not account_action_routes.add_account %}<div class="route-warning">backend route missing</div>{% endif %}
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="action-tile">
+        <h3 class="h6"><i class="bi bi-cloud-upload"></i> Upload TDATA</h3>
+        <p>Upload a Telegram Desktop tdata zip for import.</p>
+        <button class="btn btn-outline-success btn-sm w-100" data-bs-toggle="modal" data-bs-target="#accountActionModal" data-action-tab="tdata" {% if not account_action_routes.upload_tdata %}disabled{% endif %}>Upload TDATA</button>
+        {% if not account_action_routes.upload_tdata %}<div class="route-warning">backend route missing</div>{% endif %}
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="action-tile">
+        <h3 class="h6"><i class="bi bi-clipboard"></i> Import Session</h3>
+        <p>Paste a Telethon session string exported offline.</p>
+        <button class="btn btn-outline-info btn-sm w-100" data-bs-toggle="modal" data-bs-target="#accountActionModal" data-action-tab="session" {% if not account_action_routes.import_session %}disabled{% endif %}>Import Session</button>
+        {% if not account_action_routes.import_session %}<div class="route-warning">backend route missing</div>{% endif %}
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="action-tile">
+        <h3 class="h6"><i class="bi bi-activity"></i> Diagnostics View</h3>
+        <p>Open recovery/readiness diagnostics separately.</p>
+        <a class="btn btn-outline-light btn-sm w-100" href="/accounts-v2">Diagnostics View</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="eligibility-panel" aria-label="Execution eligibility preview">
+  <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
+    <div>
+      <p class="text-uppercase text-muted small fw-bold mb-1" style="letter-spacing:.14em">Governance preview</p>
+      <h2 class="h6 mb-0">Story readiness truth (visibility only — runtime unchanged)</h2>
+    </div>
+    <span class="ops-badge ops-info">Read-only preview</span>
+  </div>
+  {% set srp = story_readiness_preview.summary %}
+  <div class="d-flex flex-wrap gap-2 mb-2">
+    <span class="ops-badge ops-info">Governance story-eligible: {{ srp.governance_story_eligible }}</span>
+    <span class="ops-badge ops-success">Runtime story-ready: {{ srp.runtime_story_ready }}</span>
+    <span class="ops-badge ops-warning">Needs auth probe: {{ srp.needs_auth_probe }}</span>
+    <span class="ops-badge ops-danger">Protected: {{ srp.protected }}</span>
+    <span class="ops-badge ops-warning">Manual-only: {{ srp.manual_only }}</span>
+    <span class="ops-badge ops-danger">Quarantined: {{ srp.quarantined }}</span>
+    <span class="ops-badge ops-reserved">AI reserved: {{ srp.ai_reserved }}</span>
+  </div>
+  <details>
+    <summary class="text-muted small">Scheduler / Discovery previews &amp; per-account blockers</summary>
+    <div class="small text-muted mt-2">
+      Scheduler eligible preview: {{ eligibility_scheduler.summary.eligible }} ·
+      Discovery eligible preview: {{ eligibility_discovery.summary.eligible }}
+    </div>
+    <pre class="small mt-2 mb-0" style="max-height:180px;overflow:auto;color:#cbd5e1;">{{ eligibility_preview.details[:40] | tojson(indent=2) }}</pre>
+  </details>
+</section>
+
+<section class="accounts-card">
+  <div class="table-responsive">
+    <table class="table table-hover accounts-table mb-0">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Account</th>
+          <th>Status</th>
+          <th>Purpose</th>
+          <th>Scheduler</th>
+          <th>Discovery</th>
+          <th>Technical Health</th>
+          <th>Modules</th>
+          <th>Governance</th>
+          <th>Story Auth</th>
+          <th>Story Runtime</th>
+          <th>Safety</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account in accounts %}
+        <tr>
+          <td class="fw-bold">{% if account.pinned %}<span class="gov-pin" title="Pinned">★</span>{% endif %}#{{ account.id }}</td>
+          <td>
+            <div class="acct-primary">{{ account.label }}</div>
+            <div class="acct-secondary">{{ account.phone }}</div>
+          </td>
+          <td><span class="ops-badge ops-{{ 'success' if account.status == 'active' else 'warning' }}">{{ account.status }}</span></td>
+          <td><span class="ops-badge ops-success">{{ account.purpose }}</span></td>
+          <td>
+            <span class="ops-badge ops-{{ 'success' if account.scheduler_eligible else 'danger' }}">
+              {{ 'eligible' if account.scheduler_eligible else 'blocked' }}
+            </span>
+            {% if account.active_job_count %}
+            <div class="acct-secondary mt-1">{{ account.active_job_count }} active job{{ 's' if account.active_job_count != 1 else '' }}</div>
+            {% endif %}
+          </td>
+          <td>
+            <span class="ops-badge ops-{{ 'success' if account.discovery_eligible else 'danger' }}">
+              {{ 'eligible' if account.discovery_eligible else 'blocked' }}
+            </span>
+          </td>
+          <td><span class="ops-badge ops-{{ account.technical_tone }}">{{ account.technical_health }}</span></td>
+          <td>
+            <div class="module-stack">
+              <span class="ops-badge ops-{{ account.modules.discovery.tone }}">Discovery: {{ account.modules.discovery.label }}</span>
+              <span class="ops-badge ops-{{ account.modules.scheduler.tone }}">Scheduler: {{ account.modules.scheduler.label }}</span>
+              <span class="ops-badge ops-{{ account.modules.campaigns.tone }}">Campaigns: {{ account.modules.campaigns.label }}</span>
+            </div>
+          </td>
+          <td>
+            <span class="ops-badge ops-{{ account.story_labels.governance_tone }} gov-badge" title="Governance layer">{{ account.story_labels.governance }}</span>
+            <div class="module-stack mt-1">
+              {% for badge in account.governance_badges %}
+              {% if badge.title != 'governance' and badge.title != 'story_auth' and badge.title != 'runtime' %}
+              <span class="ops-badge ops-{{ badge.tone }} gov-badge" title="{{ badge.title }}">{{ badge.label }}</span>
+              {% endif %}
+              {% endfor %}
+            </div>
+          </td>
+          <td>
+            <span class="ops-badge ops-{{ account.story_labels.story_auth_tone }} gov-badge" title="Fresh story authorization">{{ account.story_labels.story_auth }}</span>
+          </td>
+          <td>
+            <span class="ops-badge ops-{{ account.story_labels.runtime_tone }} gov-badge" title="Final runtime story readiness">{{ account.story_labels.runtime }}</span>
+            {% if not account.runtime_story_ready and account.story_labels.primary %}
+            <div class="acct-secondary mt-1" title="{{ account.governance_blocked_reasons | join(', ') }}">
+              {{ account.story_labels.primary }}
+            </div>
+            {% endif %}
+          </td>
+          <td><span class="ops-badge ops-{{ account.safety_state.tone }}">{{ account.safety_state.label }}</span></td>
+          <td>
+            <button class="btn btn-sm btn-outline-light" onclick="openGovernanceModal({{ account.id }})" title="Manage roles/tags">Govern</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<p class="text-muted small mt-3 mb-0">
+  Generated {{ generated_at }}. Opening this page does not change purpose, eligibility,
+  scheduler state, campaigns, or Telegram sessions. Account import buttons call existing
+  authenticated backend routes only when an operator submits a form.
+</p>
+
+<div class="modal fade" id="accountActionModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content bg-dark">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-person-plus"></i> Account Actions</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <ul class="nav nav-tabs mb-3" role="tablist">
+          <li class="nav-item"><button class="nav-link active" id="tab-phone-btn" data-bs-toggle="tab" data-bs-target="#tab-phone" type="button">Add Account</button></li>
+          <li class="nav-item"><button class="nav-link" id="tab-tdata-btn" data-bs-toggle="tab" data-bs-target="#tab-tdata" type="button">Upload TDATA</button></li>
+          <li class="nav-item"><button class="nav-link" id="tab-session-btn" data-bs-toggle="tab" data-bs-target="#tab-session" type="button">Import Session</button></li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane fade show active" id="tab-phone">
+            <p class="text-muted small">Starts existing phone login flow. This does not send messages, join groups, or touch scheduler/campaign state.</p>
+            <label class="form-label" for="p10-accounts-phone">Phone number</label>
+            <input class="form-control mb-3" id="p10-accounts-phone" placeholder="+1234567890">
+            <button class="btn btn-primary" onclick="p1013StartAuth()" {% if not account_action_routes.add_account %}disabled{% endif %}>Send Login Code</button>
+          </div>
+          <div class="tab-pane fade" id="tab-tdata">
+            <p class="text-muted small">Upload a zip containing the real Telegram Desktop <code>tdata</code> folder, or provide a passcode/session string.</p>
+            <label class="form-label" for="p10-tdata-zip">TDATA zip</label>
+            <input class="form-control mb-3" id="p10-tdata-zip" type="file" accept=".zip">
+            <label class="form-label" for="p10-tdata-passcode">Passcode or session string <span class="text-muted">(optional)</span></label>
+            <input class="form-control font-monospace mb-3" id="p10-tdata-passcode">
+            <button class="btn btn-success" onclick="p1013ImportTdata()" {% if not account_action_routes.upload_tdata %}disabled{% endif %}>Upload and Import</button>
+          </div>
+          <div class="tab-pane fade" id="tab-session">
+            <p class="text-muted small">Paste a session string generated offline. Do not paste secrets into chat.</p>
+            <label class="form-label" for="p10-session-string">Session string</label>
+            <textarea class="form-control font-monospace mb-3" id="p10-session-string" rows="4"></textarea>
+            <button class="btn btn-info" onclick="p1013ImportSession()" {% if not account_action_routes.import_session %}disabled{% endif %}>Import Session</button>
+          </div>
+        </div>
+        <div id="account-action-result" class="alert d-none mt-3 action-result"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="governanceModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content bg-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">Account governance — #<span id="gov-account-id"></span></h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small">Changes are audited. Hardcoded protected/held/AI fallback cannot be removed from DB.</p>
+        <label class="form-label">Role</label>
+        <select class="form-select form-select-sm mb-2" id="gov-role-select">
+          {% for role in governance_roles_available %}
+          <option value="{{ role }}">{{ role }}</option>
+          {% endfor %}
+        </select>
+        <label class="form-label">Reason <span class="text-muted">(required for QUARANTINED)</span></label>
+        <input class="form-control form-control-sm mb-3" id="gov-role-reason" placeholder="Operator reason">
+        <div class="d-flex gap-2 mb-3">
+          <button class="btn btn-sm btn-success" onclick="govAddRole()">Add role</button>
+          <button class="btn btn-sm btn-outline-danger" onclick="govRemoveRole()">Remove role</button>
+          <button class="btn btn-sm btn-outline-warning" onclick="govTogglePin()">Toggle pin</button>
+        </div>
+        <label class="form-label">Tag</label>
+        <input class="form-control form-control-sm mb-2" id="gov-tag-input" placeholder="e.g. STORY_ALPHA">
+        <div class="d-flex gap-2 mb-3">
+          <button class="btn btn-sm btn-outline-info" onclick="govAddTag()">Add tag</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="govRemoveTag()">Remove tag</button>
+        </div>
+        <pre id="gov-modal-result" class="small text-muted mb-0" style="max-height:160px;overflow:auto;"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let _govAccountId = null;
+function openGovernanceModal(accountId) {
+  _govAccountId = accountId;
+  document.getElementById('gov-account-id').textContent = String(accountId);
+  document.getElementById('gov-modal-result').textContent = '';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('governanceModal')).show();
+}
+async function govFetch(path, options) {
+  return dashboardFetchJson(path, options);
+}
+async function govAddRole() {
+  const role = document.getElementById('gov-role-select').value;
+  const reason = document.getElementById('gov-role-reason').value.trim();
+  const data = await govFetch(`/api/accounts/${_govAccountId}/roles`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({role, reason})
+  });
+  document.getElementById('gov-modal-result').textContent = JSON.stringify(data, null, 2);
+}
+async function govRemoveRole() {
+  const role = document.getElementById('gov-role-select').value;
+  const data = await govFetch(`/api/accounts/${_govAccountId}/roles`, {
+    method: 'DELETE', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({role})
+  });
+  document.getElementById('gov-modal-result').textContent = JSON.stringify(data, null, 2);
+}
+async function govAddTag() {
+  const tag = document.getElementById('gov-tag-input').value.trim();
+  const data = await govFetch(`/api/accounts/${_govAccountId}/tags`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({tag})
+  });
+  document.getElementById('gov-modal-result').textContent = JSON.stringify(data, null, 2);
+}
+async function govRemoveTag() {
+  const tag = document.getElementById('gov-tag-input').value.trim();
+  const data = await govFetch(`/api/accounts/${_govAccountId}/tags`, {
+    method: 'DELETE', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({tag})
+  });
+  document.getElementById('gov-modal-result').textContent = JSON.stringify(data, null, 2);
+}
+async function govTogglePin() {
+  const data = await govFetch(`/api/accounts/${_govAccountId}/pin`, {method: 'POST', body: '{}'});
+  document.getElementById('gov-modal-result').textContent = JSON.stringify(data, null, 2);
+}
+function p1013ShowResult(kind, message) {
+  const el = document.getElementById('account-action-result');
+  el.className = `alert alert-${kind} mt-3 action-result`;
+  el.textContent = message;
+  el.classList.remove('d-none');
+}
+
+document.getElementById('accountActionModal')?.addEventListener('show.bs.modal', (event) => {
+  const tab = event.relatedTarget?.getAttribute('data-action-tab') || 'phone';
+  const button = document.getElementById(`tab-${tab}-btn`);
+  if (button) bootstrap.Tab.getOrCreateInstance(button).show();
+  document.getElementById('account-action-result')?.classList.add('d-none');
+});
+
+async function p1013StartAuth() {
+  const phone = document.getElementById('p10-accounts-phone').value.trim();
+  if (!phone) return p1013ShowResult('warning', 'Enter a phone number first.');
+  try {
+    const data = await dashboardFetchJson('/api/accounts/auth/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({phone_number: phone})
+    });
+    p1013ShowResult('success', JSON.stringify(data, null, 2));
+  } catch (error) {
+    p1013ShowResult('danger', error.message || 'Account auth failed.');
+  }
+}
+
+async function p1013ImportSession() {
+  const sessionString = document.getElementById('p10-session-string').value.trim();
+  if (!sessionString) return p1013ShowResult('warning', 'Paste a session string first.');
+  try {
+    const data = await dashboardFetchJson('/api/accounts/import-session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_string: sessionString})
+    });
+    p1013ShowResult('success', JSON.stringify(data, null, 2));
+  } catch (error) {
+    p1013ShowResult('danger', error.message || 'Session import failed.');
+  }
+}
+
+async function p1013ImportTdata() {
+  const input = document.getElementById('p10-tdata-zip');
+  const passcode = document.getElementById('p10-tdata-passcode').value.trim();
+  if (!input.files[0] && !passcode) return p1013ShowResult('warning', 'Choose a tdata zip or provide a session/passcode.');
+  const form = new FormData();
+  if (input.files[0]) form.append('file', input.files[0]);
+  if (passcode) form.append('passcode', passcode);
+  try {
+    const data = await dashboardFetchJson('/api/accounts/import-tdata', {method: 'POST', body: form});
+    p1013ShowResult('success', JSON.stringify(data, null, 2));
+  } catch (error) {
+    p1013ShowResult('danger', error.message || 'TDATA upload failed.');
+  }
+}
+</script>
+{% endblock %}

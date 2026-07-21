@@ -3,11 +3,13 @@ Telegram Bot Dashboard
 Alternative control interface via Telegram Bot with User Login Flow
 """
 import asyncio
+import re
 from datetime import datetime
 from typing import Optional, Dict, Any
 from functools import wraps
 
 from telethon import TelegramClient, events
+from telethon.events import StopPropagation
 from telethon.sessions import StringSession
 from telethon.sessions import SQLiteSession
 from telethon.tl.custom import Button
@@ -28,9 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.settings import settings
 from src.core.models import Account, Story, DiscoveredUser, Campaign, AccountStatus
 from src.core.database import get_db_context
+from src.bot.kathleen import try_handle_kathleen_message
 
 logger = structlog.get_logger(__name__)
 
+# Store for pending phone login flows (user_id -> state dict)
+pending_logins: Dict[int, Dict[str, Any]] = {}
 
 # Store for pending session imports (user_id -> True when waiting for session string)
 pending_session_imports: Dict[int, bool] = {}
@@ -367,6 +372,29 @@ class StoryFleetBot:
 
     def _register_handlers(self):
         """Register all event handlers"""
+
+        @self.client.on(events.NewMessage(incoming=True))
+        async def kathleen_operator_incoming(event):
+            """Kathleen read-only operator (DB + dry-run plans only; no user Telethon)."""
+            if event.out:
+                return
+            if not event.is_private:
+                return
+            raw = (event.raw_text or "").strip()
+            if not raw or not re.match(r"(?is)^kathleen\b", raw):
+                return
+            sender = await event.get_sender()
+            if not sender:
+                return
+            try:
+                reply = await asyncio.to_thread(try_handle_kathleen_message, int(sender.id), raw)
+            except Exception as e:
+                logger.error("kathleen_handler_error", error=str(e))
+                reply = "Temporary error. Check logs."
+            if reply is None:
+                return
+            await event.respond(reply)
+            raise StopPropagation
 
         @self.client.on(events.NewMessage(pattern="/start"))
         async def start_handler(event):

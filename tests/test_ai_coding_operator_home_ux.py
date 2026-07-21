@@ -57,7 +57,8 @@ def test_operator_mode_home_hero_exports() -> None:
     assert "Open Build" in text
     assert "AI checking work" in text
     assert "Testing in progress" in text
-    assert "Understanding Idea" in text
+    assert "Planning" in text
+    assert "AI Working" in text
 
 
 def test_ai_coding_page_operator_area_not_advanced_noise() -> None:
@@ -79,5 +80,6 @@ def test_operator_home_start_build_uses_auto_pipeline() -> None:
 def test_operator_home_has_notification_inbox() -> None:
     text = HOME_JS.read_text(encoding="utf-8")
     assert "renderNotificationInbox" in text
-    assert "Ready for test" in text
+    assert "Build ready" in text
+    assert "Feedback applied" in text
     assert "ai-notification-inbox" in text

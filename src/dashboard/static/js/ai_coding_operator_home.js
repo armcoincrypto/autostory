@@ -469,18 +469,22 @@
     const unread = (notifications && notifications.unread_count) || 0;
     if (!items.length) return '';
     const cards = items.slice(0, 3).map((n) => {
-      const tone = n.notification_type === 'build_ready_for_test'
+      const tone = n.notification_type === 'build_ready_for_test' || n.notification_type === 'build_ready_again'
         ? 'success'
-        : n.notification_type === 'build_blocked'
+        : n.notification_type === 'build_blocked' || n.notification_type === 'feedback_applied'
           ? 'warning'
           : 'danger';
       const label = n.notification_type === 'build_ready_for_test'
-        ? 'Ready for test'
-        : n.notification_type === 'build_blocked'
-          ? 'Blocked — action needed'
-          : n.notification_type === 'build_failed'
-            ? 'Failed — review build'
-            : 'Release ready';
+        ? 'Build ready'
+        : n.notification_type === 'build_ready_again'
+          ? 'Ready again'
+          : n.notification_type === 'feedback_applied'
+            ? 'Feedback applied'
+            : n.notification_type === 'build_blocked'
+              ? 'Build blocked'
+              : n.notification_type === 'build_failed'
+                ? 'Build failed'
+                : 'Release ready';
       const href = n.action_url || '#';
       return `<div class="ai-code-glass p-2 mb-2 border-start border-3 border-${tone}">
         <div class="small fw-semibold">${esc(label)}</div>

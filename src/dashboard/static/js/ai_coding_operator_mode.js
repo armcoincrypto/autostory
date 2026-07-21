@@ -36,6 +36,12 @@
     'show_manual_test_package',
     'show_release_action',
     'show_advanced_details',
+    'adaptive_optimization',
+    'adaptive_summary',
+    'adaptive_execution_path',
+    'adaptive_validation_strategy',
+    'adaptive_patch_style',
+    'adaptive_confidence',
   ];
 
   const PROGRESS_BY_STATUS = {
@@ -83,11 +89,9 @@
     [/AI needs clarification/gi, 'Blocked'],
     [/test proof required/gi, 'Preparing manual test package'],
     [/test proof/gi, 'Preparing manual test package'],
-    [/AI validating/gi, 'AI Working'],
-    [/AI fixing/gi, 'AI Working'],
-    [/Planning/gi, 'Understanding Idea'],
-    [/Awaiting validation/gi, 'Testing in progress'],
-    [/Pending review/gi, 'AI checking work'],
+    [/Planning/gi, 'Planning'],
+    [/Awaiting validation/gi, 'AI is validating'],
+    [/Pending review/gi, 'AI is validating'],
     [/Governance approval/gi, 'Release approval'],
     [/Execution Program/gi, 'Build'],
     [/Execution program/gi, 'Build'],
@@ -186,6 +190,8 @@
 
   function operatorStatusTone(label) {
     const normalized = sanitizeOperatorText(label);
+    if (/needs your input/i.test(normalized)) return 'blocked';
+    if (/ready for you to test/i.test(normalized)) return 'ready';
     if (/understanding idea/i.test(normalized)) return 'planning';
     if (/checking work/i.test(normalized)) return 'validating';
     if (/testing in progress/i.test(normalized)) return 'validating';
@@ -193,7 +199,9 @@
     if (/^building$/i.test(normalized)) return 'working';
     if (/^fixing$/i.test(normalized)) return 'fixing';
     if (/planning/i.test(normalized)) return 'planning';
-    if (/fixing/i.test(normalized)) return 'fixing';
+    if (/ai working/i.test(normalized)) return 'working';
+    if (/ai fixing/i.test(normalized)) return 'fixing';
+    if (/reworking/i.test(normalized)) return 'fixing';
     if (/validating/i.test(normalized)) return 'validating';
     if (/ready for manual test/i.test(normalized)) return 'ready';
     if (/approved/i.test(normalized) && !/release/i.test(normalized)) return 'success';
@@ -256,17 +264,333 @@
     </div>`;
   }
 
+  function renderPromotionGovernanceCard(candidates, rollouts, rollbacks) {
+    ensureOperatorStyles();
+    const rows = Array.isArray(candidates) ? candidates : [];
+    if (!rows.length && !(rollouts && rollouts.length) && !(rollbacks && rollbacks.length)) {
+      return '<div class="op-promotion-card"><div class="op-promotion-kicker"><i class="bi bi-shield-check"></i> Promotion Governance</div><div class="small ai-code-muted">No promotion candidates yet.</div></div>';
+    }
+
+    const byStatus = (status) => rows.filter((c) => String(c.status || '') === status);
+    const renderCandidate = (c) => {
+      const conf = c.confidence_score != null ? `${Math.round(Number(c.confidence_score) * 100)}%` : '—';
+      const gain = c.expected_gain != null ? `${Math.round(Number(c.expected_gain) * 100)}%` : '—';
+      return `<div class="op-experiment-card mb-2">
+        <div class="fw-semibold text-light">${esc(c.winner_variant_name || c.candidate_type || 'Candidate')}</div>
+        <div class="op-experiment-grid">
+          <div><span class="op-experiment-label">Status</span><div>${esc(c.status || '—')}</div></div>
+          <div><span class="op-experiment-label">Confidence</span><div>${esc(conf)}</div></div>
+          <div><span class="op-experiment-label">Samples</span><div>${esc(String(c.sample_size || 0))}</div></div>
+          <div><span class="op-experiment-label">Expected gain</span><div>${esc(gain)}</div></div>
+          <div><span class="op-experiment-label">Risk</span><div>${esc(c.risk_level || '—')} (${esc(String(c.risk_score ?? '—'))})</div></div>
+          <div><span class="op-experiment-label">Experiment</span><div>${esc((c.source_experiment_id || '—').slice(0, 8))}…</div></div>
+        </div>
+        <div class="small text-secondary mt-1">${esc(c.recommendation_reason || '')}</div>
+      </div>`;
+    };
+
+    const rolloutHtml = (rollouts || []).slice(0, 5).map((r) =>
+      `<div class="small py-1">${esc(r.rollout_stage || '—')} · ${esc(String(r.traffic_percent || 0))}% · ${esc(r.status || '—')}</div>`
+    ).join('') || '<span class="ai-code-muted">None</span>';
+
+    const rollbackHtml = (rollbacks || []).slice(0, 5).map((r) =>
+      `<div class="small py-1">${esc((r.triggered_at || '').slice(0, 19))} · ${esc(r.rollback_reason || '—')}</div>`
+    ).join('') || '<span class="ai-code-muted">None</span>';
+
+    return `<div class="op-promotion-card">
+      <div class="op-promotion-kicker"><i class="bi bi-shield-check"></i> Promotion Governance</div>
+      <div class="small ai-code-muted mb-2">Operator approval required — no automatic activation or rollback.</div>
+      <div class="op-promotion-section-title">Ready For Review (${byStatus('ready_for_review').length})</div>
+      ${byStatus('ready_for_review').map(renderCandidate).join('') || '<div class="small ai-code-muted">None</div>'}
+      <div class="op-promotion-section-title">Canary Rollouts (${byStatus('canary').length})</div>
+      ${byStatus('canary').map(renderCandidate).join('') || rolloutHtml}
+      <div class="op-promotion-section-title">Promoted (${byStatus('promoted').length + byStatus('approved').length})</div>
+      ${[...byStatus('promoted'), ...byStatus('approved')].map(renderCandidate).join('') || '<div class="small ai-code-muted">None</div>'}
+      <div class="op-promotion-section-title">Rolled Back (${byStatus('rolled_back').length})</div>
+      ${byStatus('rolled_back').map(renderCandidate).join('') || rollbackHtml}
+    </div>`;
+  }
+
+  function renderSelfTuningGovernanceCard(status, applications, metricsById) {
+    ensureOperatorStyles();
+    const summary = status && typeof status === 'object' ? status : {};
+    const apps = Array.isArray(applications) ? applications : [];
+    const candidates = Array.isArray(summary.candidates) ? summary.candidates : [];
+    const active = candidates.filter((c) => ['canary', 'promoted'].includes(String(c.status || '')));
+    if (!active.length && !apps.length) {
+      return '<div class="op-self-tuning-card"><div class="op-self-tuning-kicker"><i class="bi bi-sliders"></i> Self-Tuning Governance</div><div class="small ai-code-muted">No active self-tuning candidates.</div></div>';
+    }
+
+    const renderRow = (c) => {
+      const metrics = (metricsById && metricsById[c.id]) || {};
+      const regression = metrics.regression || {};
+      const warnings = (regression.triggers || []).length
+        ? `<div class="small text-warning mt-1">Regression: ${esc((regression.triggers || []).join(', '))}</div>`
+        : '';
+      return `<div class="op-experiment-card mb-2">
+        <div class="fw-semibold text-light">${esc(c.candidate_type || 'Candidate')}</div>
+        <div class="op-experiment-grid">
+          <div><span class="op-experiment-label">Status</span><div>${esc(c.status || '—')}</div></div>
+          <div><span class="op-experiment-label">Risk</span><div>${esc(c.risk_level || '—')}</div></div>
+          <div><span class="op-experiment-label">Assignments</span><div>${esc(String(metrics.assignment_count || 0))}</div></div>
+          <div><span class="op-experiment-label">Traffic</span><div>${esc(String(metrics.traffic_percent ?? '—'))}%</div></div>
+          <div><span class="op-experiment-label">Stage</span><div>${esc(metrics.rollout_stage || '—')}</div></div>
+          <div><span class="op-experiment-label">Success</span><div>${metrics.metrics && metrics.metrics.success_rate != null ? esc(String(Math.round(Number(metrics.metrics.success_rate) * 100)) + '%') : '—'}</div></div>
+        </div>
+        ${warnings}
+      </div>`;
+    };
+
+    return `<div class="op-self-tuning-card">
+      <div class="op-self-tuning-kicker"><i class="bi bi-sliders"></i> Self-Tuning Governance</div>
+      <div class="small ai-code-muted mb-2">Operator-approved canary only — reversible and auditable.</div>
+      <div class="op-promotion-section-title">Active (${active.length})</div>
+      ${active.map(renderRow).join('') || '<div class="small ai-code-muted">None</div>'}
+      <div class="op-promotion-section-title">Recent Applications (${apps.length})</div>
+      ${apps.slice(0, 5).map((a) => `<div class="small py-1">${esc((a.build_id || '').slice(0, 8))}… · ${esc(a.policy_type || '—')} · ${esc(a.result_status || '—')}</div>`).join('') || '<div class="small ai-code-muted">None</div>'}
+    </div>`;
+  }
+
+  function reviewFromRun(run) {
+    if (!run) return null;
+    if (run.autonomous_review) return run.autonomous_review;
+    const report = run.manual_test_report || {};
+    return report.autonomous_review || null;
+  }
+
+  function agentChainFromRun(run) {
+    if (!run) return null;
+    if (run.factory_agents && run.factory_agents.agents) return run.factory_agents;
+    return null;
+  }
+
+  function agentDecisionLabel(exec) {
+    if (!exec) return '—';
+    const output = exec.output || {};
+    if (output.decision) return String(output.decision);
+    const status = String(exec.execution_status || '').toLowerCase();
+    if (status === 'completed') return 'PASS';
+    if (status === 'blocked' || status === 'failed') return 'FAIL';
+    if (status === 'running') return 'RUN';
+    return '—';
+  }
+
+  function agentDecisionTone(label) {
+    const v = String(label || '').toUpperCase();
+    if (v === 'PASS') return 'pass';
+    if (v === 'WARN') return 'warn';
+    if (v === 'FAIL') return 'fail';
+    if (v === 'RUN') return 'run';
+    return 'pending';
+  }
+
+  const AGENT_PIPELINE_ORDER = [
+    'planner',
+    'architect',
+    'builder',
+    'qa',
+    'security',
+    'reviewer',
+    'governance',
+    'learning',
+  ];
+
+  const AGENT_PIPELINE_LABELS = {
+    planner: 'Planner',
+    architect: 'Architect',
+    builder: 'Builder',
+    qa: 'QA',
+    security: 'Security',
+    reviewer: 'Review',
+    governance: 'Governance',
+    learning: 'Learning',
+  };
+
+  function renderEnterpriseAgentPipelineCard(run, { advanced = false } = {}) {
+    ensureOperatorStyles();
+    const chain = agentChainFromRun(run);
+    const agents = chain && Array.isArray(chain.agents) ? chain.agents : [];
+    if (!agents.length && !(run && run.multi_agent_active)) return '';
+
+    if (!advanced) {
+      return '<p class="op-agent-simple-hint mb-0"><i class="bi bi-people"></i> AI Team Working</p>';
+    }
+
+    const byType = {};
+    agents.forEach((a) => { byType[a.agent_type] = a; });
+    const maxMs = Math.max(...agents.map((a) => Number(a.duration_ms) || 0), 1);
+    const rows = AGENT_PIPELINE_ORDER.map((type) => {
+      const exec = byType[type];
+      const label = agentDecisionLabel(exec);
+      const tone = agentDecisionTone(label);
+      const ms = exec && exec.duration_ms != null ? `${exec.duration_ms}ms` : '—';
+      const pct = exec && exec.duration_ms != null ? Math.max(8, Math.round((Number(exec.duration_ms) / maxMs) * 100)) : 0;
+      return `<div class="op-agent-row op-agent-${tone}">
+        <span class="op-agent-name">${esc(AGENT_PIPELINE_LABELS[type] || type)}</span>
+        <span class="op-agent-timeline"><span class="op-agent-timeline-bar" style="width:${pct}%"></span></span>
+        <span class="op-agent-status">${esc(label)}</span>
+        <span class="op-agent-timing">${esc(ms)}</span>
+      </div>`;
+    }).join('');
+
+    return `<div class="op-agent-card">
+      <div class="op-agent-kicker"><i class="bi bi-diagram-3"></i> Enterprise Agent Pipeline</div>
+      <div class="small ai-code-muted mb-2">Specialist agents — auditable execution chain.</div>
+      <div class="op-agent-chain">${rows}</div>
+    </div>`;
+  }
+
+  function renderReviewScoreDashboardCard(run, { advanced = false } = {}) {
+    ensureOperatorStyles();
+    const review = reviewFromRun(run);
+    if (!review || review.review_status == null) return '';
+    if (!advanced) return '';
+    const score = review.review_score != null ? Math.round(Number(review.review_score)) : '—';
+    const decision = String(review.overall_decision || '—');
+    const tone = decision === 'PASS' ? 'pass' : (decision === 'WARN' ? 'warn' : 'fail');
+    const bar = (label, val) => {
+      const n = val != null ? Math.round(Number(val)) : 0;
+      return `<div class="op-review-score-row"><span class="op-review-score-label">${esc(label)}</span><div class="op-review-score-track"><span class="op-review-score-fill" style="width:${n}%"></span></div><span class="op-review-score-val">${esc(String(val ?? '—'))}</span></div>`;
+    };
+    return `<div class="op-review-dashboard-card op-review-${tone}">
+      <div class="op-review-kicker"><i class="bi bi-speedometer2"></i> Review Score Dashboard</div>
+      <div class="op-review-dashboard-overall">${esc(String(score))}<span class="small"> / 100 · ${esc(decision)}</span></div>
+      ${bar('Architecture', review.architecture_score)}
+      ${bar('Security', review.security_score)}
+      ${bar('Quality', review.quality_score)}
+      ${bar('Regression', review.regression_score)}
+    </div>`;
+  }
+
+  function renderExecutionQualityReviewCard(run, { advanced = false } = {}) {
+    ensureOperatorStyles();
+    const review = reviewFromRun(run);
+    if (!review || review.review_status == null) return '';
+    const decision = String(review.overall_decision || '—');
+    const tone = decision === 'PASS' ? 'pass' : (decision === 'WARN' ? 'warn' : 'fail');
+    if (!advanced) {
+      return `<p class="op-review-simple-hint op-review-${tone} mb-0"><i class="bi bi-shield-check"></i> Review: ${esc(decision)}</p>`;
+    }
+    const score = review.review_score != null ? Math.round(Number(review.review_score)) : '—';
+    const grid = (label, val) => `<div><span class="op-experiment-label">${esc(label)}</span><div>${esc(String(val ?? '—'))}</div></div>`;
+    const findings = review.findings_by_reviewer || {};
+    const findingsHtml = Object.keys(findings).length
+      ? Object.entries(findings).map(([k, items]) =>
+          `<details class="op-review-finding-group mb-1"><summary class="small text-light">${esc(k)}</summary><ul class="small mb-0 ps-3">${(items || []).map((f) => `<li>${esc(f)}</li>`).join('')}</ul></details>`
+        ).join('')
+      : '<div class="small ai-code-muted">No detailed findings.</div>';
+    return `<div class="op-review-card">
+      <div class="op-review-kicker"><i class="bi bi-shield-check"></i> Execution Quality Review</div>
+      <div class="op-experiment-grid">
+        ${grid('Architecture', review.architecture_score)}
+        ${grid('Security', review.security_score)}
+        ${grid('Quality', review.quality_score)}
+        ${grid('Regression', review.regression_score)}
+        ${grid('Overall', score)}
+        ${grid('Decision', decision)}
+      </div>
+      ${review.block_reason ? `<div class="small text-warning mt-2">${esc(review.block_reason)}</div>` : ''}
+      <div class="op-promotion-section-title mt-2">Findings</div>
+      ${findingsHtml}
+    </div>`;
+  }
+
+  function renderExperimentationCard(experiments, { buildRun } = {}) {
+    ensureOperatorStyles();
+    const rows = Array.isArray(experiments) ? experiments : (experiments ? [experiments] : []);
+    const runExp = buildRun && buildRun.factory_experiment;
+    if (!rows.length && !runExp) return '';
+
+    if (runExp && runExp.assignment) {
+      const a = runExp.assignment;
+      return `<div class="op-experiment-card">
+        <div class="op-experiment-kicker"><i class="bi bi-bezier2"></i> Build Experiment Assignment</div>
+        <div class="op-experiment-grid">
+          <div><span class="op-experiment-label">Experiment</span><div>${esc(a.experiment_name || '—')}</div></div>
+          <div><span class="op-experiment-label">Variant</span><div>${esc(a.variant_name || '—')}${a.is_control ? ' (control)' : ''}</div></div>
+          <div><span class="op-experiment-label">Target</span><div>${esc(a.target_type || 'validation_profile')}</div></div>
+        </div>
+      </div>`;
+    }
+
+    return rows.map((exp) => {
+      const metrics = exp.metrics && exp.metrics.variants ? exp.metrics.variants : {};
+      const variantNames = Object.keys(metrics);
+      const total = variantNames.reduce((sum, name) => sum + (Number(metrics[name].count) || 0), 0);
+      const target = exp.sample_size_target || 0;
+      const winner = exp.winner || (exp.recommendation && exp.recommendation.promote_hint ? 'pending' : '—');
+      const control = (exp.variants || []).find((v) => v.is_control);
+      const variant = (exp.variants || []).find((v) => !v.is_control);
+      return `<div class="op-experiment-card">
+        <div class="op-experiment-kicker"><i class="bi bi-bezier2"></i> Controlled Experiment</div>
+        <div class="fw-semibold text-light mb-1">${esc(exp.name || 'Experiment')}</div>
+        <div class="op-experiment-grid">
+          <div><span class="op-experiment-label">Target</span><div>${esc(exp.target_type || '—')}</div></div>
+          <div><span class="op-experiment-label">Category</span><div>${esc(exp.task_category || '—')}</div></div>
+          <div><span class="op-experiment-label">Samples</span><div>${total} / ${target}</div></div>
+          <div><span class="op-experiment-label">Status</span><div>${esc(exp.status || '—')}</div></div>
+          <div><span class="op-experiment-label">Control</span><div>${esc((control && control.name) || '—')}</div></div>
+          <div><span class="op-experiment-label">Variant</span><div>${esc((variant && variant.name) || '—')}</div></div>
+          <div><span class="op-experiment-label">Current winner</span><div>${esc(winner || 'inconclusive')}</div></div>
+          <div><span class="op-experiment-label">Safety</span><div>${exp.decision === 'unsafe' ? 'Unsafe' : 'Within floor'}</div></div>
+        </div>
+        ${exp.recommendation && exp.recommendation.message
+          ? `<div class="small text-info mt-2">${esc(exp.recommendation.message)}</div>`
+          : ''}
+        ${exp.recommendation && exp.recommendation.automatic_application === false
+          ? '<div class="small ai-code-muted mt-1">Operator approval required — no auto-promotion.</div>'
+          : ''}
+      </div>`;
+    }).join('');
+  }
+
+  function renderAdaptiveOptimizationCard(run, { advanced = false } = {}) {
+    const adaptive = run && run.adaptive_optimization;
+    const summary = field(run, 'adaptive_summary', adaptive && adaptive.summary ? adaptive.summary : '');
+    if (!summary && !(adaptive && adaptive.execution_path_label)) return '';
+    const path = field(run, 'adaptive_execution_path', (adaptive && adaptive.execution_path_label) || '');
+    const validation = field(run, 'adaptive_validation_strategy', (adaptive && adaptive.validation_strategy) || '');
+    const patch = field(run, 'adaptive_patch_style', (adaptive && adaptive.patch_style) || '');
+    const confidence = run.adaptive_confidence != null ? `${Math.round(Number(run.adaptive_confidence) * 100)}%` : '';
+    const advancedBlock = advanced && adaptive && adaptive.advanced && adaptive.advanced.policies
+      ? `<details class="op-adaptive-advanced mt-2"><summary>Advanced Details</summary>
+        <pre class="op-adaptive-pre mb-0">${esc(JSON.stringify(adaptive.advanced, null, 2))}</pre></details>`
+      : '';
+    return `<div class="op-adaptive-card">
+      <div class="op-adaptive-kicker"><i class="bi bi-stars"></i> Adaptive Optimization</div>
+      <p class="op-adaptive-summary mb-2">${esc(summary || `Optimization: ${path} selected for this build.`)}</p>
+      <div class="op-adaptive-grid">
+        ${path ? `<div><span class="op-adaptive-label">Execution path</span><div>${esc(path)}</div></div>` : ''}
+        ${validation ? `<div><span class="op-adaptive-label">Validation</span><div>${esc(validation)}</div></div>` : ''}
+        ${patch ? `<div><span class="op-adaptive-label">Patch style</span><div>${esc(patch.replace(/_/g, ' '))}</div></div>` : ''}
+        ${confidence ? `<div><span class="op-adaptive-label">Confidence</span><div>${esc(confidence)}</div></div>` : ''}
+      </div>
+      ${advancedBlock}
+    </div>`;
+  }
+
   function renderOperatorHomeHero(run) {
     ensureOperatorStyles();
     const action = primaryAction(run);
     const pct = progressPercent(run);
     const step = field(run, 'current_step', currentWorkSummary(run));
     const next = field(run, 'operator_next_action', field(run, 'next_after_click_summary', nextAfterClick(run)));
+    const experimentHint = run && run.optimization_experiment_active
+      ? '<p class="op-experiment-active-hint mb-0"><i class="bi bi-bezier2"></i> Optimization experiment active</p>'
+      : '';
+    const selfTuningHint = run && run.optimization_self_tuning_active
+      ? '<p class="op-experiment-active-hint mb-0"><i class="bi bi-sliders"></i> Safe optimization active</p>'
+      : '';
     return `<section class="op-home-hero" data-current-build="true">
       <div class="op-home-hero-kicker">Current Build</div>
       <div class="op-home-hero-title">${esc(run.task_title || 'Build task')}</div>
       ${renderOperatorStatusBadge(run)}
       ${renderProgressBarBlock(run, pct)}
+      ${renderAdaptiveOptimizationCard(run)}
+      ${renderEnterpriseAgentPipelineCard(run)}
+      ${renderExecutionQualityReviewCard(run)}
+      ${experimentHint}
+      ${selfTuningHint}
       <div class="op-home-hero-step">
         <div class="op-home-hero-label">Current step</div>
         <div class="op-home-hero-value">${esc(step)}</div>
@@ -341,6 +665,9 @@
       <div class="op-current-build-title">${esc(run.task_title || 'Build task')}</div>
       ${renderOperatorStatusBadge(run)}
       ${renderProgressBarBlock(run, pct)}
+      ${renderEnterpriseAgentPipelineCard(run, { advanced: true })}
+      ${renderReviewScoreDashboardCard(run, { advanced: true })}
+      ${renderExecutionQualityReviewCard(run, { advanced: true })}
       ${renderCurrentStepCard(run)}
       ${renderBlockedCard(run, action)}
     </div>`;
@@ -730,6 +1057,50 @@
       .op-blocked-body { color: #fca5a5; font-size: 0.88rem; line-height: 1.4; }
       .op-home-dashboard { display: flex; flex-direction: column; gap: 1.15rem; }
       .op-home-hero { background: linear-gradient(145deg, rgba(15,23,42,0.92), rgba(30,41,59,0.78)); border: 1px solid rgba(56,189,248,0.32); border-radius: 18px; padding: 1.25rem 1.35rem; backdrop-filter: blur(14px); box-shadow: 0 12px 40px rgba(2,6,23,0.45); }
+      .op-adaptive-card { margin: 0.85rem 0; padding: 0.85rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(30,41,59,0.75), rgba(15,23,42,0.55)); border: 1px solid rgba(129,140,248,0.35); backdrop-filter: blur(10px); }
+      .op-adaptive-kicker { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: #a5b4fc; font-weight: 700; margin-bottom: 0.35rem; }
+      .op-adaptive-summary { color: #e2e8f0; font-size: 0.88rem; line-height: 1.45; margin-bottom: 0; }
+      .op-adaptive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.65rem; margin-top: 0.5rem; color: #cbd5e1; font-size: 0.82rem; }
+      .op-adaptive-label { display: block; font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; color: #64748b; margin-bottom: 0.15rem; }
+      .op-adaptive-pre { font-size: 0.72rem; color: #94a3b8; white-space: pre-wrap; max-height: 180px; overflow: auto; }
+      .op-experiment-card { margin: 0.85rem 0; padding: 0.9rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(15,23,42,0.82), rgba(30,41,59,0.62)); border: 1px solid rgba(56,189,248,0.35); backdrop-filter: blur(12px); }
+      .op-experiment-kicker { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: #7dd3fc; font-weight: 700; margin-bottom: 0.35rem; }
+      .op-experiment-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.65rem; color: #cbd5e1; font-size: 0.82rem; margin-top: 0.5rem; }
+      .op-experiment-label { display: block; font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; color: #64748b; margin-bottom: 0.15rem; }
+      .op-experiment-active-hint { color: #94a3b8; font-size: 0.82rem; margin: 0.35rem 0 0; }
+      .op-promotion-card { margin: 0.85rem 0; padding: 0.9rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(30,27,75,0.82), rgba(15,23,42,0.72)); border: 1px solid rgba(167,139,250,0.38); backdrop-filter: blur(12px); }
+      .op-promotion-kicker { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: #c4b5fd; font-weight: 700; margin-bottom: 0.35rem; }
+      .op-promotion-section-title { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: #94a3b8; margin: 0.75rem 0 0.35rem; }
+      .op-self-tuning-card { margin: 0.85rem 0; padding: 0.9rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(15,40,55,0.82), rgba(15,23,42,0.72)); border: 1px solid rgba(56,189,248,0.38); backdrop-filter: blur(12px); }
+      .op-review-card { margin: 0.85rem 0; padding: 0.9rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(20,35,55,0.88), rgba(15,23,42,0.78)); border: 1px solid rgba(94,234,212,0.35); backdrop-filter: blur(12px); }
+      .op-review-kicker { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: #5eead4; font-weight: 700; margin-bottom: 0.35rem; }
+      .op-review-simple-hint { font-size: 0.85rem; color: #cbd5e1; margin-top: 0.35rem; }
+      .op-review-pass { color: #86efac; }
+      .op-review-warn { color: #fcd34d; }
+      .op-review-fail { color: #fca5a5; }
+      .op-review-finding-group summary { cursor: pointer; }
+      .op-agent-card { margin: 0.85rem 0; padding: 0.9rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(25,30,60,0.9), rgba(15,23,42,0.78)); border: 1px solid rgba(129,140,248,0.38); backdrop-filter: blur(12px); }
+      .op-agent-kicker { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: #a5b4fc; font-weight: 700; margin-bottom: 0.35rem; }
+      .op-agent-simple-hint { font-size: 0.85rem; color: #cbd5e1; margin-top: 0.35rem; }
+      .op-agent-chain { display: flex; flex-direction: column; gap: 0.35rem; }
+      .op-agent-row { display: grid; grid-template-columns: 1fr 1.2fr auto auto; gap: 0.65rem; align-items: center; padding: 0.35rem 0.45rem; border-radius: 8px; background: rgba(2,6,23,0.35); font-size: 0.84rem; }
+      .op-agent-timeline { height: 6px; background: rgba(148,163,184,0.15); border-radius: 999px; overflow: hidden; }
+      .op-agent-timeline-bar { display: block; height: 100%; background: linear-gradient(90deg, #6366f1, #22d3ee); border-radius: 999px; min-width: 4px; }
+      .op-review-dashboard-card { margin: 0.85rem 0; padding: 0.9rem 1rem; border-radius: 14px; background: linear-gradient(135deg, rgba(24,32,58,0.92), rgba(15,23,42,0.82)); border: 1px solid rgba(129,140,248,0.35); backdrop-filter: blur(12px); }
+      .op-review-dashboard-overall { font-size: 1.35rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.65rem; }
+      .op-review-score-row { display: grid; grid-template-columns: 5.5rem 1fr auto; gap: 0.5rem; align-items: center; margin-bottom: 0.35rem; font-size: 0.8rem; }
+      .op-review-score-label { color: #94a3b8; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.05em; }
+      .op-review-score-track { height: 6px; background: rgba(148,163,184,0.15); border-radius: 999px; overflow: hidden; }
+      .op-review-score-fill { display: block; height: 100%; background: linear-gradient(90deg, #5eead4, #22c55e); border-radius: 999px; }
+      .op-review-score-val { color: #e2e8f0; font-weight: 600; min-width: 2rem; text-align: right; }
+      .op-agent-name { color: #e2e8f0; font-weight: 600; }
+      .op-agent-status { font-weight: 700; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
+      .op-agent-timing { color: #64748b; font-size: 0.72rem; font-family: ui-monospace, monospace; }
+      .op-agent-pass .op-agent-status { color: #86efac; }
+      .op-agent-warn .op-agent-status { color: #fcd34d; }
+      .op-agent-fail .op-agent-status { color: #fca5a5; }
+      .op-agent-run .op-agent-status { color: #7dd3fc; }
+      .op-agent-pending .op-agent-status { color: #94a3b8; }
       .op-home-hero-kicker { font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: #7dd3fc; font-weight: 700; margin-bottom: 0.5rem; }
       .op-home-hero-title { font-size: 1.25rem; font-weight: 700; color: #f8fafc; line-height: 1.3; margin-bottom: 0.25rem; }
       .op-home-hero-step { margin-top: 0.75rem; }
@@ -836,6 +1207,7 @@
           ${renderWorkspaceAdvancedDetails(run)}
           ${renderExecutionAdvancedDetails(run, extras)}
           ${renderAutoFixAdvancedDetails(run)}
+          ${renderExperimentationCard(null, { buildRun: run })}
           ${renderBackgroundActivityAdvancedDetails(extras)}
           ${renderProjectPlatformAdvancedDetails(extras)}
           <div class="mt-2"><strong class="text-secondary">Journal</strong>${journalHtml}</div>
@@ -1817,24 +2189,25 @@
   /** @deprecated Advanced details only */
   function humanBuildStatus(status) {
     const map = {
-      draft: 'Understanding Idea',
-      planning: 'Understanding Idea',
-      plan_ready: 'Building',
-      executing: 'Building',
-      reviewing: 'AI checking work',
-      validating: 'Testing in progress',
-      fixing: 'Fixing',
+      draft: 'Planning',
+      planning: 'Planning',
+      plan_ready: 'AI Working',
+      executing: 'AI Working',
+      reviewing: 'AI Validating',
+      validating: 'AI Validating',
+      fixing: 'AI Fixing',
       ready_for_manual_test: 'Ready For Manual Test',
       operator_approved: 'Approved',
       ready_for_release_approval: 'Ready For Release',
       release_approved: 'Ready For Release',
       releasing: 'Ready For Release',
       released: 'Released',
-      operator_declined: 'Fixing',
+      operator_declined: 'AI Fixing',
       failed: 'Blocked',
       cancelled: 'Blocked',
+      blocked: 'Blocked',
     };
-    return map[status] || 'Building';
+    return map[status] || 'AI Working';
   }
 
   /** Advanced details only — human-readable phase status */
@@ -1871,6 +2244,13 @@
     normalizeBlockers,
     ensureOperatorStyles,
     renderOperatorHomeHero,
+    renderAdaptiveOptimizationCard,
+    renderExperimentationCard,
+    renderPromotionGovernanceCard,
+    renderSelfTuningGovernanceCard,
+    renderEnterpriseAgentPipelineCard,
+    renderReviewScoreDashboardCard,
+    renderExecutionQualityReviewCard,
     renderOperatorBuildMiniCard,
     operatorStatusLabelForRun,
     isRealOperatorBlocker,

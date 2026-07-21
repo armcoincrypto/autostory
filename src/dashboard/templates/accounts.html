@@ -6,92 +6,25 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-people"></i> Accounts</h2>
     <div class="d-flex gap-2">
-        <button class="btn btn-outline-secondary" id="btn-fleet-health" onclick="runFleetHealthCheck()">
-            <i class="bi bi-heart-pulse"></i> Run Health Check
+        <button class="btn btn-outline-primary" id="btn-check-accounts" onclick="checkAccounts()">
+            <i class="bi bi-heart-pulse"></i> Check if accounts are alive
         </button>
-        <button class="btn btn-outline-info" id="btn-story-precheck" onclick="runStoryPrecheck()">
-            <i class="bi bi-camera-video"></i> Story Precheck
+        <button class="btn btn-outline-secondary" onclick="openBulkSetUsernameModal()" title="Set username for all accounts (prefix_1, prefix_2, ...)">
+            <i class="bi bi-at"></i> Set all usernames
+        </button>
+        <button class="btn btn-outline-secondary" onclick="openBulkSetProfilePhotoModal()" title="Set same profile photo for all accounts">
+            <i class="bi bi-images"></i> Set all profile photos
         </button>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
             <i class="bi bi-plus-circle"></i> Add Account
         </button>
     </div>
 </div>
-<div id="health-check-status" class="alert d-none mb-3"></div>
-<div id="precheck-status" class="alert d-none mb-3"></div>
 
-<!-- ── Story operations overview ───────────────────────────────────────── -->
-<div class="row g-3 mb-3" id="story-summary-cards">
-
-    <!-- Ready to publish -->
-    <div class="col-6 col-xl-3">
-        <div class="card h-100" style="border-left:4px solid #22c55e;">
-            <div class="card-body p-3">
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Ready to publish</span>
-                    <i class="bi bi-check-circle-fill" style="color:#22c55e;font-size:1.1em;"></i>
-                </div>
-                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-ready" style="color:#22c55e;">—</div>
-                <a href="/scheduler" class="btn btn-success btn-sm w-100">
-                    <i class="bi bi-calendar2-check"></i> Open Scheduler
-                </a>
-            </div>
-        </div>
-    </div>
-
-    <!-- Needs precheck -->
-    <div class="col-6 col-xl-3">
-        <div class="card h-100" style="border-left:4px solid #f59e0b;">
-            <div class="card-body p-3">
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Needs precheck</span>
-                    <i class="bi bi-hourglass-split" style="color:#f59e0b;font-size:1.1em;"></i>
-                </div>
-                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-precheck" style="color:#f59e0b;">—</div>
-                <button class="btn btn-warning btn-sm w-100" id="card-precheck-btn" onclick="runStoryPrecheck()">
-                    <i class="bi bi-camera-video"></i> Run Precheck
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Blocked / banned -->
-    <div class="col-6 col-xl-3">
-        <div class="card h-100" style="border-left:4px solid #ef4444;">
-            <div class="card-body p-3">
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Blocked / banned</span>
-                    <i class="bi bi-slash-circle-fill" style="color:#ef4444;font-size:1.1em;"></i>
-                </div>
-                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-blocked" style="color:#ef4444;">—</div>
-                <button class="btn btn-outline-danger btn-sm w-100" data-filter-btn="blocked" onclick="filterTable('blocked')">
-                    <i class="bi bi-funnel"></i> View accounts
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Auth / inactive -->
-    <div class="col-6 col-xl-3">
-        <div class="card h-100" style="border-left:4px solid #8b5cf6;">
-            <div class="card-body p-3">
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                    <span class="text-muted small fw-semibold text-uppercase" style="font-size:0.7em;letter-spacing:.05em;">Auth / inactive</span>
-                    <i class="bi bi-person-x-fill" style="color:#8b5cf6;font-size:1.1em;"></i>
-                </div>
-                <div class="fs-1 fw-bold lh-1 mb-2" id="card-count-attention" style="color:#8b5cf6;">—</div>
-                <button class="btn btn-outline-secondary btn-sm w-100" data-filter-btn="attention" onclick="filterTable('attention')">
-                    <i class="bi bi-funnel"></i> View accounts
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Filter active indicator -->
-<div id="filter-active-banner" class="d-none mb-2 d-flex align-items-center gap-2">
-    <span class="badge bg-secondary"><i class="bi bi-funnel-fill"></i> Filter active</span>
-    <button class="btn btn-sm btn-link text-muted p-0 text-decoration-none" onclick="clearFilter()">Clear ×</button>
+<div class="alert alert-info mb-4">
+    <strong><i class="bi bi-chat-dots"></i> Use an account for Scheduler (send messages to groups):</strong>
+    In the <strong>Purpose</strong> column below, set the account to <strong>Messaging</strong> or <strong>Both</strong>.
+    Then it will appear in <a href="/scheduler" class="alert-link">Scheduler</a> when you choose "Select user".
 </div>
 
 <div class="card">
@@ -100,16 +33,17 @@
             <thead>
                 <tr>
                     <th>ID</th>
-                    <th>Phone / Username</th>
-                    <th>Health</th>
-                    <th>Story Ready</th>
-                    <th>Publish</th>
-                    <th>Purpose <small class="text-muted" title="Messaging = Scheduler only, Both = stories + scheduler">▾</small></th>
+                    <th>Phone</th>
+                    <th>Username</th>
+                    <th>Status</th>
+                    <th>Purpose <small class="text-muted" title="Messaging = use in Scheduler only">(Scheduler / Stories)</small></th>
+                    <th>Stories Today</th>
+                    <th>Last Active</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="accounts-table">
-                <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="8" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -207,16 +141,75 @@
     </div>
 </div>
 
-<!-- Account Detail Modal -->
-<div class="modal fade" id="accountDetailModal" tabindex="-1">
-    <div class="modal-dialog">
+<!-- Import tdata results modal -->
+<div class="modal fade" id="importTdataResultsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content bg-dark">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-person-badge"></i> Account Details</h5>
+                <h5 class="modal-title"><i class="bi bi-cloud-upload"></i> Import results</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body" id="account-detail-body">
-                <div class="text-center text-muted">Loading…</div>
+            <div class="modal-body">
+                <p class="text-muted small mb-2"><span id="import-results-summary"></span></p>
+                <p class="text-muted small mb-2"><strong>Imported</strong> = new account added to the list. <strong>Updated</strong> = existing account (same Telegram user) session refreshed. <strong>Failed</strong> = session invalid or revoked.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Source</th>
+                                <th>Status</th>
+                                <th>Account / Phone / Username</th>
+                                <th>Reason / Error</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="import-results-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="import-results-close-btn" data-bs-dismiss="modal">Close and refresh list</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Check Accounts Modal -->
+<div class="modal fade" id="checkAccountsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-heart-pulse"></i> Account health check</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Connect to each account, run get_me(), GetFullUser, and get_dialogs to detect alive, deleted, banned, or restricted.</p>
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="check-update-status" value="1">
+                    <label class="form-check-label" for="check-update-status">Update status in DB (mark deleted/banned as auth_required or banned)</label>
+                </div>
+                <div id="check-accounts-progress" class="d-none mb-3">
+                    <div class="spinner-border text-primary"></div>
+                    <span class="ms-2">Checking accounts...</span>
+                </div>
+                <div id="check-accounts-results" class="d-none">
+                    <p class="small text-muted mb-2">Alive = all checks passed (get_dialogs, get_me, GetFullUser, GetAccountTTL). Reason code shows why we chose that status. Use <strong>Delete</strong> to remove an account from the database.</p>
+                    <table class="table table-sm table-dark">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Phone</th>
+                                <th>Status</th>
+                                <th>Reason</th>
+                                <th>Message</th>
+                                <th>Checked at</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="check-accounts-tbody"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
@@ -245,146 +238,167 @@
         </div>
     </div>
 </div>
+
+<!-- Set Username Modal -->
+<div class="modal fade" id="setUsernameModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Set Telegram Username</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Account <span id="set-username-account-id"></span>. Username without @ (5–32 characters).</p>
+                <div class="mb-3">
+                    <label class="form-label">Username</label>
+                    <input type="text" class="form-control" id="set-username-input" placeholder="myusername" maxlength="32">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="set-username-submit" onclick="submitSetUsername()">
+                    <i class="bi bi-check"></i> Set username
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Set Profile Photo Modal -->
+<div class="modal fade" id="setProfilePhotoModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Set Profile Photo</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Account <span id="set-photo-account-id"></span>. Choose an image (JPG/PNG).</p>
+                <div class="mb-3">
+                    <label class="form-label">Photo</label>
+                    <input type="file" class="form-control" id="set-profile-photo-input" accept="image/jpeg,image/png,image/jpg">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="set-profile-photo-submit" onclick="submitSetProfilePhoto()">
+                    <i class="bi bi-upload"></i> Upload and set
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Set Username Modal -->
+<div class="modal fade" id="bulkSetUsernameModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Set username for all accounts</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">Telegram requires a unique username per account. Enter a prefix; each account will get <strong>prefix_1</strong>, <strong>prefix_2</strong>, etc. (e.g. <code>mybrand</code> → mybrand_1, mybrand_2, …).</p>
+                <div class="mb-3">
+                    <label class="form-label">Username prefix</label>
+                    <input type="text" class="form-control" id="bulk-username-prefix" placeholder="mybrand" maxlength="28">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="bulk-set-username-submit" onclick="submitBulkSetUsername()">
+                    <i class="bi bi-check"></i> Set for all accounts
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Set Profile Photo Modal -->
+<div class="modal fade" id="bulkSetProfilePhotoModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title">Set profile photo for all accounts</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">The same image will be set as profile photo for every account that has a session.</p>
+                <div class="mb-3">
+                    <label class="form-label">Photo</label>
+                    <input type="file" class="form-control" id="bulk-profile-photo-input" accept="image/jpeg,image/png,image/jpg">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="bulk-set-profile-photo-submit" onclick="submitBulkSetProfilePhoto()">
+                    <i class="bi bi-upload"></i> Set for all accounts
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
 let authData = {};
-let _allAccounts = [];
-let _activeFilter = null;
-
-// Human-readable labels and tooltips for each account status
-const STATUS_LABEL = {
-    'active':        'Alive',
-    'inactive':      'Inactive',
-    'banned':        'Banned',
-    'flood_wait':    'Flood Wait',
-    'auth_required': 'Auth Required',
-};
-const STATUS_TITLE = {
-    'active':        'Account is connected and authorized',
-    'inactive':      'Account is disabled by operator',
-    'banned':        'Account is permanently banned by Telegram',
-    'flood_wait':    'Account is rate-limited by Telegram — waiting for cooldown',
-    'auth_required': 'Session expired — re-login required before use',
-};
-// Only active/inactive are safe to toggle; banned/flood_wait/auth_required must be fixed first
-const TOGGLEABLE_STATUSES = new Set(['active', 'inactive']);
 
 async function loadAccounts() {
-    const tbody = document.getElementById('accounts-table');
     try {
-        const response = await fetch('/api/accounts?limit=500');
-        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const response = await fetch('/api/accounts');
         const accounts = await response.json();
 
-        if (!Array.isArray(accounts) || accounts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No accounts added yet</td></tr>';
-            updateSummaryCards([]);
+        const tbody = document.getElementById('accounts-table');
+        if (accounts.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No accounts added yet</td></tr>';
             return;
         }
 
-        _allAccounts = accounts;
-
         tbody.innerHTML = accounts.map(a => {
-            const purpose    = a.purpose || 'both';
-            const statusKey  = (a.status || 'inactive').toLowerCase();
-            const label      = STATUS_LABEL[statusKey] || a.status;
-            const tooltip    = STATUS_TITLE[statusKey] || a.status;
-            const canToggle  = TOGGLEABLE_STATUSES.has(statusKey);
-            const toggleTip  = canToggle
-                ? (statusKey === 'active' ? 'Disable account' : 'Enable account')
-                : `Cannot toggle — account is "${label}". Fix the underlying issue first.`;
-
-            // Health column
-            const healthLabel  = a.general_health_label || 'Unknown';
-            const healthReason = a.general_health_reason || 'No health check yet.';
-            const healthStale  = !!a.health_check_stale;
-            const HEALTH_COLORS = {
-                'Alive':                   '#22c55e',
-                'Banned':                  '#ef4444',
-                'Flood Wait':              '#f59e0b',
-                'Frozen':                  '#f59e0b',
-                'Inactive / auth required':'#8b5cf6',
-                'Unknown':                 '#6b7280',
-            };
-            const healthColor = HEALTH_COLORS[healthLabel] || '#6b7280';
-            const staleIcon = healthStale
-                ? `<i class="bi bi-clock-history text-warning ms-1" title="Health check is stale (>24h old)"></i>`
-                : '';
-
-            // Story Ready column
-            const storyReady  = (a.publish_story_status === 'yes');
-            const storyReason = a.publish_story_reason || (storyReady ? 'Ready to publish stories.' : 'Not ready.');
-            const storyPrecheckStale = !!a.story_precheck_stale;
-            const storyBadgeColor = storyReady ? '#22c55e' : '#6b7280';
-            const storyBadgeText  = storyReady ? 'Ready' : 'No';
-            const storyStaleIcon  = (!storyReady && storyPrecheckStale && a.story_precheck_checked_at)
-                ? `<i class="bi bi-clock-history text-warning ms-1" title="Precheck expired — run Story Precheck"></i>`
-                : '';
-
-            // Publish column — can this account post a story right now?
-            const canPublish = statusKey === 'active' && healthLabel === 'Alive' && storyReady;
-            const publishBadge = canPublish
-                ? `<span style="background:#22c55e;color:#fff;padding:3px 10px;border-radius:4px;font-size:0.82em;font-weight:600;">YES</span>`
-                : `<span style="background:#ef4444;color:#fff;padding:3px 10px;border-radius:4px;font-size:0.82em;"
-                         title="${tooltip}">NO</span>`;
-
-            const userSub = a.username ? `<br><small class="text-muted">@${a.username}</small>` : '';
-
+            const purpose = a.purpose || 'both';
+            const status = String(a.status || 'inactive').replace(/'/g, "\\'");
+            const badgeClass = { active: 'success', banned: 'danger', deleted: 'danger', frozen: 'warning', restricted: 'warning', auth_required: 'warning', flood_wait: 'info', inactive: 'secondary', error: 'secondary' }[status] || 'secondary';
             return `
-            <tr data-category="${getAccountCategory(a)}">
+            <tr>
                 <td>${a.id}</td>
-                <td>${a.phone_number || ''}${userSub}</td>
+                <td>${a.phone_number}</td>
+                <td>${a.username || '-'}</td>
+                <td><span class="badge bg-${badgeClass}">${status}</span></td>
                 <td>
-                    <span style="display:inline-flex;align-items:center;gap:4px;">
-                        <span style="background:${healthColor};color:#fff;padding:3px 8px;border-radius:4px;font-size:0.82em;cursor:default;"
-                              title="${healthReason.replace(/"/g,'&quot;')}">
-                            ${healthLabel}
-                        </span>${staleIcon}
-                    </span>
-                </td>
-                <td>
-                    <span style="display:inline-flex;align-items:center;gap:4px;">
-                        <span style="background:${storyBadgeColor};color:#fff;padding:3px 8px;border-radius:4px;font-size:0.82em;cursor:default;"
-                              title="${storyReason.replace(/"/g,'&quot;')}">
-                            ${storyBadgeText}
-                        </span>${storyStaleIcon}
-                    </span>
-                </td>
-                <td>${publishBadge}</td>
-                <td>
-                    <select class="form-select form-select-sm purpose-select" style="width:auto;"
-                            data-account-id="${a.id}"
-                            title="Messaging = Scheduler only, Stories only = Autostory, Both = both">
-                        <option value="both"      ${purpose === 'both'      ? 'selected' : ''}>Both</option>
+                <select class="form-select form-select-sm purpose-select" style="width:auto;" data-account-id="${a.id}" title="Messaging = Scheduler only, Autostory = Stories only, Both = both">
+                        <option value="both" ${purpose === 'both' ? 'selected' : ''}>Both</option>
                         <option value="autostory" ${purpose === 'autostory' ? 'selected' : ''}>Stories only</option>
-                        <option value="messaging" ${purpose === 'messaging' ? 'selected' : ''}>Messaging</option>
+                        <option value="messaging" ${purpose === 'messaging' ? 'selected' : ''}>Messaging (Scheduler)</option>
                     </select>
                 </td>
+                <td>${a.stories_today != null ? a.stories_today : 0}</td>
+                <td>${a.last_active ? new Date(a.last_active).toLocaleString() : 'Never'}</td>
                 <td>
-                    <button class="btn btn-sm btn-outline-secondary"
-                            onclick="viewAccount(${a.id})"
-                            title="${tooltip} — click for details">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="viewAccount(${a.id})">
                         <i class="bi bi-eye"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger"
-                            onclick="${canToggle ? `toggleAccount(${a.id}, '${statusKey}')` : ''}"
-                            title="${toggleTip}"
-                            ${canToggle ? '' : 'disabled'}>
+                    <button class="btn btn-sm btn-outline-info" onclick="openLoginCodeModal(${a.id})" title="Get login code for phone">
+                        <i class="bi bi-phone"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openSetUsernameModal(${a.id}, '${(a.username || '').replace(/'/g, "\\'")}')" title="Set Telegram username">
+                        <i class="bi bi-at"></i> Username
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openSetProfilePhotoModal(${a.id})" title="Set profile photo">
+                        <i class="bi bi-image"></i> Photo
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="toggleAccount(${a.id}, '${status}')">
                         <i class="bi bi-power"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount(${a.id})" title="Delete account from database">
+                        <i class="bi bi-trash"></i> Delete
                     </button>
                 </td>
             </tr>
         `;
         }).join('');
-
-        updateSummaryCards(accounts);
-        applyFilter();
-
     } catch (error) {
         console.error('Failed to load accounts:', error);
-        if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Failed to load accounts — check console</td></tr>';
     }
 }
 
@@ -402,68 +416,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
-
-// ── Summary cards & filter ────────────────────────────────────────────────
-
-function getAccountCategory(a) {
-    const statusKey   = (a.status || 'inactive').toLowerCase();
-    const healthLabel = a.general_health_label || 'Unknown';
-    const storyReady  = a.publish_story_status === 'yes';
-    const storyChecked = !!a.story_precheck_checked_at;
-    const storyStale  = !!a.story_precheck_stale;
-    const healthStale = !!a.health_check_stale;
-    const isAlive     = statusKey === 'active' && healthLabel === 'Alive';
-
-    if (isAlive && storyReady)   return 'ready';
-    // Alive but needs a fresh check (never checked, or checks have expired)
-    if (isAlive && (!storyChecked || storyStale || healthStale)) return 'needs_precheck';
-    // Alive, freshly checked, but actually rejected (frozen/not_authorized)
-    if (isAlive && !storyReady)  return 'blocked';
-    if (['banned', 'flood_wait'].includes(statusKey) ||
-        ['Banned', 'Flood Wait', 'Frozen'].includes(healthLabel)) return 'blocked';
-    return 'attention'; // inactive, auth_required, unknown
-}
-
-function updateSummaryCards(accounts) {
-    const counts = { ready: 0, needs_precheck: 0, blocked: 0, attention: 0 };
-    accounts.forEach(a => {
-        const cat = getAccountCategory(a);
-        counts[cat] = (counts[cat] || 0) + 1;
-    });
-
-    document.getElementById('card-count-ready').textContent     = counts.ready;
-    document.getElementById('card-count-precheck').textContent  = counts.needs_precheck;
-    document.getElementById('card-count-blocked').textContent   = counts.blocked;
-    document.getElementById('card-count-attention').textContent = counts.attention;
-
-    const precheckBtn = document.getElementById('card-precheck-btn');
-    if (precheckBtn) precheckBtn.disabled = counts.needs_precheck === 0;
-}
-
-function filterTable(category) {
-    _activeFilter = (_activeFilter === category) ? null : category; // toggle off if same
-    applyFilter();
-}
-
-function clearFilter() {
-    _activeFilter = null;
-    applyFilter();
-}
-
-function applyFilter() {
-    document.querySelectorAll('#accounts-table tr[data-category]').forEach(row => {
-        row.style.display = (!_activeFilter || row.dataset.category === _activeFilter) ? '' : 'none';
-    });
-    // Update filter button active state
-    document.querySelectorAll('[data-filter-btn]').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.filterBtn === _activeFilter);
-    });
-    // Show/hide filter banner
-    const banner = document.getElementById('filter-active-banner');
-    if (banner) banner.classList.toggle('d-none', !_activeFilter);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function startAuth() {
     const phone = document.getElementById('phone-number').value;
@@ -568,6 +520,49 @@ async function completeAuth() {
     }
 }
 
+async function checkAccounts() {
+    const btn = document.getElementById('btn-check-accounts');
+    const progress = document.getElementById('check-accounts-progress');
+    const resultsDiv = document.getElementById('check-accounts-results');
+    const tbody = document.getElementById('check-accounts-tbody');
+    const updateStatus = document.getElementById('check-update-status').checked;
+    const modalEl = document.getElementById('checkAccountsModal');
+    progress.classList.remove('d-none');
+    resultsDiv.classList.add('d-none');
+    tbody.innerHTML = '';
+    new bootstrap.Modal(modalEl).show();
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/accounts/check', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ update_status: updateStatus })
+        });
+        const data = await r.json();
+        progress.classList.add('d-none');
+        if (!data.success) {
+            alert('Check failed: ' + (data.error || r.statusText));
+            return;
+        }
+        const statusBadge = (s) => {
+            const c = { alive: 'success', deleted: 'danger', banned: 'danger', restricted: 'warning', frozen: 'warning', auth_required: 'warning', flood_wait: 'info', error: 'secondary' }[s] || 'secondary';
+            return `<span class="badge bg-${c}">${s}</span>`;
+        };
+        tbody.innerHTML = (data.results || []).map(r => {
+            const checked = r.checked_at ? new Date(r.checked_at).toLocaleString() : '-';
+            const reason = r.reason_code || '-';
+            return `<tr><td>${r.account_id}</td><td>${r.phone}</td><td>${statusBadge(r.status)}</td><td class="small">${reason}</td><td>${r.message || '-'}</td><td class="small text-muted">${checked}</td><td><button class="btn btn-sm btn-outline-danger" onclick="deleteAccountFromRow(${r.account_id}, this)" title="Remove this account from database"><i class="bi bi-trash"></i> Delete</button></td></tr>`;
+        }).join('');
+        resultsDiv.classList.remove('d-none');
+        if (updateStatus) loadAccounts();
+    } catch (e) {
+        progress.classList.add('d-none');
+        alert('Check failed: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 let qrToken = null;
 let qrPollId = null;
 async function startQRLogin() {
@@ -655,28 +650,58 @@ async function importTdataZip() {
     const btn = document.getElementById('btn-import-tdata');
     const origText = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Uploading and converting...';
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Uploading and converting... (may take 1–2 min for many accounts)';
     try {
         const form = new FormData();
         if (file) form.append('file', file);
         if (passcode) form.append('passcode', passcode);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
         const response = await fetch('/api/accounts/import-tdata', {
             method: 'POST',
-            body: form
+            body: form,
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
         const result = await response.json().catch(() => ({}));
-        if (result.success) {
-            let msg = result.message || 'Account imported from tdata!';
-            if (result.failed > 0 && result.errors && result.errors.length > 0) {
-                msg += '\n\nFirst errors:\n' + result.errors.slice(0, 3).map(e => e.error || e).join('\n');
+        if (result.success || (result.results && result.results.length > 0)) {
+            const total = result.total_discovered ?? result.total ?? 0;
+            const results = result.results || [];
+            if (results.length > 0) {
+                document.getElementById('import-results-summary').textContent =
+                    'Discovered ' + total + ' candidate(s). ' + (result.imported || 0) + ' imported, ' + (result.updated || 0) + ' updated, ' + (result.failed || 0) + ' failed.' + (result.success ? '' : ' Some imports failed.');
+                const tbody = document.getElementById('import-results-tbody');
+                tbody.innerHTML = '';
+                results.forEach(function(r) {
+                    const status = r.status === 'ok' ? '<span class="badge bg-success">OK</span>' : '<span class="badge bg-danger">FAILED</span>';
+                    const accountInfo = r.status === 'ok'
+                        ? (r.account_id ? '#' + r.account_id : '') + (r.phone_number ? ' ' + r.phone_number : '') + (r.username ? ' @' + r.username : '') + (r.first_name ? ' ' + r.first_name : '')
+                        : '—';
+                    const reason = r.status === 'ok' ? (r.message || '—') : (r.error || r.error_type || '—');
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = '<td>' + (r.index ?? '') + '</td><td>' + (r.source ?? '') + '</td><td>' + status + '</td><td class="text-break">' + accountInfo + '</td><td class="text-break small">' + (reason || '—') + '</td><td class="small text-muted">' + (r.timestamp || '') + '</td>';
+                    tbody.appendChild(tr);
+                });
+                const modal = new bootstrap.Modal(document.getElementById('importTdataResultsModal'));
+                document.getElementById('importTdataResultsModal').addEventListener('hidden.bs.modal', function onHide() {
+                    document.getElementById('importTdataResultsModal').removeEventListener('hidden.bs.modal', onHide);
+                    loadAccounts();
+                }, { once: true });
+                modal.show();
+                loadAccounts();
+            } else {
+                alert(result.message || 'Account imported from tdata!');
+                location.reload();
             }
-            alert(msg);
-            location.reload();
         } else {
             alert('Error: ' + (result.error || response.statusText || 'Import failed'));
         }
     } catch (error) {
-        alert('Failed: ' + error.message);
+        if (error.name === 'AbortError') {
+            alert('Request timed out. The server may still be importing; refresh the page in a minute. For 10+ accounts, try importing in smaller batches.');
+        } else {
+            alert('Failed: ' + error.message);
+        }
     } finally {
         btn.disabled = false;
         btn.innerHTML = origText;
@@ -684,75 +709,202 @@ async function importTdataZip() {
 }
 
 async function toggleAccount(id, currentStatus) {
-    // Guard: never allow toggle to overwrite a critical status
-    if (!TOGGLEABLE_STATUSES.has(currentStatus)) {
-        alert(`Cannot toggle: account status is "${STATUS_LABEL[currentStatus] || currentStatus}".\nFix the underlying issue first (re-login, unban, or wait for flood cooldown).`);
-        return;
-    }
     const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
     try {
-        const resp = await fetch(`/api/accounts/${id}/status`, {
+        await fetch(`/api/accounts/${id}/status`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({status: newStatus})
         });
-        if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}));
-            alert('Failed to update status: ' + (err.error || resp.statusText));
-            return;
-        }
         loadAccounts();
     } catch (error) {
         alert('Failed to update status: ' + error);
     }
 }
 
-async function viewAccount(id) {
-    const body = document.getElementById('account-detail-body');
-    body.innerHTML = '<div class="text-center text-muted">Loading…</div>';
-    new bootstrap.Modal(document.getElementById('accountDetailModal')).show();
-    try {
-        const r = await fetch(`/api/accounts/${id}`);
-        const a = await r.json();
-        if (!r.ok) { body.innerHTML = `<div class="alert alert-danger">${a.error || 'Failed'}</div>`; return; }
-
-        const HEALTH_COLORS = {
-            'Alive': '#22c55e', 'Banned': '#ef4444',
-            'Flood Wait': '#f59e0b', 'Frozen': '#f59e0b',
-            'Inactive / auth required': '#8b5cf6', 'Unknown': '#6b7280',
-        };
-        const hl = a.general_health_label || 'Unknown';
-        const hr = a.general_health_reason || '';
-        const hc = HEALTH_COLORS[hl] || '#6b7280';
-        const staleNote = a.health_check_stale
-            ? '<span class="text-warning ms-1"><i class="bi bi-clock-history"></i> stale (&gt;24h)</span>' : '';
-
-        body.innerHTML = `
-        <table class="table table-sm text-light mb-0">
-            <tr><th style="width:40%">Phone</th><td>${a.phone_number || '-'}</td></tr>
-            <tr><th>Username</th><td>${a.username ? '@' + a.username : '-'}</td></tr>
-            <tr><th>Name</th><td>${[a.first_name, a.last_name].filter(Boolean).join(' ') || '-'}</td></tr>
-            <tr><th>DB Status</th><td>${a.status}</td></tr>
-            <tr><th>Health</th><td>
-                <span style="background:${hc};color:#fff;padding:2px 8px;border-radius:4px;font-size:0.85em;"
-                      title="${hr}">${hl}</span>${staleNote}
-                ${hr ? `<div class="text-muted small mt-1">${hr}</div>` : ''}
-            </td></tr>
-            <tr><th>Stories Today</th><td>${a.stories_today ?? 0}</td></tr>
-            <tr><th>Actions Today</th><td>${a.actions_today ?? 0}</td></tr>
-            <tr><th>Last Active</th><td>${a.last_active ? new Date(a.last_active).toLocaleString() : 'Never'}</td></tr>
-            <tr><th>Last Error</th><td class="text-danger small">${a.last_error || '-'}</td></tr>
-            <tr><th>Created</th><td>${a.created_at ? new Date(a.created_at).toLocaleString() : '-'}</td></tr>
-        </table>
-        <div class="mt-3 pt-2 border-top border-secondary">
-            <button class="btn btn-sm btn-outline-secondary" onclick="openLoginCodeModal(${id})">
-                <i class="bi bi-phone"></i> Get Login Code
-            </button>
-            <small class="text-muted ms-2">Use when you can't receive SMS</small>
-        </div>`;
-    } catch (e) {
-        body.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
+let setUsernameAccountId = null;
+function openSetUsernameModal(accountId, currentUsername) {
+    setUsernameAccountId = accountId;
+    document.getElementById('set-username-account-id').textContent = '#' + accountId;
+    document.getElementById('set-username-input').value = (currentUsername || '').replace(/^@/, '');
+    new bootstrap.Modal(document.getElementById('setUsernameModal')).show();
+}
+async function submitSetUsername() {
+    if (!setUsernameAccountId) return;
+    const username = document.getElementById('set-username-input').value.trim().replace(/^@/, '');
+    if (!username || username.length < 5) {
+        alert('Username must be 5–32 characters (without @).');
+        return;
     }
+    const btn = document.getElementById('set-username-submit');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+        const r = await fetch('/api/accounts/' + setUsernameAccountId + '/set-username', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: username })
+        });
+        const data = await r.json();
+        if (r.ok && data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('setUsernameModal')).hide();
+            loadAccounts();
+            alert('Username set to @' + username);
+        } else {
+            alert(data.error || 'Failed to set username');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check"></i> Set username';
+    }
+}
+
+let setProfilePhotoAccountId = null;
+function openSetProfilePhotoModal(accountId) {
+    setProfilePhotoAccountId = accountId;
+    document.getElementById('set-photo-account-id').textContent = '#' + accountId;
+    document.getElementById('set-profile-photo-input').value = '';
+    new bootstrap.Modal(document.getElementById('setProfilePhotoModal')).show();
+}
+async function submitSetProfilePhoto() {
+    if (!setProfilePhotoAccountId) return;
+    const input = document.getElementById('set-profile-photo-input');
+    if (!input.files || !input.files[0]) {
+        alert('Please choose an image file.');
+        return;
+    }
+    const btn = document.getElementById('set-profile-photo-submit');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+        const form = new FormData();
+        form.append('photo', input.files[0]);
+        const r = await fetch('/api/accounts/' + setProfilePhotoAccountId + '/set-profile-photo', {
+            method: 'POST',
+            body: form
+        });
+        const data = await r.json();
+        if (r.ok && data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('setProfilePhotoModal')).hide();
+            loadAccounts();
+            alert('Profile photo updated.');
+        } else {
+            alert(data.error || 'Failed to set profile photo');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-upload"></i> Upload and set';
+    }
+}
+
+function openBulkSetUsernameModal() {
+    document.getElementById('bulk-username-prefix').value = '';
+    new bootstrap.Modal(document.getElementById('bulkSetUsernameModal')).show();
+}
+async function submitBulkSetUsername() {
+    const prefix = document.getElementById('bulk-username-prefix').value.trim().replace(/^@/, '');
+    if (!prefix || prefix.length < 2) {
+        alert('Enter a prefix (at least 2 characters). Example: mybrand → mybrand_1, mybrand_2, ...');
+        return;
+    }
+    const btn = document.getElementById('bulk-set-username-submit');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+        const r = await fetch('/api/accounts/bulk-set-username', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username_prefix: prefix })
+        });
+        const data = await r.json();
+        if (r.ok && data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('bulkSetUsernameModal')).hide();
+            loadAccounts();
+            const results = data.results || [];
+            const names = results.slice(0, 5).map(x => '@' + x.username).join(', ');
+            const more = results.length > 5 ? ' ...' : '';
+            alert('Updated ' + (data.updated || 0) + ' of ' + (data.total || 0) + ' accounts.' + (names ? '\n' + names + more : ''));
+        } else {
+            alert(data.error || 'Failed');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check"></i> Set for all accounts';
+    }
+}
+
+function openBulkSetProfilePhotoModal() {
+    document.getElementById('bulk-profile-photo-input').value = '';
+    new bootstrap.Modal(document.getElementById('bulkSetProfilePhotoModal')).show();
+}
+async function submitBulkSetProfilePhoto() {
+    const input = document.getElementById('bulk-profile-photo-input');
+    if (!input.files || !input.files[0]) {
+        alert('Please choose an image file.');
+        return;
+    }
+    const btn = document.getElementById('bulk-set-profile-photo-submit');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+        const form = new FormData();
+        form.append('photo', input.files[0]);
+        const r = await fetch('/api/accounts/bulk-set-profile-photo', { method: 'POST', body: form });
+        const data = await r.json();
+        if (r.ok && data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('bulkSetProfilePhotoModal')).hide();
+            loadAccounts();
+            alert('Profile photo set for ' + (data.updated || 0) + ' of ' + (data.total || 0) + ' accounts.');
+        } else {
+            alert(data.error || 'Failed');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-upload"></i> Set for all accounts';
+    }
+}
+
+async function deleteAccount(id) {
+    if (!confirm('Delete account #' + id + ' from the database? This cannot be undone.')) return;
+    try {
+        const r = await fetch('/api/accounts/' + id, { method: 'DELETE' });
+        const data = await r.json();
+        if (r.ok && data.success) {
+            loadAccounts();
+        } else {
+            alert(data.error || 'Failed to delete account');
+        }
+    } catch (error) {
+        alert('Failed to delete: ' + error);
+    }
+}
+
+async function deleteAccountFromRow(id, btnEl) {
+    if (!confirm('Delete account #' + id + ' from the database? This cannot be undone.')) return;
+    try {
+        const r = await fetch('/api/accounts/' + id, { method: 'DELETE' });
+        const data = await r.json();
+        if (r.ok && data.success) {
+            if (btnEl && btnEl.closest('tr')) btnEl.closest('tr').remove();
+            loadAccounts();
+        } else {
+            alert(data.error || 'Failed to delete account');
+        }
+    } catch (error) {
+        alert('Failed to delete: ' + error);
+    }
+}
+
+function viewAccount(id) {
+    window.location.href = `/accounts/${id}`;
 }
 
 let loginCodeAccountId = null;
@@ -787,129 +939,6 @@ async function fetchLoginCode() {
     }
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-download"></i> Fetch Code';
-}
-
-async function runStoryPrecheck() {
-    const btn = document.getElementById('btn-story-precheck');
-    const statusEl = document.getElementById('precheck-status');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking…';
-    statusEl.className = 'alert alert-info mb-3';
-    statusEl.textContent = 'Fetching precheck candidates…';
-    statusEl.classList.remove('d-none');
-
-    try {
-        // Get candidates
-        const cr = await fetch('/api/accounts/story-precheck-candidates');
-        const cd = await cr.json();
-        if (!cr.ok) {
-            statusEl.className = 'alert alert-danger mb-3';
-            statusEl.textContent = 'Failed to fetch candidates: ' + (cd.error || cr.statusText);
-            return;
-        }
-        const candidates = cd.candidates || [];
-        const remaining  = cd.remaining_capacity ?? 20;
-        if (candidates.length === 0) {
-            statusEl.className = 'alert alert-success mb-3';
-            statusEl.textContent = 'All accounts have a fresh story precheck. No work needed.';
-            loadAccounts();
-            return;
-        }
-
-        // Submit up to remaining_capacity accounts
-        const batch = candidates.slice(0, Math.min(candidates.length, remaining));
-        statusEl.textContent = `Running story precheck for ${batch.length} account(s) (${remaining} capacity remaining)…`;
-
-        const ids = batch.map(a => a.id);
-        const pr = await fetch('/api/accounts/story-precheck', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ account_ids: ids, canary_batch_ok: true }),
-        });
-        const pd = await pr.json();
-        if (!pr.ok) {
-            statusEl.className = 'alert alert-warning mb-3';
-            statusEl.textContent = 'Precheck error: ' + (pd.error || pr.statusText);
-            return;
-        }
-        const allowed = pd.allowed ?? 0;
-        const total   = pd.processed ?? batch.length;
-        const leftOver = candidates.length - batch.length;
-        let msg = `Story precheck done — ${allowed}/${total} accounts story-ready.`;
-        if (leftOver > 0) msg += ` ${leftOver} more candidate(s) will be checked next hour (rate limit).`;
-        statusEl.className = 'alert alert-success mb-3';
-        statusEl.textContent = msg;
-        setTimeout(() => { loadAccounts(); statusEl.classList.add('d-none'); }, 3000);
-    } catch (e) {
-        statusEl.className = 'alert alert-danger mb-3';
-        statusEl.textContent = 'Error: ' + e.message;
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-camera-video"></i> Story Precheck';
-    }
-}
-
-async function runFleetHealthCheck() {
-    const btn = document.getElementById('btn-fleet-health');
-    const statusEl = document.getElementById('health-check-status');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting…';
-    statusEl.className = 'alert alert-info mb-3';
-    statusEl.textContent = 'Starting fleet health check…';
-    statusEl.classList.remove('d-none');
-
-    try {
-        const r = await fetch('/api/accounts/healthcheck/start', {
-            method: 'POST',
-            headers: {'X-Admin-Token': ADMIN_TOKEN},
-        });
-        const data = await r.json();
-        if (!r.ok) {
-            statusEl.className = 'alert alert-danger mb-3';
-            statusEl.textContent = 'Failed to start: ' + (data.error || r.statusText);
-            return;
-        }
-        const jobId = data.job_id;
-        statusEl.textContent = `Health check job started (id=${jobId}). Polling…`;
-
-        // Poll until done
-        let attempts = 0;
-        const poll = async () => {
-            attempts++;
-            try {
-                const pr = await fetch(`/api/accounts/healthcheck/${jobId}`, {
-                    headers: {'X-Admin-Token': ADMIN_TOKEN},
-                });
-                const pd = await pr.json();
-                const done = pd.status === 'done' || pd.status === 'complete' || pd.status === 'completed' || pd.done;
-                const pct = pd.progress_pct ?? (pd.checked && pd.total ? Math.round(pd.checked / pd.total * 100) : null);
-                const pctStr = pct !== null ? ` (${pct}%)` : '';
-                if (done) {
-                    statusEl.className = 'alert alert-success mb-3';
-                    const ok = pd.alive ?? pd.healthy ?? '?';
-                    const total = pd.total ?? '?';
-                    statusEl.textContent = `Health check done — ${ok}/${total} accounts alive. Refreshing table…`;
-                    setTimeout(() => { loadAccounts(); statusEl.classList.add('d-none'); }, 2000);
-                } else if (attempts < 120) {
-                    statusEl.textContent = `Running health check${pctStr}… (${pd.checked ?? '?'}/${pd.total ?? '?'} checked)`;
-                    setTimeout(poll, 3000);
-                } else {
-                    statusEl.className = 'alert alert-warning mb-3';
-                    statusEl.textContent = 'Health check is taking a long time. It will finish in the background.';
-                }
-            } catch (e) {
-                statusEl.className = 'alert alert-danger mb-3';
-                statusEl.textContent = 'Poll error: ' + e.message;
-            }
-        };
-        setTimeout(poll, 2000);
-    } catch (e) {
-        statusEl.className = 'alert alert-danger mb-3';
-        statusEl.textContent = 'Error: ' + e.message;
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-heart-pulse"></i> Run Health Check';
-    }
 }
 </script>
 {% endblock %}

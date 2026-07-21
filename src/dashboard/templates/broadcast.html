@@ -1,0 +1,599 @@
+{% extends "base.html" %}
+{% block title %}Broadcast — STORYFLEET{% endblock %}
+{% block extra_css %}
+<style>
+  .bc-glass { background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.18); backdrop-filter: blur(12px); border-radius: 14px; }
+  .bc-muted { color: #94a3b8; }
+  .bc-badge { display:inline-flex; border-radius:999px; padding:0.15rem 0.55rem; font-size:0.68rem; border:1px solid rgba(148,163,184,0.25); }
+  .bc-draft { color:#cbd5e1; background:rgba(148,163,184,0.12); }
+  .bc-ready { color:#fcd34d; background:rgba(245,158,11,0.12); }
+  .bc-approved { color:#6ee7b7; background:rgba(16,185,129,0.12); }
+  .bc-rejected { color:#fca5a5; background:rgba(239,68,68,0.12); }
+  .bc-dry { color:#7dd3fc; background:rgba(56,189,248,0.12); }
+  .bc-cancel { color:#94a3b8; background:rgba(100,116,139,0.18); }
+  .bc-sev-info { color:#93c5fd; }
+  .bc-sev-warning { color:#fcd34d; }
+  .bc-sev-high { color:#fb923c; }
+  .bc-sev-critical { color:#f87171; }
+  .bc-drawer { position:fixed; top:0; right:0; width:min(420px,100vw); height:100vh; z-index:1050; transform:translateX(100%); transition:transform .25s ease; }
+  .bc-drawer.open { transform:translateX(0); }
+  .bc-drawer-backdrop { position:fixed; inset:0; background:rgba(2,6,23,0.55); z-index:1040; display:none; }
+  .bc-drawer-backdrop.open { display:block; }
+  .bc-timeline { border-left:2px solid rgba(148,163,184,0.25); margin-left:.5rem; padding-left:1rem; }
+  .bc-timeline-item { position:relative; margin-bottom:1rem; }
+  .bc-timeline-item::before { content:''; position:absolute; left:-1.35rem; top:.35rem; width:.55rem; height:.55rem; border-radius:50%; background:#38bdf8; }
+  .bc-stat { min-width:5.5rem; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+  <div>
+    <h2 class="mb-1"><i class="bi bi-megaphone-fill"></i> Broadcast Governance</h2>
+    <p class="bc-muted mb-0 small">Review, validation, and approval workflow — Phase 8C.2. No live sending.</p>
+  </div>
+  <button class="btn btn-outline-light btn-sm" id="bc-refresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+</div>
+<div id="bc-alert"></div>
+<div class="row g-3">
+  <div class="col-lg-4">
+    <div class="bc-glass p-3 mb-3">
+      <h5 class="mb-3">Create draft</h5>
+      <div class="mb-2"><input id="bc-title" class="form-control form-control-sm" placeholder="Campaign title" /></div>
+      <div class="mb-2">
+        <select id="bc-channel" class="form-select form-select-sm">
+          <option value="telegram">Telegram</option>
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+          <option value="manual">Manual</option>
+        </select>
+      </div>
+      <div class="mb-2"><textarea id="bc-body" class="form-control form-control-sm" rows="5" placeholder="Message body with {{name}} variables"></textarea></div>
+      <button class="btn btn-primary btn-sm" id="bc-create">Save draft</button>
+    </div>
+    <div class="bc-glass p-3 mb-3">
+      <h6 class="mb-2">Audience import</h6>
+      <p class="bc-muted small">CSV/manual only. Opted-in recipients. No scraping.</p>
+      <textarea id="bc-audience" class="form-control form-control-sm mb-2" rows="4" placeholder="One identifier per line or CSV with identifier,name,email,phone"></textarea>
+      <button class="btn btn-outline-light btn-sm" id="bc-import" disabled>Import audience</button>
+    </div>
+    <div class="bc-glass p-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">Suppression list</h6>
+        <button class="btn btn-outline-info btn-sm" id="bc-sup-load">Refresh</button>
+      </div>
+      <div class="row g-2 mb-2">
+        <div class="col-6"><select id="bc-sup-channel" class="form-select form-select-sm"><option value="">All channels</option><option value="telegram">Telegram</option><option value="email">Email</option><option value="sms">SMS</option><option value="manual">Manual</option></select></div>
+        <div class="col-6"><input id="bc-sup-search" class="form-control form-control-sm" placeholder="Search" /></div>
+      </div>
+      <div class="row g-2 mb-2">
+        <div class="col-7"><input id="bc-sup-id" class="form-control form-control-sm" placeholder="Identifier to suppress" /></div>
+        <div class="col-5"><input id="bc-sup-reason" class="form-control form-control-sm" placeholder="Reason" value="opt_out" /></div>
+      </div>
+      <button class="btn btn-outline-warning btn-sm mb-2" id="bc-sup-add">Add suppression</button>
+      <div id="bc-sup-list" class="small bc-muted">Loading…</div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="bc-glass p-3 mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Campaigns</h5>
+        <span class="bc-muted small" id="bc-count">0</span>
+      </div>
+      <div id="bc-list" class="small bc-muted">Loading…</div>
+    </div>
+    <div class="bc-glass p-3 mb-3" id="bc-review-panel" style="display:none;">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+        <div>
+          <h5 class="mb-1" id="bc-selected-title">Campaign review</h5>
+          <div id="bc-selected-status"></div>
+        </div>
+        <button class="btn btn-outline-info btn-sm" id="bc-open-validation"><i class="bi bi-shield-check"></i> Validation</button>
+      </div>
+      <div class="d-flex flex-wrap gap-3 mb-3" id="bc-review-stats">
+        <div class="bc-stat"><div class="bc-muted small">Blocking</div><strong id="bc-stat-blocking">—</strong></div>
+        <div class="bc-stat"><div class="bc-muted small">Warnings</div><strong id="bc-stat-warnings">—</strong></div>
+        <div class="bc-stat"><div class="bc-muted small">Audience</div><strong id="bc-stat-audience">—</strong></div>
+        <div class="bc-stat"><div class="bc-muted small">Unresolved vars</div><strong id="bc-stat-vars">—</strong></div>
+      </div>
+      <div class="bc-glass p-3 mb-3" style="background:rgba(2,6,23,0.45);">
+        <h6 class="mb-2">Approval workflow</h6>
+        <p class="bc-muted small mb-2">Governance actions are audited. Tiny cohort live send only — no full campaign send.</p>
+        <div class="d-flex flex-wrap gap-2">
+          <button class="btn btn-outline-warning btn-sm" id="bc-submit-review" disabled>Submit for review</button>
+          <button class="btn btn-success btn-sm" id="bc-approve" disabled>Approve</button>
+          <button class="btn btn-outline-danger btn-sm" id="bc-reject" disabled>Reject</button>
+          <button class="btn btn-outline-secondary btn-sm" id="bc-cancel-campaign" disabled>Cancel</button>
+        </div>
+      </div>
+      <div id="bc-preview-panel">
+        <h6>Message preview</h6>
+        <pre id="bc-preview-text" class="small mb-2" style="white-space:pre-wrap;background:#020617;padding:0.75rem;border-radius:8px;"></pre>
+        <div id="bc-preview-meta" class="small bc-muted"></div>
+        <div class="d-flex flex-wrap gap-2 mt-2">
+          <button class="btn btn-outline-warning btn-sm" id="bc-dry-run" disabled>Run dry-run (no send)</button>
+          <button class="btn btn-outline-light btn-sm" id="bc-export-md" disabled>Export MD</button>
+          <button class="btn btn-outline-light btn-sm" id="bc-export-json" disabled>Export JSON</button>
+          <button class="btn btn-outline-light btn-sm" id="bc-export-csv" disabled>Export CSV</button>
+        </div>
+      </div>
+    </div>
+    <div class="bc-glass p-3 mb-3" id="bc-dry-panel" style="display:none;">
+      <h6>Dry-run result</h6>
+      <div id="bc-dry-meta" class="small mb-2"></div>
+      <div id="bc-dry-samples" class="small"></div>
+      <p class="bc-muted small mt-2 mb-0">Dry-run is audit-only. Use tiny cohort panel below for guarded live send.</p>
+    </div>
+    <div class="bc-glass p-3 mb-3" id="bc-send-panel" style="display:none;">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+        <div>
+          <h5 class="mb-1"><i class="bi bi-lightning-charge"></i> Tiny Cohort Live Send</h5>
+          <p class="bc-muted small mb-0">Max 5 recipients · explicit confirmation · no full campaign sending</p>
+        </div>
+        <button class="btn btn-outline-info btn-sm" id="bc-send-refresh">Refresh preview</button>
+      </div>
+      <div id="bc-send-status" class="mb-3 small"></div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <h6 class="small">Cohort preview</h6>
+          <div id="bc-send-preview" class="small bc-muted">Select a dry-run completed campaign.</div>
+        </div>
+        <div class="col-md-6">
+          <h6 class="small">Validation & limits</h6>
+          <div id="bc-send-validation" class="small bc-muted"></div>
+        </div>
+      </div>
+      <div class="alert alert-warning py-2 small mb-3">
+        <strong>This will send real messages</strong> to the selected tiny cohort only. No bulk send, schedule, or mass resend exists.
+      </div>
+      <button class="btn btn-danger btn-sm" id="bc-send-open" disabled>Send tiny cohort</button>
+      <div id="bc-send-results" class="mt-3 small"></div>
+    </div>
+    <div class="bc-glass p-3" id="bc-audit-panel" style="display:none;">
+      <h6 class="mb-3">Audit timeline</h6>
+      <div id="bc-audit-timeline" class="bc-timeline small"></div>
+    </div>
+  </div>
+</div>
+
+<div class="bc-drawer-backdrop" id="bc-drawer-backdrop"></div>
+<div class="bc-drawer bc-glass p-3" id="bc-validation-drawer">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0"><i class="bi bi-shield-check"></i> Validation</h5>
+    <button class="btn btn-sm btn-outline-light" id="bc-close-validation">&times;</button>
+  </div>
+  <div id="bc-validation-summary" class="mb-3"></div>
+  <div id="bc-validation-issues"></div>
+</div>
+
+<div class="modal fade" id="bcSendModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content bg-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">Confirm tiny cohort send</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-warning">This action sends real messages to a tiny test cohort only.</p>
+        <p class="small bc-muted mb-2">Type the exact confirmation phrase:</p>
+        <code id="bc-send-phrase" class="d-block mb-2"></code>
+        <input id="bc-send-phrase-input" class="form-control form-control-sm mb-2" placeholder="Confirmation phrase" />
+        <textarea id="bc-send-note" class="form-control form-control-sm" rows="2" placeholder="Operator note (optional)"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger btn-sm" id="bc-send-confirm" disabled>Send tiny cohort</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="bcConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content bg-dark">
+      <div class="modal-header">
+        <h5 class="modal-title" id="bcConfirmTitle">Confirm action</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p id="bcConfirmMessage" class="mb-2"></p>
+        <textarea id="bcConfirmReason" class="form-control form-control-sm" rows="3" placeholder="Reason or comment (required for reject)" style="display:none;"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-primary btn-sm" id="bcConfirmAction">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+(function(){
+  const API = {{ api_base|tojson }};
+  let selectedId = null;
+  let selectedCampaign = null;
+  let validationData = null;
+  let sendPreviewData = null;
+  let confirmHandler = null;
+  const confirmModal = new bootstrap.Modal(document.getElementById('bcConfirmModal'));
+  const sendModal = new bootstrap.Modal(document.getElementById('bcSendModal'));
+
+  const WORKFLOW = {
+    draft: { submit: true, cancel: true },
+    ready_for_review: { approve: true, reject: true, cancel: true },
+    approved: { cancel: true, dryRun: true },
+    rejected: { cancel: true },
+    dry_run_completed: { cancel: true, export: true },
+    cancelled: {},
+  };
+
+  function esc(v){ return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+  function alertMsg(msg, tone='warning'){
+    document.getElementById('bc-alert').innerHTML = `<div class="alert alert-${tone} py-2">${esc(msg)}</div>`;
+  }
+  function statusBadge(s){
+    const cls = {
+      draft:'bc-draft', ready_for_review:'bc-ready', approved:'bc-approved',
+      rejected:'bc-rejected', dry_run_completed:'bc-dry', cancelled:'bc-cancel'
+    }[s] || 'bc-draft';
+    return `<span class="bc-badge ${cls}">${esc(s)}</span>`;
+  }
+  function sevClass(sev){
+    return {INFO:'bc-sev-info', WARNING:'bc-sev-warning', HIGH:'bc-sev-high', CRITICAL:'bc-sev-critical'}[sev] || 'bc-muted';
+  }
+
+  function confirmAction(title, message, { needsReason=false, onConfirm }){
+    document.getElementById('bcConfirmTitle').textContent = title;
+    document.getElementById('bcConfirmMessage').textContent = message;
+    const reasonEl = document.getElementById('bcConfirmReason');
+    reasonEl.style.display = needsReason ? 'block' : 'none';
+    reasonEl.value = '';
+    confirmHandler = onConfirm;
+    confirmModal.show();
+  }
+
+  document.getElementById('bcConfirmAction').addEventListener('click', async () => {
+    if(!confirmHandler) return;
+    try {
+      await confirmHandler(document.getElementById('bcConfirmReason').value.trim());
+      confirmModal.hide();
+    } catch (e) {
+      alertMsg(e.message || 'Action failed', 'danger');
+    }
+  });
+
+  async function loadCampaigns(){
+    const data = await dashboardFetchJson(`${API}/campaigns`);
+    document.getElementById('bc-count').textContent = `${data.length} campaigns`;
+    if(!data.length){
+      document.getElementById('bc-list').innerHTML = 'No campaigns yet.';
+      return;
+    }
+    document.getElementById('bc-list').innerHTML = data.map(c => `
+      <div class="border-bottom border-secondary py-2">
+        <div class="d-flex justify-content-between gap-2">
+          <strong>${esc(c.title)}</strong>${statusBadge(c.status)}
+        </div>
+        <div class="bc-muted">${esc(c.channel)} · ${c.audience_count} recipients</div>
+        <button class="btn btn-link btn-sm p-0" data-select="${c.id}">Review</button>
+      </div>`).join('');
+    document.querySelectorAll('[data-select]').forEach(btn => btn.addEventListener('click', () => selectCampaign(btn.getAttribute('data-select'))));
+  }
+
+  function updateWorkflowButtons(status){
+    const rules = WORKFLOW[status] || {};
+    document.getElementById('bc-submit-review').disabled = !rules.submit;
+    document.getElementById('bc-approve').disabled = !rules.approve;
+    document.getElementById('bc-reject').disabled = !rules.reject;
+    document.getElementById('bc-cancel-campaign').disabled = !rules.cancel;
+    document.getElementById('bc-dry-run').disabled = !rules.dryRun;
+    const canExport = !!rules.export;
+    document.getElementById('bc-export-md').disabled = !canExport;
+    document.getElementById('bc-export-json').disabled = !canExport;
+    document.getElementById('bc-export-csv').disabled = !canExport;
+  }
+
+  function renderValidationDrawer(data){
+    validationData = data;
+    document.getElementById('bc-validation-summary').innerHTML =
+      `<div class="${data.valid ? 'text-success' : 'text-danger'}">${data.valid ? 'Validation passed' : 'Blocking issues present'}</div>` +
+      `<div class="bc-muted small">${data.blocking_count} blocking · ${data.warning_count} warnings</div>`;
+    document.getElementById('bc-stat-blocking').textContent = data.blocking_count;
+    document.getElementById('bc-stat-warnings').textContent = data.warning_count;
+    document.getElementById('bc-stat-vars').textContent = (data.unresolved_variables || []).length;
+    const grouped = { CRITICAL: [], HIGH: [], WARNING: [], INFO: [] };
+    (data.issues || []).forEach(i => (grouped[i.severity] || grouped.INFO).push(i));
+    document.getElementById('bc-validation-issues').innerHTML = ['CRITICAL','HIGH','WARNING','INFO'].map(sev => {
+      const items = grouped[sev];
+      if(!items.length) return '';
+      return `<div class="mb-3"><div class="${sevClass(sev)} fw-semibold mb-1">${sev}</div>` +
+        items.map(i => `<div class="mb-2 p-2 rounded" style="background:rgba(2,6,23,0.5);"><div>${esc(i.message)}</div><div class="bc-muted small">${esc(i.recommended_fix || '')}</div></div>`).join('') +
+        '</div>';
+    }).join('');
+  }
+
+  async function loadValidation(id){
+    const data = await dashboardFetchJson(`${API}/campaigns/${id}/validation`);
+    renderValidationDrawer(data);
+    return data;
+  }
+
+  async function loadAudit(id){
+    const rows = await dashboardFetchJson(`${API}/campaigns/${id}/audit`);
+    document.getElementById('bc-audit-panel').style.display = 'block';
+    document.getElementById('bc-audit-timeline').innerHTML = rows.length ? rows.map(row => {
+      const details = row.details || {};
+      const detailText = details.reason || details.previous_status ? `${details.previous_status || ''} → ${details.new_status || ''} ${details.reason || ''}`.trim() : JSON.stringify(details);
+      return `<div class="bc-timeline-item"><div><strong>${esc(row.action)}</strong> <span class="bc-muted">· ${esc(row.actor)}</span></div><div class="bc-muted">${esc(row.created_at)}</div><div>${esc(detailText)}</div></div>`;
+    }).join('') : '<span class="bc-muted">No audit events yet.</span>';
+  }
+
+  async function selectCampaign(id){
+    selectedId = id;
+    document.getElementById('bc-import').disabled = false;
+    document.getElementById('bc-review-panel').style.display = 'block';
+    const campaign = await dashboardFetchJson(`${API}/campaigns/${id}`);
+    selectedCampaign = campaign;
+    document.getElementById('bc-selected-title').textContent = campaign.title;
+    document.getElementById('bc-selected-status').innerHTML = statusBadge(campaign.status);
+    document.getElementById('bc-stat-audience').textContent = campaign.audience_count;
+    updateWorkflowButtons(campaign.status);
+    const validation = await loadValidation(id);
+    const preview = await dashboardFetchJson(`${API}/campaigns/${id}/preview`, {method:'POST'});
+    document.getElementById('bc-preview-text').textContent = preview.rendered_example || '';
+    document.getElementById('bc-preview-meta').innerHTML =
+      `Variables: ${esc((preview.variables_detected||[]).join(', ') || 'none')} · Estimated recipients: ${preview.estimated_recipient_count}` +
+      (preview.safety_warnings?.length ? `<br>Warnings: ${esc(preview.safety_warnings.join('; '))}` : '');
+    if(!validation.valid && ['ready_for_review','approved'].includes(campaign.status)){
+      document.getElementById('bc-approve').disabled = true;
+    }
+    await loadAudit(id);
+    await loadSendPreview(id);
+  }
+
+  async function loadSendPreview(id){
+    const panel = document.getElementById('bc-send-panel');
+    if(!selectedCampaign || selectedCampaign.status !== 'dry_run_completed'){
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = 'block';
+    try {
+      const data = await dashboardFetchJson(`${API}/campaigns/${id}/send/preview?limit=5`);
+      sendPreviewData = data;
+      renderSendPanel(data);
+    } catch (e) {
+      document.getElementById('bc-send-status').innerHTML = `<span class="text-danger">${esc(e.message || 'Send preview unavailable')}</span>`;
+      document.getElementById('bc-send-open').disabled = true;
+    }
+  }
+
+  function renderSendPanel(data){
+    const live = data.live_send_enabled ? '<span class="text-success">Enabled</span>' : '<span class="text-danger">Disabled</span>';
+    const provider = data.provider_available
+      ? `<span class="text-success">${esc(data.provider_name || 'available')}</span>`
+      : '<span class="text-warning">Unavailable</span>';
+    document.getElementById('bc-send-status').innerHTML =
+      `Live sending: ${live} · Provider: ${provider} · Tiny cohort max: ${data.max_allowed} · Hard cap: ${data.hard_cap}` +
+      (data.last_batch ? `<br>Last batch: ${esc(data.last_batch.status)} · ${esc(data.last_batch.created_at || '')}` : '');
+    document.getElementById('bc-send-preview').innerHTML = (data.tiny_cohort_preview || []).map(r =>
+      `<div class="mb-1"><strong>${esc(r.identifier_redacted)}</strong><div class="bc-muted">${esc(r.rendered_message_preview || '')}</div></div>`
+    ).join('') || '<span class="bc-muted">No eligible recipients in tiny cohort preview.</span>';
+    document.getElementById('bc-send-validation').innerHTML =
+      `Validation: ${data.validation_valid ? '<span class="text-success">Clean</span>' : '<span class="text-danger">Blocking issues</span>'}` +
+      `<br>Eligible: ${data.eligible_count} · Selected: ${data.selected_count} · Suppressed skipped: ${data.skipped_suppressed}` +
+      (data.blocking_reasons?.length ? `<br>Blocking: ${esc(data.blocking_reasons.join('; '))}` : '');
+    document.getElementById('bc-send-open').disabled = !(data.can_send && data.live_send_enabled);
+    document.getElementById('bc-send-phrase').textContent = data.confirmation_phrase || '';
+  }
+
+  function renderSendResults(result){
+    document.getElementById('bc-send-results').innerHTML =
+      `<div class="mb-2"><strong>Batch ${esc(result.batch_id)}</strong> · ${esc(result.status)} · sent ${result.sent_count} / failed ${result.failed_count} / skipped ${result.skipped_count}</div>` +
+      (result.delivery_results || []).map(r =>
+        `<div class="mb-1">${esc(r.recipient_identifier_redacted)} · ${esc(r.status)} · ${esc(r.provider)}` +
+        (r.error_message_redacted ? ` · ${esc(r.error_message_redacted)}` : '') + '</div>'
+      ).join('');
+  }
+
+  document.getElementById('bc-send-refresh').addEventListener('click', () => selectedId && loadSendPreview(selectedId));
+  document.getElementById('bc-send-open').addEventListener('click', () => {
+    if(!sendPreviewData) return;
+    document.getElementById('bc-send-phrase').textContent = sendPreviewData.confirmation_phrase || '';
+    document.getElementById('bc-send-phrase-input').value = '';
+    document.getElementById('bc-send-note').value = '';
+    document.getElementById('bc-send-confirm').disabled = true;
+    sendModal.show();
+  });
+  document.getElementById('bc-send-phrase-input').addEventListener('input', (e) => {
+    const expected = (sendPreviewData && sendPreviewData.confirmation_phrase) || '';
+    document.getElementById('bc-send-confirm').disabled = e.target.value.trim() !== expected;
+  });
+  document.getElementById('bc-send-confirm').addEventListener('click', async () => {
+    if(!selectedId || !sendPreviewData) return;
+    try {
+      const result = await dashboardFetchJson(`${API}/campaigns/${selectedId}/send/tiny-cohort`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          confirmation_text: document.getElementById('bc-send-phrase-input').value.trim(),
+          operator_note: document.getElementById('bc-send-note').value.trim() || null,
+          limit: Math.min(sendPreviewData.max_allowed || 5, 5),
+        }),
+      });
+      sendModal.hide();
+      renderSendResults(result);
+      alertMsg(`Tiny cohort send completed: ${result.sent_count} sent.`, 'success');
+      await loadAudit(selectedId);
+      await loadSendPreview(selectedId);
+    } catch (e) {
+      alertMsg(e.message || 'Tiny cohort send failed', 'danger');
+    }
+  });
+
+  async function workflowPost(action, body={}){
+    return dashboardFetchJson(`${API}/campaigns/${selectedId}/${action}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+  }
+
+  document.getElementById('bc-submit-review').addEventListener('click', () => {
+    confirmAction('Submit for review', 'Send this campaign to operator review? Validation must pass.', {
+      onConfirm: async () => {
+        await workflowPost('submit-review', {});
+        alertMsg('Submitted for review.', 'success');
+        await loadCampaigns();
+        await selectCampaign(selectedId);
+      }
+    });
+  });
+
+  document.getElementById('bc-approve').addEventListener('click', () => {
+    confirmAction('Approve campaign', 'Approve this campaign for dry-run only (no live send)?', {
+      onConfirm: async (comment) => {
+        await workflowPost('approve', { comment: comment || null });
+        alertMsg('Campaign approved.', 'success');
+        await loadCampaigns();
+        await selectCampaign(selectedId);
+      }
+    });
+  });
+
+  document.getElementById('bc-reject').addEventListener('click', () => {
+    confirmAction('Reject campaign', 'Provide a rejection reason.', {
+      needsReason: true,
+      onConfirm: async (reason) => {
+        if(!reason) throw new Error('Rejection reason is required');
+        await workflowPost('reject', { reason });
+        alertMsg('Campaign rejected.', 'warning');
+        await loadCampaigns();
+        await selectCampaign(selectedId);
+      }
+    });
+  });
+
+  document.getElementById('bc-cancel-campaign').addEventListener('click', () => {
+    confirmAction('Cancel campaign', 'Cancel this campaign? This cannot be undone.', {
+      onConfirm: async (reason) => {
+        await workflowPost('cancel', { reason: reason || null });
+        alertMsg('Campaign cancelled.', 'secondary');
+        await loadCampaigns();
+        await selectCampaign(selectedId);
+      }
+    });
+  });
+
+  document.getElementById('bc-open-validation').addEventListener('click', () => {
+    document.getElementById('bc-validation-drawer').classList.add('open');
+    document.getElementById('bc-drawer-backdrop').classList.add('open');
+  });
+  document.getElementById('bc-close-validation').addEventListener('click', closeDrawer);
+  document.getElementById('bc-drawer-backdrop').addEventListener('click', closeDrawer);
+  function closeDrawer(){
+    document.getElementById('bc-validation-drawer').classList.remove('open');
+    document.getElementById('bc-drawer-backdrop').classList.remove('open');
+  }
+
+  async function loadSuppression(){
+    const channel = document.getElementById('bc-sup-channel').value;
+    const search = document.getElementById('bc-sup-search').value.trim();
+    const qs = new URLSearchParams();
+    if(channel) qs.set('channel', channel);
+    if(search) qs.set('search', search);
+    const rows = await dashboardFetchJson(`${API}/suppression?${qs.toString()}`);
+    document.getElementById('bc-sup-list').innerHTML = rows.length ? `
+      <table class="table table-sm table-dark mb-0"><thead><tr><th>Recipient</th><th>Channel</th><th>Reason</th><th></th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${esc(r.identifier_redacted || r.identifier)}</td><td>${esc(r.channel)}</td><td>${esc(r.reason)}</td><td><button class="btn btn-link btn-sm p-0 text-danger" data-sup-del="${r.id}">Remove</button></td></tr>`).join('')}
+      </tbody></table>` : '<span class="bc-muted">No suppression entries.</span>';
+    document.querySelectorAll('[data-sup-del]').forEach(btn => btn.addEventListener('click', async () => {
+      if(!confirm('Remove suppression entry?')) return;
+      const resp = await fetch(`${API}/suppression/${btn.getAttribute('data-sup-del')}`, { method:'DELETE', credentials:'same-origin', headers: ADMIN_TOKEN ? {'X-Admin-Token': ADMIN_TOKEN} : {} });
+      if(!resp.ok){ alertMsg('Failed to remove suppression', 'danger'); return; }
+      await loadSuppression();
+    }));
+  }
+
+  document.getElementById('bc-sup-load').addEventListener('click', loadSuppression);
+  document.getElementById('bc-sup-add').addEventListener('click', async () => {
+    const identifier = document.getElementById('bc-sup-id').value.trim();
+    const channel = document.getElementById('bc-sup-channel').value || 'email';
+    if(!identifier){ alertMsg('Identifier required', 'warning'); return; }
+    try {
+      await dashboardFetchJson(`${API}/suppression`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ channel, identifier, reason: document.getElementById('bc-sup-reason').value.trim() || 'opt_out' }),
+      });
+      document.getElementById('bc-sup-id').value = '';
+      await loadSuppression();
+      alertMsg('Suppression added.', 'success');
+    } catch (e) { alertMsg(e.message || 'Failed', 'danger'); }
+  });
+
+  async function exportDryRun(fmt){
+    const resp = await fetch(`${API}/campaigns/${selectedId}/dry-run/export?fmt=${fmt}`, { credentials:'same-origin', headers: ADMIN_TOKEN ? {'X-Admin-Token': ADMIN_TOKEN} : {} });
+    if(!resp.ok){ alertMsg('Export failed', 'danger'); return; }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `broadcast-dry-run.${fmt === 'markdown' ? 'md' : fmt}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  document.getElementById('bc-export-md').addEventListener('click', () => exportDryRun('markdown'));
+  document.getElementById('bc-export-json').addEventListener('click', () => exportDryRun('json'));
+  document.getElementById('bc-export-csv').addEventListener('click', () => exportDryRun('csv'));
+
+  document.getElementById('bc-create').addEventListener('click', async () => {
+    try {
+      await dashboardFetchJson(`${API}/campaigns`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          title: document.getElementById('bc-title').value.trim(),
+          channel: document.getElementById('bc-channel').value,
+          message_body: document.getElementById('bc-body').value,
+        }),
+      });
+      alertMsg('Draft created.', 'success');
+      await loadCampaigns();
+    } catch (e) { alertMsg(e.message || 'Failed to create draft', 'danger'); }
+  });
+
+  document.getElementById('bc-import').addEventListener('click', async () => {
+    if(!selectedId) return;
+    const text = document.getElementById('bc-audience').value.trim();
+    try {
+      const result = await dashboardFetchJson(`${API}/campaigns/${selectedId}/audience/import`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ manual_text: text, csv_text: text.includes(',') ? text : null }),
+      });
+      alertMsg(`Imported ${result.eligible_count} eligible recipients (${result.duplicate_count} dupes, ${result.suppressed_count} suppressed).`, 'success');
+      await loadCampaigns();
+      await selectCampaign(selectedId);
+    } catch (e) { alertMsg(e.message || 'Import failed', 'danger'); }
+  });
+
+  document.getElementById('bc-dry-run').addEventListener('click', async () => {
+    if(!selectedId) return;
+    try {
+      const dry = await dashboardFetchJson(`${API}/campaigns/${selectedId}/dry-run`, {method:'POST'});
+      document.getElementById('bc-dry-panel').style.display = 'block';
+      document.getElementById('bc-dry-meta').innerHTML =
+        `Recipients: ${dry.recipient_count} · Mode: ${esc(dry.send_plan.mode)} · Live send attempted: ${dry.live_send_attempted ? 'yes' : 'no'}`;
+      document.getElementById('bc-dry-samples').innerHTML = (dry.sample_recipients||[]).map(s =>
+        `<div class="mb-2"><strong>${esc(s.identifier)}</strong><pre class="small mb-0" style="white-space:pre-wrap;background:#020617;padding:0.5rem;border-radius:6px;">${esc(s.rendered_message)}</pre></div>`
+      ).join('') || '<span class="bc-muted">No samples.</span>';
+      await loadCampaigns();
+      await selectCampaign(selectedId);
+    } catch (e) { alertMsg(e.message || 'Dry-run failed', 'danger'); }
+  });
+
+  document.getElementById('bc-refresh').addEventListener('click', async () => {
+    await loadCampaigns();
+    if(selectedId) await selectCampaign(selectedId);
+  });
+
+  loadCampaigns();
+  loadSuppression();
+})();
+</script>
+{% endblock %}
