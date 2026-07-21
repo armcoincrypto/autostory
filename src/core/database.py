@@ -197,7 +197,8 @@ def _import_optional_model_module(module_name: str) -> None:
     except ModuleNotFoundError as exc:
         # Only suppress absence of the requested optional module itself. A
         # missing dependency inside an installed module is a real startup bug.
-        if exc.name != module_name:
+        missing = str(exc.name or "")
+        if missing != module_name and not module_name.startswith(f"{missing}."):
             raise
         logger.warning("optional_model_module_unavailable", module=module_name)
 
