@@ -35,6 +35,7 @@
 - AI: OpenAI-backed draft generation for Telegram negotiation tasks
 - Telegram: Telethon user-account sessions, stories, channel/group scheduling, readiness, gateway, and delivery records
 - Media: persistent files under `/opt/autostory/data/media`; nginx body limit is 50 MiB
+- Schema management: startup-time `create_all()` and ad hoc `ALTER TABLE`; Alembic is declared but no migration tree was found
 
 ## Runtime
 
@@ -49,6 +50,14 @@
 - `kathleen-account-listener`: inactive, disabled
 
 The effective systemd units include local drop-ins not represented entirely by repository unit files. Some effective units run as root. The web drop-in contains account identifiers/phone metadata directly in unit configuration, which is an operational information-exposure risk.
+
+## Secrets and session material
+
+- `/opt/autostory/.env` is mode `0644`.
+- Three `.env.bak.2026-03-15_*` files are mode `0644` and tracked by Git.
+- Additional untracked `.env.backup.*` and phase backup files are present.
+- The `accounts.session_string` column is plain SQLAlchemy `Text`; a source comment calls it encrypted, but universal encryption/decryption enforcement was not found.
+- Environment or Telegram session values were not read or printed during discovery.
 
 ## Authentication and authorization
 

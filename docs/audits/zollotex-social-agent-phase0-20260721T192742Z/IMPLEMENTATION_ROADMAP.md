@@ -12,7 +12,9 @@ Before Phase 1 code:
 6. prove runtime tree equality to one commit;
 7. correct origin TLS through the approved operator process;
 8. classify and repair the 910 FK violations on a copy, then rehearse migration;
-9. document current scheduler activation and reconcile stale audit claims.
+9. restrict secret artifacts, remove tracked backups through a reviewed incident response, and rotate affected credentials;
+10. design and rehearse encryption migration for Telegram session material;
+11. document current scheduler activation and reconcile stale audit claims.
 
 Gate: `ZOLLOTEX_SOCIAL_AGENT_PHASE_0_DISCOVERY_PASS`
 

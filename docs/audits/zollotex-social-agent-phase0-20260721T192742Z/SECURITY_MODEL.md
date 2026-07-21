@@ -48,8 +48,12 @@ Trusted enforcement must remain in backend code, never in prompts or frontend co
 - optional shared admin token is broader than required;
 - API auth allows legacy authenticated users with null admin state;
 - provider/session secrets are stored in host `.env` and filesystem session files without a demonstrated application-level envelope-encryption model;
+- live and backup environment files are mode `0644`, and three secret-bearing backups are tracked by Git;
+- `accounts.session_string` is stored in a plain text column without demonstrated universal encryption enforcement;
 - some sensitive account metadata is embedded in systemd drop-ins;
 - web/readiness services run as root;
+- broad API CSRF exemptions make correctness depend on every route applying authentication and origin/session protections consistently;
+- full phone numbers are exposed by some internal APIs/log paths;
 - no typed tool authorization/confirmation framework;
 - no general prompt-injection containment;
 - no provider credential metadata/rotation model;
@@ -62,12 +66,13 @@ Trusted enforcement must remain in backend code, never in prompts or frontend co
 1. Unauthorized social publishing or message sending.
 2. Duplicate external posts after retries/timeouts.
 3. Credential/session theft.
-4. Prompt injection causing unauthorized tool use.
-5. Cross-workspace data exposure.
-6. Stale or fabricated Exswaping facts presented as current.
-7. Malicious upload or webhook processing.
-8. Deployment from an unreviewed dirty runtime.
-9. Provider capability overclaiming and false success reporting.
+4. Secret persistence in Git history and backup artifacts.
+5. Prompt injection causing unauthorized tool use.
+6. Cross-workspace data exposure.
+7. Stale or fabricated Exswaping facts presented as current.
+8. Malicious upload or webhook processing.
+9. Deployment from an unreviewed dirty runtime.
+10. Provider capability overclaiming and false success reporting.
 
 ## Fail-closed rules
 

@@ -5,11 +5,12 @@
 - Audit mode: read-only infrastructure and production inspection; isolated documentation worktree only
 - Canonical existing application repository: `/opt/autostory`
 - Isolated audit worktree: `/opt/zollotex-social-agent-phase0`
-- Audit branch/SHA: `feature/zollotex-social-agent-phase0-20260721` / `6f78eb91399562248e875e7da449226d3ee65c5d`
+- Audit branch/base SHA: `feature/zollotex-social-agent-phase0-20260721` / `6f78eb91399562248e875e7da449226d3ee65c5d`
+- Follow-up evidence amendment: `2026-07-21T19:32Z`
 
 ## Verdict
 
-`ZOLLOTEX_SOCIAL_AGENT_PHASE_0_DISCOVERY_BLOCKED_LINEAGE_TLS_DATA_INTEGRITY`
+`ZOLLOTEX_SOCIAL_AGENT_PHASE_0_DISCOVERY_BLOCKED_LINEAGE_TLS_DATA_INTEGRITY_SECURITY`
 
 The hostname spelling is resolved: `ex.zellotex.com` is the evidenced canonical hostname for the existing Storyfleet/AutoStory operator product. It has live DNS, a Cloudflare edge certificate for `*.zellotex.com`, an nginx server block, and a healthy Storyfleet response. `ex.zollotex.com`, `zollotex.com`, and `ex.zollotex` do not resolve.
 
@@ -29,7 +30,9 @@ The hostname is already owned by AutoStory and must not be reassigned. The Socia
 - AI: OpenAI configuration and a Telegram negotiation-oriented AI Agent exist; there is no general typed Social AI tool registry.
 - Authentication: Flask-Login local users with one `is_admin` boolean and an optional shared admin API token; no workspace RBAC.
 - Existing providers: Telegram only. No certified Meta, X, LinkedIn, Discord, YouTube, or TikTok adapters were found.
-- Exswaping evidence: `/root/Swaperex` is now a Kobbex-branded non-custodial DEX repository. It does not expose the requested public business-content API for exchange rates, directions, reserves, promotions, news, blog, referrals, or approved company facts.
+- Secret storage: the live `.env` and three tracked secret-bearing `.env.bak.*` files are mode `0644`; numerous additional untracked environment backups exist. No values were inspected or reproduced.
+- Telegram credentials: the account model stores `session_string` as plain `Text`; the “Encrypted session data” comment is not evidence of universal encryption.
+- Exswaping evidence: `/root/Swaperex` is now a Kobbex-branded non-custodial DEX repository. Public 1inch quote and CoinGecko price proxies exist, but they are upstream passthroughs rather than an approved, normalized Exswaping business-content API. Directions, reserves, promotions, news, blog, referrals, and approved company facts remain unavailable as supported APIs.
 
 ## Safety actions
 
@@ -46,7 +49,9 @@ The hostname is already owned by AutoStory and must not be reassigned. The Socia
 4. Origin TLS is expired and does not cover `ex.zellotex.com`.
 5. The live SQLite database has 910 foreign-key violations and a recent corruption recovery history.
 6. Production scheduler is active despite older documentation describing it as stopped; runtime truth must supersede stale audit prose.
-7. There is no approved Exswaping public-content API contract.
-8. Current authentication and authorization do not meet the required role/workspace model.
+7. Secret-bearing environment files/backups are world-readable to local users, and three backups are tracked by Git.
+8. Telegram session strings lack demonstrated universal encryption at rest.
+9. There is no approved Exswaping public-content API contract.
+10. Current authentication and authorization do not meet the required role/workspace model.
 
 Phase 1 production promotion is prohibited until these blockers are closed. Isolated implementation may continue in a clean worktree after the target baseline is explicitly certified.
