@@ -42,9 +42,9 @@ from config.settings import settings
 from src.core.database import get_db_context
 from src.core.identity_audit import classify_identity_from_me
 from src.core.models import Account, Story, SystemLog
-from src.core.account_operational_state import (
-    _resolve_session_path,
-    _sqlite_schema_version_readonly,
+from src.clients.session_inspect import (
+    resolve_existing_session_path,
+    sqlite_schema_version_readonly,
 )
 
 
@@ -235,12 +235,12 @@ class SessionInspection:
 
 def inspect_session(account: Account) -> SessionInspection:
     raw = (getattr(account, "session_string", None) or "").strip()
-    exists, resolved = _resolve_session_path(account)
+    exists, resolved = resolve_existing_session_path(account)
     path = Path(resolved) if exists and resolved else None
     diagnostics: list[str] = []
 
     if path is not None:
-        version, columns, warnings = _sqlite_schema_version_readonly(path)
+        version, columns, warnings = sqlite_schema_version_readonly(path)
         diagnostics.extend(warnings)
         try:
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as conn:
