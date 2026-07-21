@@ -1,0 +1,862 @@
+{% extends "base.html" %}
+{% block title %}AI Agent — STORYFLEET{% endblock %}
+{% block extra_css %}
+<style>
+  .ai-task-row { cursor: pointer; }
+  .ai-task-row.table-active { --bs-table-bg: rgba(99, 102, 241, 0.15); }
+  .ai-draft-bubble {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 1rem;
+    white-space: pre-wrap;
+    font-size: 0.95rem;
+    max-height: 280px;
+    overflow: auto;
+  }
+  .ai-detail-placeholder { color: #94a3b8; }
+  .ai-kv dt { color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
+  .ai-kv dd { margin-bottom: 0.35rem; }
+  .ai-deal-card dd { font-weight: 500; }
+  .ai-section-title { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: #94a3b8; }
+  .ai-chat-row { border-radius: 10px; padding: 0.45rem 0.65rem; margin-bottom: 0.35rem; max-width: 95%; font-size: 0.88rem; }
+  .ai-chat-start { background: #1e293b; border: 1px solid #334155; align-self: flex-start; }
+  .ai-chat-end { background: #312e81; border: 1px solid #4338ca; align-self: flex-end; margin-left: auto; }
+  .ai-chat-meta { font-size: 0.65rem; color: #94a3b8; margin-bottom: 0.15rem; }
+  .ai-timeline-wrap { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; }
+  .ai-esc-bar { border: 1px solid rgba(56, 189, 248, 0.35); background: rgba(14, 165, 233, 0.08); color: #bae6fd; }
+  .ai-lang-chip { font-size: 0.7rem; letter-spacing: 0.04em; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h2 class="mb-0"><i class="bi bi-robot"></i> AI Agent</h2>
+  <button type="button" class="btn btn-outline-light btn-sm" id="ai-refresh-tasks" title="Reload">
+    <i class="bi bi-arrow-clockwise"></i> Refresh
+  </button>
+</div>
+
+<div id="ai-global-alert"></div>
+
+<!-- A) Create task -->
+<div class="card mb-3" id="ai-area-create">
+  <div class="card-header py-2"><strong>Create task</strong></div>
+  <div class="card-body py-3">
+    <form id="ai-new-task-form" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small mb-0">Account</label>
+        <select class="form-select form-select-sm" id="ai-nt-account" required></select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small mb-0">Target</label>
+        <input class="form-control form-control-sm" id="ai-nt-target" placeholder="@username" required />
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small mb-0">Goal</label>
+        <input class="form-control form-control-sm" id="ai-nt-goal" placeholder="e.g. Buy USDT with cash…" required />
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-primary btn-sm w-100" id="ai-nt-submit">
+          <i class="bi bi-plus-lg"></i> Create
+        </button>
+      </div>
+      <div class="col-12">
+        <details class="mt-2" id="ai-nt-advanced">
+          <summary class="small text-secondary" style="cursor:pointer">Advanced</summary>
+          <div class="row g-2 align-items-end pt-2">
+            <div class="col-md-2">
+              <label class="form-label small mb-0">Language</label>
+              <select class="form-select form-select-sm" id="ai-nt-lang">
+                <option value="auto" selected>auto</option>
+                <option value="en">en</option>
+                <option value="ru">ru</option>
+                <option value="hy">hy</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small mb-0">Style</label>
+              <select class="form-select form-select-sm" id="ai-nt-tone">
+                <option value="professional" selected>professional</option>
+                <option value="friendly">friendly</option>
+                <option value="strict">strict</option>
+                <option value="neutral">neutral</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small mb-0">Max messages</label>
+              <input type="number" class="form-control form-control-sm" id="ai-nt-max" value="10" min="1" max="100" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small mb-0">Auto mode</label>
+              <select class="form-select form-select-sm" id="ai-nt-auto">
+                <option value="autonomous" selected>autonomous</option>
+                <option value="supervised">supervised</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+          </div>
+        </details>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- B) Active tasks -->
+  <div class="col-lg-5 col-12" id="ai-area-list">
+    <div class="card">
+      <div class="card-header py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <strong>Active tasks</strong>
+        <span class="small text-secondary" id="ai-task-count">0</span>
+      </div>
+      <div class="card-body py-2 border-bottom">
+        <div class="row g-2 align-items-center">
+          <div class="col-sm-7">
+            <input type="search" class="form-control form-control-sm" id="ai-filter-q" placeholder="Search…" />
+          </div>
+          <div class="col-sm-5">
+            <select class="form-select form-select-sm" id="ai-filter-status">
+              <option value="">Active (default)</option>
+              <option value="all">All</option>
+              <option value="draft">New</option>
+              <option value="waiting_admin_approval">Draft ready</option>
+              <option value="waiting_reply">Waiting reply</option>
+              <option value="ready_for_operator">Ready</option>
+              <option value="risky">Risk review</option>
+              <option value="paused">Paused</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+          <div class="col-12">
+            <div class="form-check mb-0">
+              <input class="form-check-input" type="checkbox" id="ai-filter-show-archived" />
+              <label class="form-check-label small" for="ai-filter-show-archived">Show paused / completed / failed / cancelled</label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card-body p-0 table-responsive">
+        <table class="table table-hover table-sm mb-0">
+          <thead class="table-dark">
+            <tr>
+              <th>ID</th>
+              <th>Target</th>
+              <th>Status</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody id="ai-task-tbody">
+            <tr><td colspan="4" class="text-secondary p-3">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- C) Selected task -->
+  <div class="col-lg-7 col-12" id="ai-area-detail">
+    <div id="ai-detail-empty" class="card ai-detail-placeholder">
+      <div class="card-body text-center py-5">
+        <i class="bi bi-hand-index" style="font-size:2rem;"></i>
+        <p class="mb-0 mt-2 small">Select a task.</p>
+      </div>
+    </div>
+
+    <div id="ai-detail-panel" class="d-none">
+      <div class="card mb-2">
+        <div class="card-body py-3">
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
+            <div>
+              <div class="ai-section-title mb-1">Task</div>
+              <h4 class="mb-0" id="ai-head-title">#—</h4>
+            </div>
+            <div class="text-end small d-flex flex-column align-items-end gap-1">
+              <div class="d-flex flex-wrap align-items-center justify-content-end gap-1">
+                <span class="text-secondary">Status</span>
+                <span class="badge bg-primary" id="ai-head-status">—</span>
+                <span class="badge rounded-pill bg-dark border border-secondary ai-lang-chip px-2 py-0" id="ai-lang-chip" title="Language from seller messages">—</span>
+              </div>
+              <div><span class="text-secondary me-1">Risk</span><span id="ai-risk-badge" class="badge bg-secondary">—</span></div>
+            </div>
+          </div>
+          <div class="mb-2 pb-2 border-bottom border-secondary">
+            <span class="ai-section-title">Recommended action</span>
+            <div class="fw-semibold fs-6 mt-1" id="ai-head-recommended">—</div>
+          </div>
+          <div id="ai-escalation-compact" class="ai-esc-bar alert py-2 px-3 small mb-2 d-none" role="status"></div>
+          <div class="mb-1 small text-secondary" id="ai-deal-pct-line"></div>
+          <dl class="row ai-kv mb-2 small">
+            <dt class="col-sm-4">Target</dt><dd class="col-sm-8 text-break mb-1" id="ai-head-target">—</dd>
+          </dl>
+          <details class="mb-2 small" id="ai-head-account-wrap">
+            <summary class="text-secondary" style="cursor:pointer">Account</summary>
+            <div class="mt-1 text-break" id="ai-head-account">—</div>
+          </details>
+          <div id="ai-head-account-warn" class="alert alert-warning py-1 px-2 small d-none mb-2"></div>
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            <button type="button" class="btn btn-primary btn-sm" id="ai-primary-btn">Start</button>
+            <div class="dropdown">
+              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">More</button>
+              <ul class="dropdown-menu dropdown-menu-end">
+                <li><button class="dropdown-item small" type="button" id="ai-dd-regenerate">Regenerate</button></li>
+                <li><button class="dropdown-item small" type="button" id="ai-dd-pause">Pause</button></li>
+                <li><button class="dropdown-item small" type="button" id="ai-dd-complete">Complete</button></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><button class="dropdown-item small" type="button" id="ai-dd-json">Raw JSON</button></li>
+                <li><button class="dropdown-item small" type="button" id="ai-dd-log">Technical log</button></li>
+              </ul>
+            </div>
+          </div>
+          <div id="ai-operator-ready-banner" class="alert alert-success py-2 px-3 small mt-3 mb-0 d-none">
+            <strong>Review and mark complete</strong> when the deal looks right.
+            <div class="mt-2">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="ai-btn-closing-send">Send closing message</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-2" id="ai-deal-summary-card">
+        <div class="card-header py-2"><strong>Deal summary</strong></div>
+        <div class="card-body py-2">
+          <dl class="row ai-kv ai-deal-card mb-0 small" id="ai-deal-summary-dl"></dl>
+        </div>
+      </div>
+
+      <div class="card mb-2" id="ai-timeline-card">
+        <div class="card-header py-2"><strong>Conversation</strong></div>
+        <div class="card-body py-2">
+          <div class="ai-timeline-wrap" id="ai-timeline-body"></div>
+          <p class="small text-secondary mt-2 mb-0">Showing the latest meaningful messages. Full audit is under <strong>Advanced diagnostics</strong>.</p>
+        </div>
+      </div>
+
+      <div class="card mb-2" id="ai-draft-card">
+        <div id="ai-draft-header-open" class="card-header py-2 d-flex justify-content-between align-items-center">
+          <strong>Draft</strong>
+          <span class="badge bg-secondary" id="ai-draft-provider">—</span>
+        </div>
+        <div id="ai-draft-body-open" class="card-body py-2">
+          <div class="ai-draft-bubble mb-2" id="ai-draft-body">—</div>
+        </div>
+        <details class="mb-0" id="ai-draft-collapsed">
+          <summary class="card-header py-2" style="cursor:pointer"><strong>Optional message to seller</strong></summary>
+          <div class="card-body py-2 border-top">
+            <div class="ai-draft-bubble mb-2" id="ai-draft-body-collapsed">—</div>
+          </div>
+        </details>
+      </div>
+
+      <details class="card mb-2" id="ai-econ-details">
+        <summary class="card-header py-2" style="cursor:pointer"><strong>Trading economics</strong></summary>
+        <div class="card-body py-2 small">
+          <dl class="row ai-kv mb-0" id="ai-economics-dl"></dl>
+        </div>
+      </details>
+
+      <details class="card mb-2" id="ai-memory-card">
+        <summary class="card-header py-2" style="cursor:pointer"><strong>Counterparty memory</strong></summary>
+        <div class="card-body py-2 small" id="ai-memory-body"></div>
+      </details>
+
+      <div class="card mb-2" id="ai-facts-card">
+        <div class="card-header py-2"><strong>Extracted facts</strong></div>
+        <div class="card-body py-2 small">
+          <div class="mb-2" id="ai-facts-known-wrap"><span class="text-secondary">Known</span><ul class="mb-0 ps-3" id="ai-facts-known"></ul></div>
+          <div id="ai-facts-missing-wrap"><span class="text-secondary">Missing</span><ul class="mb-0 ps-3" id="ai-facts-missing"></ul></div>
+        </div>
+      </div>
+
+      <details class="card mb-2" id="ai-advanced-diagnostics">
+        <summary class="card-header py-2" style="cursor:pointer"><strong>Advanced diagnostics</strong></summary>
+        <div class="card-body py-2 small">
+          <div class="text-secondary mb-1">Raw JSON</div>
+          <pre class="small bg-dark text-light p-2 mb-3 rounded" style="max-height:200px;overflow:auto" id="ai-raw-json"></pre>
+          <div class="text-secondary mb-1">Technical log</div>
+          <div style="max-height:200px;overflow:auto" id="ai-tech-log"></div>
+        </div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const API = '/api/v1/ai-agent';
+  const token = (document.querySelector('meta[name="admin-token"]') || {}).content || '';
+
+  function headers(json) {
+    const h = { 'Accept': 'application/json' };
+    if (json) h['Content-Type'] = 'application/json';
+    if (token) h['X-Admin-Token'] = token;
+    return h;
+  }
+
+  let tasksCache = [];
+  let accountsById = {};
+  let selectedId = null;
+
+  const HIDDEN_DEFAULT = new Set(['paused', 'completed', 'failed', 'cancelled']);
+
+  const FACT_KEYS = [
+    ['side', 'Side'],
+    ['asset', 'Asset'],
+    ['amount_crypto', 'Amount'],
+    ['rate_premium_pct', 'Rate'],
+    ['payment_method', 'Payment'],
+    ['fiat_currency', 'Currency'],
+    ['location', 'Location'],
+    ['meeting_time', 'Time'],
+    ['transaction_limit', 'Limit'],
+    ['kyc_required', 'KYC'],
+    ['negotiation_stage', 'Stage'],
+  ];
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function statusEmojiLabel(d) {
+    const label = d.ui_status_label || d.status || '—';
+    const st = (d.ui_filter_status || d.status || '').toLowerCase();
+    let em = '🟦';
+    if (st === 'completed') em = '⚪';
+    else if (st === 'failed' || st === 'cancelled') em = '⛔';
+    else if (st === 'ready_for_operator') em = '🟢';
+    else if (st === 'risky') em = '🔴';
+    else if (st === 'waiting_reply' || st === 'waiting_admin_approval') em = '🟡';
+    else if (st === 'paused') em = '⏸';
+    else if (st === 'draft') em = '🟦';
+    return em + ' ' + label;
+  }
+
+  function paintRiskBadge(el, level) {
+    const lvl = (level || 'low').toLowerCase();
+    const map = {
+      low: { cls: 'bg-success', text: '🟢 Low', style: null },
+      medium: { cls: 'bg-warning text-dark', text: '🟡 Medium', style: null },
+      high: { cls: '', text: '🟠 High', style: 'background:#c2410c;color:#fff;' },
+      critical: { cls: 'bg-danger', text: '🔴 Critical', style: null },
+    };
+    const m = map[lvl] || map.low;
+    el.className = 'badge ' + (m.cls || '').trim();
+    if (m.style) el.setAttribute('style', m.style);
+    else el.removeAttribute('style');
+    el.textContent = m.text;
+  }
+
+  function showAlert(msg, kind) {
+    const el = document.getElementById('ai-global-alert');
+    el.innerHTML = msg ? `<div class="alert alert-${kind || 'info'} py-2">${msg}</div>` : '';
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString();
+    } catch (e) { return iso; }
+  }
+
+  function accountLabel(id) {
+    const a = accountsById[id];
+    if (!a) return '#' + id;
+    const u = a.username ? '@' + a.username : '';
+    return '#' + id + (u ? ' ' + u : '');
+  }
+
+  function passesFilters(task) {
+    const showArch = document.getElementById('ai-filter-show-archived').checked;
+    const st = (task.status || '').toLowerCase();
+    const fs = document.getElementById('ai-filter-status').value;
+    const explicitStatus = fs !== '' && fs !== 'all';
+    if (!explicitStatus && !showArch && HIDDEN_DEFAULT.has(st)) return false;
+    if (fs && fs !== 'all') {
+      const fstat = (task.ui_filter_status || task.status || '').toLowerCase();
+      if (fstat !== fs) return false;
+    }
+
+    const q = document.getElementById('ai-filter-q').value.trim().toLowerCase();
+    if (q) {
+      const blob = [task.id, task.target, task.goal, task.account_id, task.negotiation_stage, task.ui_status_label, task.ui_list_summary]
+        .join(' ').toLowerCase();
+      if (!blob.includes(q)) return false;
+    }
+    return true;
+  }
+
+  function renderTable() {
+    const tb = document.getElementById('ai-task-tbody');
+    const rows = tasksCache.filter(passesFilters);
+    document.getElementById('ai-task-count').textContent = rows.length + ' shown';
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="text-secondary p-3">No tasks match filters.</td></tr>';
+      return;
+    }
+    tb.innerHTML = rows.map(t => {
+      const active = selectedId === t.id ? 'table-active' : '';
+      const stLabel = (t.ui_status_label || t.status || '—').replace(/</g, '&lt;');
+      const sum = (t.ui_list_summary || '').replace(/</g, '&lt;');
+      return `<tr class="ai-task-row ${active}" data-id="${t.id}">
+        <td>${t.id}</td>
+        <td class="text-truncate" style="max-width:10rem;" title="${(t.target || '').replace(/"/g, '&quot;')}">${t.target || '—'}</td>
+        <td><span class="badge bg-secondary">${stLabel}</span></td>
+        <td class="small text-truncate" style="max-width:18rem;" title="${sum}">${sum || '—'}</td>
+      </tr>`;
+    }).join('');
+    tb.querySelectorAll('.ai-task-row').forEach(tr => {
+      tr.addEventListener('click', () => selectTask(parseInt(tr.dataset.id, 10)));
+    });
+  }
+
+  async function loadAccounts() {
+    const sel = document.getElementById('ai-nt-account');
+    try {
+      const r = await fetch(API + '/accounts', { headers: headers(false), credentials: 'same-origin' });
+      if (!r.ok) throw new Error('ai accounts ' + r.status);
+      const data = await r.json();
+      const list = data.accounts || [];
+      accountsById = {};
+      sel.innerHTML = '<option value="">— choose —</option>';
+      list.forEach(a => {
+        accountsById[a.id] = a;
+        const lab = '#' + a.id + (a.username ? ' @' + a.username : '');
+        sel.appendChild(new Option(lab, a.id));
+      });
+    } catch (e) {
+      sel.innerHTML = '<option value="">(load failed)</option>';
+    }
+  }
+
+  async function loadTasks() {
+    try {
+      const r = await fetch(API + '/tasks', { headers: headers(false), credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      tasksCache = data.tasks || [];
+      renderTable();
+      if (selectedId && !tasksCache.some(t => t.id === selectedId)) {
+        selectedId = null;
+        showDetailEmpty();
+      }
+    } catch (e) {
+      document.getElementById('ai-task-tbody').innerHTML =
+        '<tr><td colspan="4" class="text-danger p-3">Could not load tasks.</td></tr>';
+    }
+  }
+
+  function showDetailEmpty() {
+    document.getElementById('ai-detail-empty').classList.remove('d-none');
+    document.getElementById('ai-detail-panel').classList.add('d-none');
+  }
+
+  function renderDealSummary(rows) {
+    const dl = document.getElementById('ai-deal-summary-dl');
+    dl.innerHTML = '';
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) {
+      dl.innerHTML = '<dt class="col-12 small text-secondary mb-0">Structured fields appear here as the agent captures them from the thread.</dt>';
+      return;
+    }
+    list.forEach(r => {
+      const lab = escapeHtml(r.label || '');
+      const val = escapeHtml(r.value || '');
+      dl.innerHTML += `<dt class="col-sm-4">${lab}</dt><dd class="col-sm-8">${val}</dd>`;
+    });
+  }
+
+  function renderTimeline(rows) {
+    const wrap = document.getElementById('ai-timeline-body');
+    if (!wrap) return;
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) {
+      wrap.innerHTML = '<div class="small text-secondary">No conversation preview yet.</div>';
+      return;
+    }
+    wrap.innerHTML = list.map(r => {
+      const align = r.align === 'end' ? 'ai-chat-end' : 'ai-chat-start';
+      const tag = escapeHtml(r.tag || '');
+      const body = escapeHtml(r.body || '').replace(/\n/g, '<br/>');
+      const when = escapeHtml(fmtTime(r.created_at));
+      return `<div class="ai-chat-row ${align}"><div class="ai-chat-meta">${tag} · ${when}</div><div>${body}</div></div>`;
+    }).join('');
+  }
+
+  function renderCounterpartyMemory(mem) {
+    const el = document.getElementById('ai-memory-body');
+    if (!el) return;
+    const m = mem && typeof mem === 'object' ? mem : {};
+    const rows = [];
+    if (m.seller_archetype) rows.push(['__head', m.seller_archetype]);
+    if (m.last_spread_text) rows.push(['Typical spread', m.last_spread_text]);
+    if (m.preferred_payment) rows.push(['Preferred payment', m.preferred_payment]);
+    if (m.preferred_language) rows.push(['Language', m.preferred_language]);
+    if (m.typical_limits) rows.push(['Typical limits', m.typical_limits]);
+    if (m.risk_history) rows.push(['Risk history', m.risk_history]);
+    if (m.last_seen_hint) rows.push(['Last seen', m.last_seen_hint]);
+    if (m.trust_label) rows.push(['Trust', m.trust_label]);
+    if (!rows.length) {
+      el.textContent = 'No counterparty profile yet — it builds as messages arrive.';
+      return;
+    }
+    const head = rows.filter(x => x[0] === '__head');
+    const rest = rows.filter(x => x[0] !== '__head');
+    let html = '';
+    head.forEach(([, v]) => {
+      html += `<p class="mb-2 fw-semibold mb-0">${escapeHtml(v)}</p>`;
+    });
+    if (rest.length) {
+      html += '<dl class="row ai-kv mb-0">' + rest.map(([k, v]) =>
+        `<dt class="col-sm-4 text-secondary">${escapeHtml(k)}</dt><dd class="col-sm-8">${escapeHtml(v)}</dd>`
+      ).join('') + '</dl>';
+    }
+    el.innerHTML = html;
+  }
+
+  function renderFactsLists(facts, showMissing) {
+    const knownUl = document.getElementById('ai-facts-known');
+    const missing = document.getElementById('ai-facts-missing');
+    const missWrap = document.getElementById('ai-facts-missing-wrap');
+    knownUl.innerHTML = '';
+    missing.innerHTML = '';
+    const f = facts && typeof facts === 'object' ? facts : {};
+    FACT_KEYS.forEach(([k, label]) => {
+      const v = f[k];
+      let known = false;
+      let displayVal = v;
+      if (k === 'kyc_required') {
+        known = v === true || v === false;
+        displayVal = v === true ? 'Required' : v === false ? 'Not required' : v;
+      } else {
+        known = v !== null && v !== undefined && String(v).trim() !== '';
+      }
+      if (known) {
+        const li = document.createElement('li');
+        li.textContent = label + ': ' + displayVal;
+        knownUl.appendChild(li);
+      } else {
+        const m = document.createElement('li');
+        m.textContent = label;
+        missing.appendChild(m);
+      }
+    });
+    missWrap.classList.toggle('d-none', showMissing === false);
+  }
+
+  function renderEconomics(pf) {
+    const wrap = document.getElementById('ai-econ-details');
+    const dl = document.getElementById('ai-economics-dl');
+    dl.innerHTML = '';
+    if (!pf || !Object.keys(pf).length) {
+      wrap.classList.add('d-none');
+      return;
+    }
+    wrap.classList.remove('d-none');
+    const evalLabel = v => {
+      if (!v) return '—';
+      const m = { excellent: 'Excellent', acceptable: 'Acceptable', negotiable: 'Negotiable', bad: 'Bad', operator_review: 'Operator review' };
+      return m[v] || v;
+    };
+    const rows = [
+      ['Rate quality', evalLabel(pf.rate_evaluation)],
+      ['Target', pf.target_rate || '—'],
+      ['Walkaway', pf.walkaway_rate || '—'],
+      ['Action', pf.profit_action || '—'],
+    ];
+    rows.forEach(([dt, dd]) => {
+      dl.innerHTML += `<dt class="col-5">${dt}</dt><dd class="col-7">${dd}</dd>`;
+    });
+  }
+
+  function wirePrimaryButton(d) {
+    const btn = document.getElementById('ai-primary-btn');
+    const act = (d.ui_primary_action || 'start').toLowerCase();
+    const labels = {
+      start: 'Start',
+      send: 'Send',
+      sync: 'Sync',
+      review_deal: 'Review deal',
+      mark_complete: 'Mark complete',
+      resume: 'Resume',
+      none: 'Done',
+    };
+    btn.classList.remove('d-none');
+    if (act === 'none') {
+      btn.textContent = 'Done';
+      btn.disabled = true;
+      btn.onclick = null;
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = labels[act] || 'Start';
+    btn.onclick = async () => {
+      if (!selectedId) return;
+      showAlert('', '');
+      try {
+        if (act === 'review_deal') {
+          const card = document.getElementById('ai-deal-summary-card');
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          return;
+        }
+        if (act === 'start') {
+          await postJson('/tasks/' + selectedId + '/sync-inbound');
+          await postJson('/tasks/' + selectedId + '/generate-draft');
+          showAlert('Started.', 'success');
+        } else if (act === 'send') {
+          await postJson('/tasks/' + selectedId + '/send');
+          showAlert('Sent.', 'success');
+        } else if (act === 'sync') {
+          await postJson('/tasks/' + selectedId + '/sync-inbound');
+          showAlert('Synced.', 'success');
+        } else if (act === 'mark_complete') {
+          if (!confirm('Mark task #' + selectedId + ' complete?')) return;
+          await postJson('/tasks/' + selectedId + '/complete');
+          showAlert('Completed.', 'success');
+        } else if (act === 'resume') {
+          await postJson('/tasks/' + selectedId + '/resume');
+          showAlert('Resumed.', 'success');
+        }
+        await loadTasks();
+        await loadTaskDetail(selectedId);
+      } catch (e) {
+        showAlert(e.message, 'danger');
+      }
+    };
+  }
+
+  async function selectTask(id) {
+    selectedId = id;
+    renderTable();
+    document.getElementById('ai-detail-empty').classList.add('d-none');
+    document.getElementById('ai-detail-panel').classList.remove('d-none');
+    await loadTaskDetail(id);
+  }
+
+  async function loadTaskDetail(id) {
+    try {
+      const r = await fetch(API + '/tasks/' + id + '?include=messages,audits', {
+        headers: headers(false), credentials: 'same-origin'
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      renderDetail(d);
+    } catch (e) {
+      showAlert('Could not load task ' + id, 'danger');
+    }
+  }
+
+  function renderDetail(d) {
+    const pf = d.profit_facts || {};
+    const facts = d.extracted_facts || {};
+    const opReady = !!d.ui_is_operator_ready;
+
+    document.getElementById('ai-head-title').textContent = 'Task #' + d.id;
+    document.getElementById('ai-head-account').textContent = accountLabel(d.account_id);
+    document.getElementById('ai-head-target').textContent = d.target || '—';
+    document.getElementById('ai-head-status').textContent = statusEmojiLabel(d);
+    paintRiskBadge(document.getElementById('ai-risk-badge'), d.ui_risk_level || 'low');
+    const langChip = document.getElementById('ai-lang-chip');
+    if (langChip) {
+      langChip.textContent = d.ui_language_detected || '—';
+      langChip.classList.remove('d-none');
+    }
+    document.getElementById('ai-head-recommended').textContent = d.ui_recommended_action || d.ui_next_action || '';
+
+    const pctEl = document.getElementById('ai-deal-pct-line');
+    const pct = typeof d.ui_deal_completion_pct === 'number' ? d.ui_deal_completion_pct : 0;
+    if (pct > 0) {
+      pctEl.textContent = 'Deal info: ' + pct + '% complete';
+      pctEl.classList.remove('d-none');
+    } else {
+      pctEl.textContent = '';
+      pctEl.classList.add('d-none');
+    }
+
+    const esc = document.getElementById('ai-escalation-compact');
+    if (d.ui_escalation_reason) {
+      esc.textContent = d.ui_escalation_reason;
+      esc.classList.remove('d-none');
+    } else {
+      esc.textContent = '';
+      esc.classList.add('d-none');
+    }
+
+    const accWarn = document.getElementById('ai-head-account-warn');
+    if (d.account_ai_permitted === false) {
+      accWarn.classList.remove('d-none');
+      accWarn.textContent = 'This account is not in the AI Agent pool — use #110, #113, or #131.';
+    } else {
+      accWarn.classList.add('d-none');
+    }
+
+    document.getElementById('ai-operator-ready-banner').classList.toggle('d-none', !opReady);
+    wirePrimaryButton(d);
+
+    renderDealSummary(d.ui_deal_summary_rows || []);
+    renderTimeline(d.ui_timeline || []);
+    renderCounterpartyMemory(d.ui_counterparty_memory || {});
+
+    document.getElementById('ai-facts-card').classList.toggle('d-none', opReady);
+    if (!opReady) {
+      renderFactsLists(facts, d.ui_show_missing_block !== false);
+    }
+
+    const draft = d.draft;
+    const prov = draft && draft.provider ? draft.provider : '—';
+    document.getElementById('ai-draft-provider').textContent = prov;
+    const body = draft && draft.body ? draft.body : '—';
+    document.getElementById('ai-draft-body').textContent = body;
+    document.getElementById('ai-draft-body-collapsed').textContent = body;
+
+    const hdrOpen = document.getElementById('ai-draft-header-open');
+    const bodyOpen = document.getElementById('ai-draft-body-open');
+    const collapsed = document.getElementById('ai-draft-collapsed');
+    if (opReady) {
+      hdrOpen.classList.add('d-none');
+      bodyOpen.classList.add('d-none');
+      collapsed.classList.remove('d-none');
+      if (!collapsed.hasAttribute('data-keep-open')) collapsed.removeAttribute('open');
+    } else {
+      hdrOpen.classList.remove('d-none');
+      bodyOpen.classList.remove('d-none');
+      collapsed.classList.add('d-none');
+    }
+
+    renderEconomics(pf);
+
+    document.getElementById('ai-raw-json').textContent = JSON.stringify(d, null, 2);
+    const log = document.getElementById('ai-tech-log');
+    log.innerHTML = '';
+    (d.audits || []).slice(-80).forEach(a => {
+      const div = document.createElement('div');
+      div.className = 'border-bottom border-secondary pb-1 mb-1';
+      div.innerHTML = `<span class="text-secondary">${fmtTime(a.created_at)}</span> <strong>${a.action}</strong>` +
+        (a.detail ? '<pre class="small mb-0 mt-1">' + JSON.stringify(a.detail, null, 2) + '</pre>' : '');
+      log.appendChild(div);
+    });
+    if (!d.audits || !d.audits.length) log.textContent = 'No log entries.';
+  }
+
+  async function postJson(path) {
+    const r = await fetch(API + path, {
+      method: 'POST',
+      headers: headers(true),
+      credentials: 'same-origin',
+      body: '{}',
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || data.error_code || data.human_message || ('HTTP ' + r.status));
+    return data;
+  }
+
+  function openDiagnostics() {
+    const el = document.getElementById('ai-advanced-diagnostics');
+    if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+  }
+
+  document.getElementById('ai-new-task-form').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    showAlert('', '');
+    const body = {
+      account_id: parseInt(document.getElementById('ai-nt-account').value, 10),
+      target: document.getElementById('ai-nt-target').value.trim(),
+      goal: document.getElementById('ai-nt-goal').value.trim(),
+      language: document.getElementById('ai-nt-lang').value,
+      tone: document.getElementById('ai-nt-tone').value,
+      max_messages: parseInt(document.getElementById('ai-nt-max').value, 10) || 10,
+      auto_mode: document.getElementById('ai-nt-auto').value,
+    };
+    try {
+      const r = await fetch(API + '/tasks', {
+        method: 'POST',
+        headers: headers(true),
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 409 && data.existing_task_id) {
+        showAlert(data.human_message || 'Active task exists for this target.', 'warning');
+        await loadTasks();
+        selectTask(data.existing_task_id);
+        return;
+      }
+      if (!r.ok) throw new Error(data.human_message || data.error || ('HTTP ' + r.status));
+      showAlert('Task #' + data.id + ' created.', 'success');
+      document.getElementById('ai-new-task-form').reset();
+      document.getElementById('ai-nt-max').value = '10';
+      document.getElementById('ai-nt-auto').value = 'autonomous';
+      document.getElementById('ai-nt-lang').value = 'auto';
+      document.getElementById('ai-nt-tone').value = 'professional';
+      await loadTasks();
+      selectTask(data.id);
+    } catch (e) {
+      showAlert('Create failed: ' + e.message, 'danger');
+    }
+  });
+
+  document.getElementById('ai-refresh-tasks').addEventListener('click', async () => {
+    showAlert('', '');
+    await loadTasks();
+    if (selectedId) await loadTaskDetail(selectedId);
+  });
+
+  ['ai-filter-q', 'ai-filter-status', 'ai-filter-show-archived'].forEach(id => {
+    document.getElementById(id).addEventListener('input', renderTable);
+    document.getElementById(id).addEventListener('change', renderTable);
+  });
+
+  document.getElementById('ai-dd-regenerate').addEventListener('click', async () => {
+    if (!selectedId) return;
+    showAlert('', '');
+    try {
+      await postJson('/tasks/' + selectedId + '/generate-draft');
+      await loadTasks();
+      await loadTaskDetail(selectedId);
+      showAlert('Regenerated.', 'success');
+    } catch (e) { showAlert(e.message, 'danger'); }
+  });
+
+  document.getElementById('ai-btn-closing-send').addEventListener('click', async () => {
+    if (!selectedId) return;
+    showAlert('', '');
+    try {
+      await postJson('/tasks/' + selectedId + '/send');
+      await loadTasks();
+      await loadTaskDetail(selectedId);
+      showAlert('Message sent.', 'success');
+    } catch (e) { showAlert(e.message, 'danger'); }
+  });
+
+  document.getElementById('ai-dd-json').addEventListener('click', openDiagnostics);
+  document.getElementById('ai-dd-log').addEventListener('click', openDiagnostics);
+
+  document.getElementById('ai-dd-pause').addEventListener('click', async () => {
+    if (!selectedId) return;
+    try {
+      await postJson('/tasks/' + selectedId + '/pause');
+      await loadTasks();
+      await loadTaskDetail(selectedId);
+    } catch (e) { showAlert(e.message, 'danger'); }
+  });
+
+  document.getElementById('ai-dd-complete').addEventListener('click', async () => {
+    if (!selectedId) return;
+    if (!confirm('Mark task #' + selectedId + ' completed?')) return;
+    try {
+      await postJson('/tasks/' + selectedId + '/complete');
+      await loadTasks();
+      await loadTaskDetail(selectedId);
+    } catch (e) { showAlert(e.message, 'danger'); }
+  });
+
+  loadAccounts().then(loadTasks);
+})();
+</script>
+{% endblock %}
