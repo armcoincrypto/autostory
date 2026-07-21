@@ -15,7 +15,7 @@
 - Production services restarted: yes — `swaperex-admin.service` by this phase; AutoStory web externally
 - Credentials rotated: yes — Swaperex administrator token
 - Old credentials revoked: yes — removed from active config and rejected
-- Tracked backups removed from active branch: no
+- Tracked backups removed from active candidate branch: yes
 - Git history rewritten: no
 - Telegram sessions migrated: no
 - Scheduler activation changed: no
