@@ -98,7 +98,9 @@ class Account(Base):
     tasks = relationship("Task", back_populates="account")
 
     def __repr__(self):
-        return f"<Account {self.phone_number} ({self.status.value})>"
+        status = self.status
+        status_label = status.value if hasattr(status, "value") else (status or AccountStatus.AUTH_REQUIRED.value)
+        return f"<Account {self.phone_number} ({status_label})>"
 
 
 class DiscoveredUser(Base):

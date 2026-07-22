@@ -741,6 +741,11 @@ def _import_dashboard_routes():
     try:
         from . import routes as routes_mod
 
+        # Keep monkeypatch targets stable for source and bytecode route loads.
+        if not hasattr(routes_mod, "_admin_api_allowed"):
+            from .auth_access import dashboard_api_authorized
+
+            routes_mod._admin_api_allowed = dashboard_api_authorized
         return routes_mod.register_routes, routes_mod.api
     except (ModuleNotFoundError, ImportError):
         import importlib.util

@@ -126,6 +126,27 @@ def _release_wrapper_session_lock(wrapper: Any) -> None:
         pass
 
 
+
+def _telegram_profile_mutation_restricted(err: str) -> bool:
+    m = (err or "").lower()
+    if "not available for frozen" in m:
+        return True
+    if "method that is not available" in m and "frozen" in m:
+        return True
+    return False
+
+
+def _persist_profile_capability(account_id: int, status: str, reason: Optional[str] = None) -> None:
+    with get_db_context() as db:
+        acc = db.query(Account).filter(Account.id == int(account_id)).first()
+        if not acc:
+            return
+        if hasattr(acc, "profile_capability_status"):
+            acc.profile_capability_status = status
+        if hasattr(acc, "profile_capability_reason"):
+            acc.profile_capability_reason = (reason or "")[:255] if reason else None
+        db.commit()
+
 def _existing_session_source_for_healthcheck(account) -> tuple[object | None, str | None]:
     """
     Prefer real on-disk sessions used by production.
@@ -176,6 +197,53 @@ class TelegramClientWrapper:
         self.is_connected = False
         self._lock = asyncio.Lock()
         self._session_lock_handle: Optional[SessionLockHandle] = None
+
+
+    async def connect_with_reason(self) -> Tuple[bool, Optional[str]]:
+        """Connect and verify authorization. Returns (ok, failure_code)."""
+        async with self._lock:
+            last_err: Optional[BaseException] = None
+            for attempt in range(1, _CONNECT_ATTEMPTS + 1):
+                try:
+                    await self.client.connect()
+                    if await self.client.is_user_authorized():
+                        self.is_connected = True
+                        me = await self.client.get_me()
+                        logger.info(
+                            "Client connected",
+                            phone=self.account.phone_number,
+                            user_id=me.id,
+                            username=me.username,
+                            connect_attempt=attempt,
+                        )
+                        return True, None
+                    logger.warning(
+                        "Client not authorized",
+                        phone=self.account.phone_number,
+                    )
+                    return False, "unauthorized_session"
+                except Exception as e:
+                    last_err = e
+                    logger.warning(
+                        "Connection attempt failed",
+                        phone=self.account.phone_number,
+                        error=str(e),
+                        connect_attempt=attempt,
+                    )
+                    try:
+                        if self.client.is_connected():
+                            await self.client.disconnect()
+                    except Exception:
+                        pass
+                    self.is_connected = False
+                    if attempt >= _CONNECT_ATTEMPTS:
+                        return False, _connect_failure_code(last_err)
+                    delay = min(
+                        _CONNECT_BACKOFF_CAP_S,
+                        _CONNECT_BACKOFF_BASE_S * (2 ** (attempt - 1)),
+                    )
+                    await asyncio.sleep(delay)
+            return False, _connect_failure_code(last_err)
 
     async def connect(self) -> bool:
         """Connect to Telegram"""
@@ -263,7 +331,11 @@ class ClientManager:
     async def add_account(
         self, account: Union[Account, int]
     ) -> Tuple[Optional[TelegramClientWrapper], Optional[str]]:
-        """Add a new account to the manager. Accepts Account instance or account id (int)."""
+        """Add a new account to the manager. Accepts Account instance or account id (int).
+
+        Acquires a session file lock when needed, connects, and releases orphan wrappers
+        on cancel/connect failure so locks are not leaked.
+        """
         if account is None:
             raise RuntimeError(f"{BLOCKED_MSG}: add_account")
         async with self._lock:
@@ -275,6 +347,7 @@ class ClientManager:
             if account.id in self._clients:
                 return self._clients[account.id], None
 
+            session_file_lock: Optional[SessionLockHandle] = None
             try:
                 session, kind, err = resolve_telethon_session(
                     account, prefer_string_over_file=False,
@@ -289,7 +362,16 @@ class ClientManager:
                     )
                     return None, code
 
-                # Create Telethon client
+                ok_lock, lock_handle, lock_err = acquire_session_lock(account.id)
+                if not ok_lock:
+                    logger.warning(
+                        "session_file_lock_not_acquired",
+                        account_id=account.id,
+                        detail=lock_err,
+                    )
+                    return None, "session_lock_timeout"
+                session_file_lock = lock_handle
+
                 client = TelegramClient(
                     session,
                     settings.telegram.api_id,
@@ -302,13 +384,52 @@ class ClientManager:
                 )
 
                 wrapper = TelegramClientWrapper(account, client, self._rate_limiter)
-                self._clients[account.id] = wrapper
+                wrapper._session_lock_handle = session_file_lock
+                session_file_lock = None
 
+                async def _release_orphan_wrapper(reason: str) -> None:
+                    try:
+                        await wrapper.disconnect()
+                    except Exception:
+                        pass
+                    _release_wrapper_session_lock(wrapper)
+                    logger.info(
+                        "client_manager_orphan_wrapper_released",
+                        account_id=account.id,
+                        reason=reason,
+                    )
+
+                try:
+                    ok, connect_reason = await wrapper.connect_with_reason()
+                except asyncio.CancelledError:
+                    await _release_orphan_wrapper("cancelled")
+                    raise
+                except Exception:
+                    await _release_orphan_wrapper("connect_failed")
+                    raise
+
+                if not ok:
+                    await _release_orphan_wrapper("connect_failed")
+                    return None, connect_reason or "failed_connect"
+
+                self._clients[account.id] = wrapper
                 logger.info("Account added", account_id=account.id, phone=account.phone_number)
                 return wrapper, None
 
+            except asyncio.CancelledError:
+                if session_file_lock is not None:
+                    try:
+                        session_file_lock.release()
+                    except Exception:
+                        pass
+                raise
             except Exception as e:
-                logger.error("Failed to add account", account_id=account.id, error=str(e))
+                if session_file_lock is not None:
+                    try:
+                        session_file_lock.release()
+                    except Exception:
+                        pass
+                logger.error("Failed to add account", account_id=getattr(account, "id", None), error=str(e))
                 return None, "failed_connect"
 
     async def collect_accounts_readiness(
@@ -801,16 +922,26 @@ class ClientManager:
             return {"success": False, "error": err}
 
     async def set_account_profile_photo(self, account_id: int, file_path: str) -> Dict[str, Any]:
-        """Set profile photo for an account from a local file path."""
+        """Upload a profile photo; records profile_capability_* when Telegram blocks mutation APIs."""
         wrapper = await self.get_client(account_id)
         if not wrapper:
             return {"success": False, "error": "Account not available or not connected."}
         try:
             uploaded = await wrapper.client.upload_file(file_path)
             await wrapper.client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+            _persist_profile_capability(account_id, "allowed", None)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            err = str(e)
+            if _telegram_profile_mutation_restricted(err):
+                _persist_profile_capability(account_id, "restricted", err)
+                return {
+                    "success": False,
+                    "error": err,
+                    "profile_capability_status": "restricted",
+                    "profile_capability_reason": err[:255],
+                }
+            return {"success": False, "error": err}
 
     async def get_available_clients(self) -> List[TelegramClientWrapper]:
         """Get all available (connected and not rate-limited) clients"""
