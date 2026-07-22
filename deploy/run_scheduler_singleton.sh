@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # STORYFLEET scheduler singleton: one process per host via flock.
-# Lock is released automatically when the Python process exits (fd closed).
-# stderr message is picked up by systemd journal if a duplicate start is attempted.
+# Resolves release/workdir from this script location (immutable-release safe).
 set -euo pipefail
 
+RELEASE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="${AUTOSTORY_SCHEDULER_LOCK_PATH:-/tmp/autostory-scheduler.lock}"
-cd /opt/autostory || exit 1
+cd "$RELEASE_ROOT" || exit 1
 
 exec 200>>"$LOCK"
 if ! flock -n 200; then
