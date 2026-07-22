@@ -374,7 +374,9 @@ def evaluate_account_story_runtime(
     last_success = parse_dt(getattr(account, "last_story_success_at", None) or getattr(account, "last_active", None))
     if last_success and (now - last_success) < timedelta(minutes=cooldown_minutes):
         blockers.append("story_cooldown")
-    if int(getattr(account, "stories_today", None) or 0) >= max_per_day:
+    from src.stories.daily_story_counter import stories_today_effective
+
+    if stories_today_effective(account, now=now) >= max_per_day:
         blockers.append("daily_story_cap")
     from src.stories.story_auth_state import resolve_story_auth_state
 

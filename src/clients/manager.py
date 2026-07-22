@@ -112,19 +112,29 @@ def _mask_phone(phone: Optional[str], account_id: int) -> str:
 
 
 def _release_wrapper_session_lock(wrapper: Any) -> None:
-    """Release optional session file lock held for SQLite-backed Telethon sessions."""
+    """Release exclusive session flock and disposable probe temp dirs."""
     h = getattr(wrapper, "_session_lock_handle", None)
-    if h is None:
-        return
-    try:
-        h.release()
-    except Exception:
-        pass
-    try:
-        wrapper._session_lock_handle = None
-    except Exception:
-        pass
+    if h is not None:
+        try:
+            h.release()
+        except Exception:
+            pass
+        try:
+            wrapper._session_lock_handle = None
+        except Exception:
+            pass
+    temp_dir = getattr(wrapper, "_disposable_session_dir", None)
+    if temp_dir:
+        try:
+            import shutil
 
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            wrapper._disposable_session_dir = None
+        except Exception:
+            pass
 
 
 def _telegram_profile_mutation_restricted(err: str) -> bool:
@@ -197,6 +207,7 @@ class TelegramClientWrapper:
         self.is_connected = False
         self._lock = asyncio.Lock()
         self._session_lock_handle: Optional[SessionLockHandle] = None
+        self._disposable_session_dir: Optional[str] = None
 
 
     async def connect_with_reason(self) -> Tuple[bool, Optional[str]]:
@@ -640,16 +651,25 @@ class ClientManager:
         account_id: int,
         *,
         session_lock_timeout_sec: float = 45.0,
+        disposable_file_session: bool = False,
     ) -> Tuple[Optional[TelegramClientWrapper], Optional[str]]:
         """
         Connect a Telethon client for ``account_id`` using the same session resolution
         as deep readiness (file canonical path preferred over string).
+
+        When ``disposable_file_session`` is True (readiness probes), file sessions are
+        opened via a temporary SQLite backup so Telethon metadata writes cannot touch
+        the canonical session and no exclusive source lock is held.
 
         Returns:
             (wrapper, None) when connected and ``is_user_authorized()`` is True.
             (None, reason_code) on resolver failures, lock timeout, connect failures,
             or unauthorized session. Does not send messages or mutate Account rows.
         """
+        import tempfile
+
+        from src.clients.session_sqlite_copy import copy_sqlite_session_readonly
+
         aid = int(account_id)
         with get_db_context() as db:
             account = db.query(Account).filter(Account.id == aid).first()
@@ -664,7 +684,35 @@ class ClientManager:
 
         deep_lock: Optional[SessionLockHandle] = None
         hb_task: Optional[asyncio.Task] = None
-        if kind == "file":
+        disposable_dir: Optional[str] = None
+
+        if kind == "file" and disposable_file_session:
+            # Read-only backup of the canonical SQLite session; no exclusive flock.
+            try:
+                filename = getattr(session, "filename", None)
+                if not filename:
+                    return None, ERR_SESSION_FILE_MISSING
+                source = Path(str(filename))
+                if source.suffix != ".session":
+                    source = Path(str(filename) + ".session")
+                if not source.is_file():
+                    return None, ERR_SESSION_FILE_MISSING
+                disposable_dir = tempfile.mkdtemp(prefix=f"storyfleet-readiness-{aid}-")
+                dest = Path(disposable_dir) / f"account_{aid}.session"
+                copy_sqlite_session_readonly(source, dest)
+                session = SQLiteSession(str(dest.with_suffix("")))
+            except Exception as e:
+                if disposable_dir:
+                    import shutil
+
+                    shutil.rmtree(disposable_dir, ignore_errors=True)
+                logger.warning(
+                    "disposable_session_copy_failed",
+                    account_id=aid,
+                    error=str(e),
+                )
+                return None, "session_db_locked"
+        elif kind == "file":
             ok_lock, lock_handle, _lock_err = acquire_session_lock(
                 aid,
                 timeout_sec=float(session_lock_timeout_sec),
@@ -683,10 +731,11 @@ class ClientManager:
             settings.telegram.api_id,
             settings.telegram.api_hash,
             proxy=account.proxy_config if account.proxy_config else None,
-            device_model="STORYFLEET",
-            app_version="1.0.0",
+            device_model="STORYFLEET-READONLY-PROBE" if disposable_file_session else "STORYFLEET",
+            app_version="readiness-disposable" if disposable_file_session else "1.0.0",
             system_version="Linux",
             lang_code="en",
+            receive_updates=False if disposable_file_session else True,
         )
         last_exc: Optional[BaseException] = None
         auth: Optional[bool] = None
@@ -722,7 +771,9 @@ class ClientManager:
             wrapper = TelegramClientWrapper(account, client, self._rate_limiter)
             wrapper.is_connected = True
             wrapper._session_lock_handle = deep_lock
+            wrapper._disposable_session_dir = disposable_dir
             deep_lock = None
+            disposable_dir = None
 
             async with self._lock:
                 old = self._clients.pop(aid, None)
@@ -751,6 +802,10 @@ class ClientManager:
                         deep_lock.release()
                     except Exception:
                         pass
+                if disposable_dir is not None:
+                    import shutil
+
+                    shutil.rmtree(disposable_dir, ignore_errors=True)
 
     async def remove_account(self, account_id: int) -> bool:
         """Remove an account from the manager"""

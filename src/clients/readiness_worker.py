@@ -3,7 +3,9 @@ Background Telegram readiness resolver.
 
 Continuously refreshes ``account_readiness_snapshots`` out-of-band so dashboard
 readiness does not stay stuck on CHECKING. Connects to Telegram for auth probes
-only — never publishes stories or runs scheduler/campaign actions.
+only via disposable file-session copies — never publishes stories or runs
+scheduler/campaign actions, and does not hold exclusive locks on canonical
+session files.
 """
 from __future__ import annotations
 
@@ -168,6 +170,7 @@ async def _deep_check_one(
             wrapper, fail_reason = await client_manager.connect_account(
                 aid,
                 session_lock_timeout_sec=cfg.session_lock_acquire_sec,
+                disposable_file_session=True,
             )
 
             if wrapper is not None:

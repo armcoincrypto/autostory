@@ -46,6 +46,7 @@ from src.clients.session_inspect import (
     resolve_existing_session_path,
     sqlite_schema_version_readonly,
 )
+from src.clients.session_sqlite_copy import copy_sqlite_session_readonly
 
 
 CLASSIFICATIONS = (
@@ -290,9 +291,7 @@ def inspect_session(account: Account) -> SessionInspection:
 
 def _copy_sqlite_session(source: Path, destination: Path) -> None:
     """Consistent SQLite backup from read-only source into disposable destination."""
-    with sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=5) as src:
-        with sqlite3.connect(destination, timeout=5) as dst:
-            src.backup(dst)
+    copy_sqlite_session_readonly(source, destination)
 
 
 async def _wait(awaitable: Awaitable[Any], timeout: float) -> Any:

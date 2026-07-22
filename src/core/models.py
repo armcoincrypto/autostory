@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Optional, List
 
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime,
+    Column, Integer, String, Text, Boolean, Date, DateTime,
     ForeignKey, JSON, Enum as SQLEnum, Float
 )
 from sqlalchemy.orm import relationship
@@ -82,8 +82,9 @@ class Account(Base):
     # autostory | messaging | both | ai_agent (ai_agent: negotiation desk only, no scheduler/stories)
     purpose = Column(String(20), nullable=True, default="both")
 
-    # Rate limiting counters
+    # Rate limiting counters (stories_today is success-only; day boundary is UTC)
     stories_today = Column(Integer, default=0)
+    stories_today_on = Column(Date, nullable=True)  # UTC calendar day for stories_today
     actions_today = Column(Integer, default=0)
     last_action_at = Column(DateTime, nullable=True)
 
