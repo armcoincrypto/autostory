@@ -122,7 +122,7 @@ def test_stale_legacy_health_not_hard_blocking_dry_run(monkeypatch, tmp_path) ->
         )
     )
     db.commit()
-    monkeypatch.setattr(rotation_audit, "account_has_canonical_session", lambda account: True)
+    monkeypatch.setattr(rotation_audit, "account_has_usable_story_session", lambda account: True)
     monkeypatch.setattr(rotation_audit, "scheduler_telethon_excluded_account_ids", lambda db: set())
     monkeypatch.setattr(
         rotation_audit,

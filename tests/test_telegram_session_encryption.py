@@ -288,3 +288,20 @@ def test_new_migration_tool_idempotent(encryption_env, tmp_path: Path) -> None:
     assert second.returncode == 0, second.stderr
     assert json.loads(first.stdout)["migrated_rows"] == 1
     assert json.loads(second.stdout)["migrated_rows"] == 0
+
+
+def test_encrypted_only_rejects_filesystem_path_and_fernet(encryption_env, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_SESSION_ENCRYPTION_MODE", "encrypted-only")
+    service = SessionMaterialService.from_environment()
+    with pytest.raises(SessionMaterialDecryptionError):
+        service.from_storage("/opt/autostory/data/sessions/account_1.session")
+    with pytest.raises(SessionMaterialDecryptionError):
+        service.from_storage("gAAAAABnot-a-real-fernet-token")
+
+
+def test_encrypted_only_write_stores_envelope(encryption_env, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_SESSION_ENCRYPTION_MODE", "encrypted-only")
+    service = SessionMaterialService.from_environment()
+    stored = service.to_storage("unit-test-session-material")
+    assert stored is not None and stored.startswith(ENVELOPE_PREFIX)
+    assert service.from_storage(stored) == "unit-test-session-material"
