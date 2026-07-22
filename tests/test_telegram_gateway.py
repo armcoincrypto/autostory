@@ -286,7 +286,7 @@ def test_gateway_run_send_releases_account_in_finally(monkeypatch):
 
     removed: list[int] = []
 
-    async def fake_send(account_id, target, text):
+    async def fake_send(account_id, target, text, **kwargs):
         return {
             "ok": True,
             "telegram_message_id": 42,

@@ -18,6 +18,13 @@ from src.clients.membership_check import MEMBERSHIP_JOINED, check_target_members
 
 @pytest.mark.asyncio
 async def test_membership_check_uses_connect_not_disconnected_add():
+    from src.core.database import get_db_context, init_db
+    from tests.helpers.fleet_seed import seed_minimal_fleet
+
+    init_db()
+    with get_db_context() as db:
+        seed_minimal_fleet(db, account_ids=(107,), seed_mentions=False, seed_target=True)
+
     mock_wrapper = MagicMock()
     mock_wrapper.client = MagicMock()
     with patch("src.clients.membership_check.client_manager.connect_account", new_callable=AsyncMock) as conn:
@@ -135,9 +142,11 @@ def test_stale_probe_blocks_production_verified():
 def test_eligibility_denies_unverified_or_blocks_without_fresh_verified():
     from src.core.database import get_db_context, init_db
     from src.scheduler.generation_eligibility import evaluate_generation_eligibility
+    from tests.helpers.fleet_seed import seed_minimal_fleet
 
     init_db()
     with get_db_context() as db:
+        seed_minimal_fleet(db, account_ids=(107,), seed_mentions=False, seed_target=True)
         decision = evaluate_generation_eligibility(
             db,
             job_type="PROMO",
@@ -165,4 +174,10 @@ def test_eligibility_denies_unverified_or_blocks_without_fresh_verified():
             "readiness_stale",
             "not_joined",
             "no_permission_to_post",
+            "account_missing",
+            "missing_binding",
+            "no_binding",
+            "target_missing",
+            "missing_target",
+            "account_not_operational",
         )

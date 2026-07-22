@@ -53,9 +53,19 @@ def _payload(media_path: str) -> dict:
     }
 
 
+def _seed_fleet() -> None:
+    from src.core.database import get_db_context, init_db
+    from tests.helpers.fleet_seed import seed_minimal_fleet
+
+    init_db()
+    with get_db_context() as db:
+        seed_minimal_fleet(db)
+
+
 def test_account_140_story_precheck_passes_for_dry_run_with_valid_media_source(
     monkeypatch, tmp_path
 ) -> None:
+    _seed_fleet()
     app = _app(monkeypatch)
     media = _write_valid_vertical_story_jpeg(tmp_path / "story_valid.jpg")
 
@@ -77,6 +87,7 @@ def test_account_140_story_precheck_passes_for_dry_run_with_valid_media_source(
 
 
 def test_precheck_returns_account_level_blockers_and_json(monkeypatch, tmp_path) -> None:
+    _seed_fleet()
     app = _app(monkeypatch)
     media = _write_valid_vertical_story_jpeg(tmp_path / "story_valid.jpg")
     payload = {**_payload(str(media)), "account_ids": [110]}
@@ -93,6 +104,7 @@ def test_precheck_returns_account_level_blockers_and_json(monkeypatch, tmp_path)
 
 
 def test_dry_run_does_not_publish_or_create_story_rows(monkeypatch, tmp_path) -> None:
+    _seed_fleet()
     app = _app(monkeypatch)
     media = _write_valid_vertical_story_jpeg(tmp_path / "story_valid.jpg")
     with get_db_context() as db:
@@ -115,6 +127,7 @@ def test_dry_run_does_not_publish_or_create_story_rows(monkeypatch, tmp_path) ->
 
 
 def test_random_mention_strategy_returns_non_duplicate_candidates(monkeypatch, tmp_path) -> None:
+    _seed_fleet()
     app = _app(monkeypatch)
     media = _write_valid_vertical_story_jpeg(tmp_path / "story_valid.jpg")
 

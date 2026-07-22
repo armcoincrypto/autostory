@@ -39,7 +39,7 @@ def test_profile_photo_frozen_method_sets_restricted():
             with patch.object(mgr, "get_db_context", mock_db):
                 return await cm.set_account_profile_photo(7, "/tmp/x.jpg")
 
-    r = asyncio.get_event_loop().run_until_complete(run())
+    r = asyncio.run(run())
     assert r.get("success") is False
     assert r.get("profile_capability_status") == "restricted"
     assert "frozen" in (r.get("profile_capability_reason") or "").lower()

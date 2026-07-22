@@ -156,5 +156,16 @@ def test_story_db_snapshot_helper_keys():
         with patch("src.core.safety_policy.get_story_safety_decision", return_value=_dec("daily_cap")):
             snap = _story_db_snapshot_from_account(acc)
 
-    assert set(snap.keys()) == {"state", "label", "reason", "blocked_until", "precheck_stale", "safety_reason"}
+    assert set(snap.keys()) == {
+        "state",
+        "label",
+        "reason",
+        "safety_reason",
+        "story_ui_status",
+        "story_precheck_stale",
+        "story_blocked_until",
+        "is_story_ready",
+    }
     assert snap["state"] == "ready"
+    assert snap["story_ui_status"] == "ready"
+    assert snap["is_story_ready"] is True

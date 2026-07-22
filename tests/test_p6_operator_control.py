@@ -11,9 +11,11 @@ def _login_client():
     from src.core.database import get_db_context, init_db
     from src.dashboard.app import create_app
     from src.dashboard.models import DashboardUser
+    from tests.helpers.fleet_seed import seed_minimal_fleet
 
     init_db()
     with get_db_context() as db:
+        seed_minimal_fleet(db)
         user = db.query(DashboardUser).filter(DashboardUser.username == "p6admin").first()
         if not user:
             user = DashboardUser(username="p6admin", email="p6@test", is_admin=True, is_active=True)

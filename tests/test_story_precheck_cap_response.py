@@ -44,7 +44,10 @@ def test_precheck_would_exceed_cap_includes_remaining_capacity(flask_client):
         with patch("src.core.session_paths.account_has_canonical_session", return_value=True):
             with patch("src.core.risk_events.count_events_last_hour", return_value=18):
                 with patch("src.dashboard.routes.get_db_context", mock_get_db):
-                    with patch("src.dashboard.routes.run_async_with_timeout") as mock_run:
+                    with patch(
+                        "src.dashboard.routes.run_async_with_timeout",
+                        create=True,
+                    ) as mock_run:
                         r = flask_client.post(
                             "/api/accounts/story-precheck",
                             json={"account_ids": [101, 102, 103, 104, 105], "canary_batch_ok": True},

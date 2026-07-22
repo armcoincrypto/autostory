@@ -182,8 +182,17 @@ def test_batch_max_guard() -> None:
 
 def test_worker_106_legacy_schema(db_session) -> None:
     r = process_account(db_session, 99106, dry_run=True)
-    assert r.status in (WorkerReadinessStatus.LEGACY_SCHEMA, WorkerReadinessStatus.ERROR)
-    if r.status == WorkerReadinessStatus.LEGACY_SCHEMA:
+    # Schema v8 sessions are no longer hard-failed as LEGACY_SCHEMA; stale v1
+    # ERROR rows map to UNKNOWN awaiting live auth proof (see readiness_proof_chain).
+    assert r.status in (
+        WorkerReadinessStatus.UNKNOWN,
+        WorkerReadinessStatus.LEGACY_SCHEMA,
+        WorkerReadinessStatus.ERROR,
+    )
+    if r.status == WorkerReadinessStatus.UNKNOWN:
+        assert r.reason == "schema_v7_awaiting_live_auth_proof"
+        assert r.failure_code is None
+    elif r.status == WorkerReadinessStatus.LEGACY_SCHEMA:
         assert r.failure_code == ERR_LEGACY_SQLITE_SESSION_FORMAT
     assert r.dry_run is True
     assert _v2_count(db_session) == 0 or r.write_plan is not None

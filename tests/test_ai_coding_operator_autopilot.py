@@ -74,7 +74,7 @@ def test_operator_mode_human_labels_file_exists() -> None:
     text = om.read_text(encoding="utf-8")
     assert "ready_for_manual_test" in text
     assert "Continue AI work" in text
-    assert "Understanding Idea" in text
+    assert "Planning" in text
     assert "AI checking work" in text
     assert "Testing in progress" in text
     assert "Build progress" in text

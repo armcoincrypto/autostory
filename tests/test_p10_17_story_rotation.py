@@ -101,6 +101,13 @@ def test_empty_mention_source_shows_warning(monkeypatch) -> None:
 
 
 def test_protected_and_reserved_accounts_are_not_story_ready(monkeypatch) -> None:
+    from src.core.database import get_db_context, init_db
+    from tests.helpers.fleet_seed import seed_minimal_fleet
+
+    init_db()
+    with get_db_context() as db:
+        seed_minimal_fleet(db)
+
     app = _app(monkeypatch)
 
     resp = app.test_client().get("/api/accounts?limit=500", headers=_auth_headers())

@@ -71,9 +71,12 @@ async def test_add_account_exception_during_connect_releases_wrapper(sample_acco
                     raise RuntimeError("connect boom")
 
                 with patch.object(mgr.TelegramClientWrapper, "connect_with_reason", boom):
-                    with pytest.raises(RuntimeError, match="connect boom"):
-                        await cm.add_account(sample_account)
+                    # Connect exceptions release the orphan wrapper/lock then return
+                    # a failure tuple (CancelledError still propagates).
+                    wrapper, err = await cm.add_account(sample_account)
 
+                assert wrapper is None
+                assert err == "failed_connect"
                 lock_handle.release.assert_called()
 
 

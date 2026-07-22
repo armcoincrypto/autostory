@@ -110,7 +110,11 @@ async def test_dry_run_does_not_mutate_readiness(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_deep_check_mocked_does_not_touch_forbidden_tables(monkeypatch):
+    from tests.helpers.fleet_seed import seed_minimal_fleet
+
+    init_db()
     with get_db_context() as db:
+        seed_minimal_fleet(db, account_ids=(107,), seed_mentions=False, seed_target=False)
         before_jobs = db.query(ScheduledJob).count()
         before_gw = db.query(TelegramGatewayJob).count()
         before_del = db.query(MessageDelivery).count()

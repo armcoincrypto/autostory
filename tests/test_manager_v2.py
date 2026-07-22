@@ -131,7 +131,9 @@ def test_metadata_106_fleet_v8(db_session, tmp_path: Path) -> None:
     assert meta["found"] is True
     assert meta["tier"] == "fleet"
     assert meta["schema_version"] == 8
-    assert meta["resolver_code"] == ERR_LEGACY_SQLITE_SESSION_FORMAT
+    # Schema v8 is compatible with current Telethon runtime — not legacy-blocked.
+    assert meta["resolver_code"] in (None, "")
+    assert meta["resolver_code"] != ERR_LEGACY_SQLITE_SESSION_FORMAT
     assert meta["scheduler_eligible"] is False
     assert meta["readiness_snapshot_status"] == "ERROR"
 

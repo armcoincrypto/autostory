@@ -77,11 +77,17 @@ def test_restricted_diagnostics_rate_limit_is_no_store(monkeypatch) -> None:
 
 
 def test_restricted_diagnostics_redacts_dependency_errors(monkeypatch) -> None:
+    """Force a deep-health dependency failure and assert error detail is redacted."""
     monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", "configured")
     monkeypatch.setattr(app_module, "_DIAGNOSTIC_RATE_MAX", 30)
     app_module._diagnostic_rate_events.clear()
     app = auth_test_app()
     app_module._ensure_p3_deep_health_route(app)
+
+    def _boom(*_args, **_kwargs):
+        raise ModuleNotFoundError("No module named 'src.recovery.secret_internal_path'")
+
+    monkeypatch.setattr("src.core.database.get_db_context", _boom)
 
     response = app.test_client().get(
         "/api/health/deep", headers={"X-Admin-Token": "configured"}
@@ -91,5 +97,7 @@ def test_restricted_diagnostics_redacts_dependency_errors(monkeypatch) -> None:
     payload = response.get_json()
     assert payload["status"] == "degraded"
     assert payload["queue_error"] == "dependency_query_failed"
-    assert "No module named" not in response.get_data(as_text=True)
+    body = response.get_data(as_text=True)
+    assert "No module named" not in body
+    assert "secret_internal_path" not in body
     assert response.headers["Cache-Control"] == "no-store"

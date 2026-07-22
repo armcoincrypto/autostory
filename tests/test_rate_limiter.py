@@ -89,14 +89,30 @@ class TestRateLimiter:
 
     @pytest.mark.asyncio
     async def test_wait_for_healthcheck_skips_long_inter_action_delay(self, rate_limiter):
-        """Health path should not add multi-second story-style delays between connect/auth/get_me steps."""
+        """wait() is fast when enough time already elapsed since last_action.
+
+        Public API has no for_healthcheck kwarg; short health-like steps rely on
+        the normal delay math (actual_delay = max(0, base_delay - time_since_last)).
+        """
         import time
 
+        rate_limiter.min_delay = 30.0
+        rate_limiter.max_delay = 60.0
+        rate_limiter.randomize = False
+        state = rate_limiter._get_state(77)
+        state.last_action = datetime.utcnow() - timedelta(seconds=120)
+        state.action_count = 0
+
         t0 = time.monotonic()
-        await rate_limiter.wait(77, for_healthcheck=True)
-        await rate_limiter.wait(77, for_healthcheck=True)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 2.0
+        await rate_limiter.wait(77)
+        assert time.monotonic() - t0 < 2.0
+        assert rate_limiter.get_status(77)["action_count"] == 1
+
+        # Age last_action again so the second wait also skips the long base delay.
+        state.last_action = datetime.utcnow() - timedelta(seconds=120)
+        t1 = time.monotonic()
+        await rate_limiter.wait(77)
+        assert time.monotonic() - t1 < 2.0
         assert rate_limiter.get_status(77)["action_count"] == 2
 
 
