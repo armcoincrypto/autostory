@@ -20,7 +20,20 @@ from src.utils.helpers import validate_media
 STORY_PURPOSES = frozenset({"", "both", "story", "stories", "autostory"})
 RUN_STALE_AFTER_MINUTES = 60
 FRESH_STORY_AUTH_TTL_MINUTES = 15
-CONTROLLED_LIVE_ACCOUNT_ID = 140
+# Default reference canary account when CONTROLLED_STORY_ACCOUNT_ID is unset.
+# Runtime controlled-live paths must call controlled_live_account_id().
+DEFAULT_CONTROLLED_LIVE_ACCOUNT_ID = 140
+CONTROLLED_LIVE_ACCOUNT_ID = DEFAULT_CONTROLLED_LIVE_ACCOUNT_ID
+
+
+def controlled_live_account_id() -> int:
+    """Resolve the single allowed controlled-live account from env (fail to default)."""
+    import os
+
+    raw = (os.environ.get("CONTROLLED_STORY_ACCOUNT_ID") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return int(DEFAULT_CONTROLLED_LIVE_ACCOUNT_ID)
 
 
 def utcnow() -> datetime:
@@ -186,12 +199,12 @@ def live_gate_allowed(payload: dict[str, Any] | None, precheck: dict[str, Any]) 
     payload = payload or {}
     blockers: list[str] = []
     account_ids = precheck.get("eligible_accounts") or []
-    if account_ids != [CONTROLLED_LIVE_ACCOUNT_ID]:
+    if account_ids != [controlled_live_account_id()]:
         blockers.append("live_gate_requires_account_140_only")
     if payload.get("explicit_operator_approval") is not True:
         blockers.append("explicit_operator_approval_required")
     confirmation = str(payload.get("confirmation_token") or "").strip()
-    if confirmation != f"LIVE_STORY_ACCOUNT_{CONTROLLED_LIVE_ACCOUNT_ID}":
+    if confirmation != f"LIVE_STORY_ACCOUNT_{controlled_live_account_id()}":
         blockers.append("confirmation_token_required")
     if precheck.get("live_blockers"):
         blockers.extend(precheck.get("live_blockers") or [])
@@ -583,7 +596,7 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         "live_publish_allowed": live_publish_allowed,
         "requires_operator_approval": True,
         "live_gate_blockers": live_gate_blockers,
-        "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+        "controlled_live_account_id": controlled_live_account_id(),
         "live_blockers": live_blockers,
         "live_only_blockers": live_only_blockers,
         "account_blockers": account_blockers,

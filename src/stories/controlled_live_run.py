@@ -1,4 +1,9 @@
-"""P4B — Controlled one-account live story run (account #140 only)."""
+"""P4B — Controlled one-account live story run.
+
+Account scope comes from ``CONTROLLED_STORY_ACCOUNT_ID`` (see
+``controlled_live_account_id``). Defaults to the reference canary account 140
+when unset.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -14,12 +19,20 @@ from src.core.models import StoryRun, StoryRunStep, SystemLog
 from src.stories.rotation_audit import (
     CONTROLLED_LIVE_ACCOUNT_ID,
     build_story_rotation_precheck,
+    controlled_live_account_id,
 )
 from src.stories.scheduler_integration import controlled_story_execution_allowed
 
 logger = structlog.get_logger(__name__)
 
-LIVE_CONFIRMATION_TOKEN = f"LIVE_STORY_ACCOUNT_{CONTROLLED_LIVE_ACCOUNT_ID}"
+
+def live_confirmation_token(account_id: int | None = None) -> str:
+    aid = int(account_id) if account_id is not None else controlled_live_account_id()
+    return f"LIVE_STORY_ACCOUNT_{aid}"
+
+
+# Backward-compatible alias for tests/importers (default account 140).
+LIVE_CONFIRMATION_TOKEN = live_confirmation_token(CONTROLLED_LIVE_ACCOUNT_ID)
 
 
 def _requested_account_ids(payload: dict[str, Any]) -> list[int] | None:
@@ -42,7 +55,7 @@ def _error_response(
     body: dict[str, Any] = {
         "ok": False,
         "error": error,
-        "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+        "controlled_live_account_id": controlled_live_account_id(),
     }
     if message:
         body["message"] = message
@@ -67,9 +80,8 @@ def evaluate_controlled_live_run_gates(
             message="STORY_MUTATIONS_ENABLED is false/missing; Story mutations denied.",
         )
 
-    execution_allowed, execution_reason = controlled_story_execution_allowed(
-        CONTROLLED_LIVE_ACCOUNT_ID
-    )
+    aid = controlled_live_account_id()
+    execution_allowed, execution_reason = controlled_story_execution_allowed(aid)
     if not execution_allowed:
         return _error_response(
             execution_reason,
@@ -78,11 +90,11 @@ def evaluate_controlled_live_run_gates(
         )
 
     env_account = os.getenv("CONTROLLED_STORY_ACCOUNT_ID", "").strip()
-    if env_account != str(CONTROLLED_LIVE_ACCOUNT_ID):
+    if env_account != str(aid):
         return _error_response(
             "controlled_account_flag_required",
             403,
-            message=f"Set CONTROLLED_STORY_ACCOUNT_ID={CONTROLLED_LIVE_ACCOUNT_ID} for this path.",
+            message=f"Set CONTROLLED_STORY_ACCOUNT_ID={aid} for this path.",
         )
 
     if payload.get("dry_run"):
@@ -93,12 +105,12 @@ def evaluate_controlled_live_run_gates(
         )
 
     requested = _requested_account_ids(payload)
-    if requested != [CONTROLLED_LIVE_ACCOUNT_ID]:
+    if requested != [aid]:
         return _error_response(
             "controlled_account_required",
             403,
-            message=f"Controlled live runs require account_ids=[{CONTROLLED_LIVE_ACCOUNT_ID}] only.",
-            live_gate_blockers=["live_gate_requires_account_140_only"],
+            message=f"Controlled live runs require account_ids=[{aid}] only.",
+            live_gate_blockers=[f"live_gate_requires_account_{aid}_only"],
         )
 
     if payload.get("explicit_operator_approval") is not True:
@@ -109,12 +121,13 @@ def evaluate_controlled_live_run_gates(
             live_gate_blockers=["explicit_operator_approval_required"],
         )
 
+    expected_token = live_confirmation_token(aid)
     confirmation = str(payload.get("confirmation_token") or "").strip()
-    if confirmation != LIVE_CONFIRMATION_TOKEN:
+    if confirmation != expected_token:
         return _error_response(
             "confirmation_token_required",
             403,
-            message=f"confirmation_token must be {LIVE_CONFIRMATION_TOKEN}.",
+            message=f"confirmation_token must be {expected_token}.",
             live_gate_blockers=["confirmation_token_required"],
         )
 
@@ -129,7 +142,7 @@ def evaluate_controlled_live_run_gates(
 
     account_rows = report.get("accounts") or []
     account_row = next(
-        (row for row in account_rows if int(row.get("account_id") or 0) == CONTROLLED_LIVE_ACCOUNT_ID),
+        (row for row in account_rows if int(row.get("account_id") or 0) == aid),
         None,
     )
     if account_row and account_row.get("blockers"):
@@ -194,7 +207,7 @@ async def _execute_controlled_live_story_run(
     from src.stories.publisher import story_publisher
     from src.stories.client_lifecycle import open_controlled_story_client
 
-    account_id = CONTROLLED_LIVE_ACCOUNT_ID
+    account_id = controlled_live_account_id()
     media_path = str((report.get("media") or {}).get("path") or payload.get("media_path") or "").strip()
     caption = payload.get("caption")
     mentions_per_story = int(payload.get("mentions_per_story") or 0)
@@ -225,7 +238,7 @@ async def _execute_controlled_live_story_run(
             "mentions_selected": [],
             "mentions_applied": [],
             "mentions_skipped": [],
-            "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+            "controlled_live_account_id": controlled_live_account_id(),
         }
     else:
         candidates = []
@@ -244,7 +257,7 @@ async def _execute_controlled_live_story_run(
             ],
             "mentions_applied": [],
             "mentions_skipped": [],
-            "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+            "controlled_live_account_id": controlled_live_account_id(),
         }
 
     with get_db_context() as db:
@@ -461,7 +474,7 @@ def _finalize_run(
             "result_classification": "AMBIGUOUS_NO_RETRY",
             "message": publish_result.get("error")
             or "Telegram accepted the Story but local persistence is incomplete.",
-            "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+            "controlled_live_account_id": controlled_live_account_id(),
             **mention_fields,
         }
 
@@ -483,7 +496,7 @@ def _finalize_run(
             "db_id": publish_result.get("db_id"),
             "message": publish_result.get("message") or "Story published.",
             "warning": publish_result.get("warning"),
-            "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+            "controlled_live_account_id": controlled_live_account_id(),
             **mention_fields,
         }
 
@@ -500,7 +513,7 @@ def _finalize_run(
         "published": False,
         "error": publish_result.get("error") or "controlled_story_run_failed",
         "message": error or "Publish failed.",
-        "controlled_live_account_id": CONTROLLED_LIVE_ACCOUNT_ID,
+        "controlled_live_account_id": controlled_live_account_id(),
         **mention_fields,
     }
 

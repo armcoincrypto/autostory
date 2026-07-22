@@ -259,3 +259,17 @@ def test_dry_run_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 200
     body = resp.get_json()
     assert body.get("dry_run") is True
+
+
+def test_controlled_live_account_follows_env_account_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CONTROLLED_STORY_ACCOUNT_ID selects the single allowed controlled-live account."""
+    from src.stories.rotation_audit import controlled_live_account_id
+    from src.stories.controlled_live_run import live_confirmation_token
+
+    monkeypatch.delenv("CONTROLLED_STORY_ACCOUNT_ID", raising=False)
+    assert controlled_live_account_id() == 140
+    assert live_confirmation_token() == "LIVE_STORY_ACCOUNT_140"
+
+    monkeypatch.setenv("CONTROLLED_STORY_ACCOUNT_ID", "106")
+    assert controlled_live_account_id() == 106
+    assert live_confirmation_token() == "LIVE_STORY_ACCOUNT_106"
