@@ -35,6 +35,12 @@ def _app(monkeypatch, **env):
         ),
     )
     monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv(
+        "STORY_MUTATIONS_ENABLED",
+        env.get("STORY_MUTATIONS_ENABLED", "true" if env.get("CONTROLLED_STORY_EXECUTION_ENABLED", env.get("STORY_EXECUTION_ENABLED", "false")) == "true" else "false"),
+    )
+    monkeypatch.setenv("STORY_EXECUTION_MODE", env.get("STORY_EXECUTION_MODE", "disabled"))
+    monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", env.get("STORY_ACCOUNT_MUTATION_ALLOWLIST", ""))
     monkeypatch.setenv("CONTROLLED_STORY_ACCOUNT_ID", env.get("CONTROLLED_STORY_ACCOUNT_ID", ""))
     from src.dashboard.app import create_app
 
@@ -122,7 +128,7 @@ def test_stale_legacy_health_not_hard_blocking_dry_run(monkeypatch, tmp_path) ->
         )
     )
     db.commit()
-    monkeypatch.setattr(rotation_audit, "account_has_canonical_session", lambda account: True)
+    monkeypatch.setattr(rotation_audit, "account_has_usable_story_session", lambda account: True)
     monkeypatch.setattr(rotation_audit, "scheduler_telethon_excluded_account_ids", lambda db: set())
     monkeypatch.setattr(
         rotation_audit,
@@ -200,5 +206,5 @@ def test_story_runs_api_returns_json_for_gate_blocks(monkeypatch) -> None:
 
     assert resp.status_code == 403
     assert resp.is_json
-    assert resp.get_json()["error"] == "controlled_story_execution_disabled"
+    assert resp.get_json()["error"] == "story_mutations_disabled"
     assert "<!doctype" not in resp.get_data(as_text=True).lower()

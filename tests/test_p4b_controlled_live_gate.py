@@ -38,6 +38,20 @@ def _app(monkeypatch: pytest.MonkeyPatch, **env: str) -> object:
         "CONTROLLED_STORY_ACCOUNT_ID",
         env.get("CONTROLLED_STORY_ACCOUNT_ID", ""),
     )
+    # Phase 1.1: global kill switch. Enable only when a test explicitly exercises
+    # deeper controlled-live gates (still cannot publish without mode/allowlist + token).
+    monkeypatch.setenv(
+        "STORY_MUTATIONS_ENABLED",
+        env.get("STORY_MUTATIONS_ENABLED", "false"),
+    )
+    monkeypatch.setenv(
+        "STORY_EXECUTION_MODE",
+        env.get("STORY_EXECUTION_MODE", "disabled"),
+    )
+    monkeypatch.setenv(
+        "STORY_ACCOUNT_MUTATION_ALLOWLIST",
+        env.get("STORY_ACCOUNT_MUTATION_ALLOWLIST", ""),
+    )
     from src.dashboard.app import create_app
 
     app = create_app()
@@ -69,7 +83,16 @@ def test_runs_locked_when_execution_disabled(monkeypatch: pytest.MonkeyPatch) ->
     assert resp.status_code == 403
     body = resp.get_json()
     assert body["ok"] is False
-    assert body["error"] == "controlled_story_execution_disabled"
+    assert body["error"] == "story_mutations_disabled"
+
+
+def test_runs_locked_when_controlled_flag_false_but_global_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(monkeypatch, STORY_MUTATIONS_ENABLED="true")
+    resp = app.test_client().post("/api/stories/runs", json=_payload(), headers=_headers())
+    assert resp.status_code == 403
+    assert resp.get_json()["error"] == "controlled_story_execution_disabled"
 
 
 def test_runs_wrong_account(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,6 +100,7 @@ def test_runs_wrong_account(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         STORY_EXECUTION_ENABLED="true",
         CONTROLLED_STORY_ACCOUNT_ID="140",
+        STORY_MUTATIONS_ENABLED="true",
     )
     resp = app.test_client().post(
         "/api/stories/runs",
@@ -91,6 +115,7 @@ def test_runs_missing_operator_approval(monkeypatch: pytest.MonkeyPatch) -> None
     app = _app(
         monkeypatch,
         STORY_EXECUTION_ENABLED="true",
+        STORY_MUTATIONS_ENABLED="true",
         CONTROLLED_STORY_ACCOUNT_ID="140",
     )
     resp = app.test_client().post(
@@ -106,6 +131,7 @@ def test_runs_missing_confirmation_token(monkeypatch: pytest.MonkeyPatch) -> Non
     app = _app(
         monkeypatch,
         STORY_EXECUTION_ENABLED="true",
+        STORY_MUTATIONS_ENABLED="true",
         CONTROLLED_STORY_ACCOUNT_ID="140",
     )
     resp = app.test_client().post(
@@ -121,6 +147,7 @@ def test_runs_bad_media(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     app = _app(
         monkeypatch,
         STORY_EXECUTION_ENABLED="true",
+        STORY_MUTATIONS_ENABLED="true",
         CONTROLLED_STORY_ACCOUNT_ID="140",
     )
     resp = app.test_client().post(
@@ -186,6 +213,7 @@ def test_runs_stale_fresh_auth(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Non
     app = _app(
         monkeypatch,
         STORY_EXECUTION_ENABLED="true",
+        STORY_MUTATIONS_ENABLED="true",
         CONTROLLED_STORY_ACCOUNT_ID="140",
     )
     resp = app.test_client().post(
@@ -201,6 +229,7 @@ def test_publish_batch_still_locked(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _app(
         monkeypatch,
         STORY_EXECUTION_ENABLED="true",
+        STORY_MUTATIONS_ENABLED="true",
         CONTROLLED_STORY_ACCOUNT_ID="140",
     )
     client = app.test_client()

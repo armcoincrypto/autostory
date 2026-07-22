@@ -236,7 +236,7 @@ def _runtime_ready_account(db, *, account_id: int = CONTROLLED_LIVE_ACCOUNT_ID) 
 def test_account_with_persisted_allowed_auth_is_runtime_ready(monkeypatch) -> None:
     db = _memory_db()
     account = _runtime_ready_account(db)
-    monkeypatch.setattr(rotation_audit, "account_has_canonical_session", lambda acc: True)
+    monkeypatch.setattr(rotation_audit, "account_has_usable_story_session", lambda acc: True)
     monkeypatch.setattr(rotation_audit, "scheduler_telethon_excluded_account_ids", lambda db: set())
     monkeypatch.setattr(
         rotation_audit,
@@ -304,7 +304,7 @@ def test_account_allowed_auth_updates_summary_counts(monkeypatch) -> None:
             )
         )
     db.commit()
-    monkeypatch.setattr(rotation_audit, "account_has_canonical_session", lambda acc: True)
+    monkeypatch.setattr(rotation_audit, "account_has_usable_story_session", lambda acc: True)
     monkeypatch.setattr(rotation_audit, "scheduler_telethon_excluded_account_ids", lambda db: set())
     monkeypatch.setattr(
         rotation_audit,

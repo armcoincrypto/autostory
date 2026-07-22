@@ -657,33 +657,96 @@ def can_execute_action(
             decision = _allow(action, "telegram_join_ok", "Join permitted.", audit=audit_base)
 
     elif action == ACTION_STORY_PUBLISH:
+        from src.stories.mutation_boundary import (
+            StoryMutationTrigger,
+            StoryMutationService,
+            parse_story_execution_mode,
+            story_account_mutation_allowed,
+            story_mutations_enabled,
+        )
         from src.stories.scheduler_integration import (
             controlled_story_execution_allowed,
             scheduler_story_execution_enabled,
         )
 
-        if scope == "controlled_live":
-            allowed, reason = controlled_story_execution_allowed(account_id)
-        elif scope == "scheduler":
-            allowed = scheduler_story_execution_enabled()
-            reason = (
-                "scheduler_story_publish_ok"
-                if allowed
-                else "scheduler_story_execution_disabled"
+        # Layer 1 — global kill switch (call-time, fail closed).
+        if not story_mutations_enabled():
+            StoryMutationService.invalidate_pending_authorizations(
+                reason="execution_guard_global_deny"
             )
-        else:
-            allowed = False
-            reason = "story_execution_purpose_required"
-
-        if not allowed:
             decision = _deny(
                 action,
-                reason,
-                "Story publishing requires an enabled, explicit execution purpose.",
-                audit=audit_base,
+                "story_mutations_disabled",
+                "STORY_MUTATIONS_ENABLED is false/missing/malformed; Story mutations denied.",
+                audit={**audit_base, "global_switch": False},
             )
         else:
-            decision = _allow(action, reason, "Scoped Story publish permitted.", audit=audit_base)
+            mode = parse_story_execution_mode()
+            if mode.value == "disabled":
+                decision = _deny(
+                    action,
+                    "story_execution_mode_disabled",
+                    "STORY_EXECUTION_MODE=disabled; Story mutations denied.",
+                    audit={**audit_base, "execution_mode": mode.value},
+                )
+            else:
+                account_ok, account_reason = story_account_mutation_allowed(account_id)
+                if not account_ok:
+                    decision = _deny(
+                        action,
+                        account_reason,
+                        "Account is not explicitly allowed for Story mutation.",
+                        audit={**audit_base, "account_permission": False},
+                    )
+                elif scope == "controlled_live":
+                    allowed, reason = controlled_story_execution_allowed(account_id)
+                    if not allowed:
+                        decision = _deny(
+                            action,
+                            reason,
+                            "Story publishing requires an enabled, explicit execution purpose.",
+                            audit=audit_base,
+                        )
+                    elif mode.value not in {"controlled-canary", "live"}:
+                        decision = _deny(
+                            action,
+                            "story_execution_mode_incompatible",
+                            "Controlled live requires STORY_EXECUTION_MODE=controlled-canary|live.",
+                            audit={**audit_base, "execution_mode": mode.value},
+                        )
+                    else:
+                        decision = _allow(
+                            action,
+                            reason,
+                            "Scoped Story publish permitted.",
+                            audit={
+                                **audit_base,
+                                "global_switch": True,
+                                "execution_mode": mode.value,
+                                "account_permission": True,
+                                "trigger": StoryMutationTrigger.CANARY.value,
+                            },
+                        )
+                elif scope == "scheduler":
+                    allowed = scheduler_story_execution_enabled()
+                    # Scheduler Story mutation remains uncertified; deny even if flag true.
+                    decision = _deny(
+                        action,
+                        (
+                            "scheduler_story_execution_not_certified"
+                            if allowed
+                            else "scheduler_story_execution_disabled"
+                        ),
+                        "Scheduler Story publishing is locked.",
+                        audit=audit_base,
+                    )
+                else:
+                    decision = _deny(
+                        action,
+                        "story_execution_purpose_required",
+                        "Story publishing requires an enabled, explicit execution purpose.",
+                        audit=audit_base,
+                    )
 
     elif action == ACTION_CAMPAIGN_EXECUTE:
         from src.scheduler.campaign_governance import campaign_execution_enabled

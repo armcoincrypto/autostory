@@ -58,6 +58,15 @@ def evaluate_controlled_live_run_gates(
     report: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, int | None]:
     """Return ``(error_body, status)`` when blocked, else ``(None, None)``."""
+    from src.stories.mutation_boundary import story_mutations_enabled
+
+    if not story_mutations_enabled():
+        return _error_response(
+            "story_mutations_disabled",
+            403,
+            message="STORY_MUTATIONS_ENABLED is false/missing; Story mutations denied.",
+        )
+
     execution_allowed, execution_reason = controlled_story_execution_allowed(
         CONTROLLED_LIVE_ACCOUNT_ID
     )

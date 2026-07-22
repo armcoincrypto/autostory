@@ -162,6 +162,11 @@ class StoryPublisher:
             guard_blocked_story_publish,
             require_execution_allowed,
         )
+        from src.stories.mutation_boundary import (
+            StoryMutationTrigger,
+            invoke_send_story,
+            require_story_mutation_authorization,
+        )
 
         blocked = require_execution_allowed(ACTION_STORY_PUBLISH, account_id=int(account_id))
         if blocked is not None:
@@ -171,6 +176,19 @@ class StoryPublisher:
                 reason=blocked.reason_code,
             )
             return {**result, **guard_blocked_story_publish(blocked)}
+
+        mutation = require_story_mutation_authorization(
+            account_id=int(account_id),
+            scope=None,
+            trigger=StoryMutationTrigger.UNKNOWN.value,
+            caller="src.publisher.story_publisher.StoryPublisher.publish_story",
+        )
+        if not mutation.allowed or mutation.authorization is None:
+            result["error"] = mutation.denial_reason or "story_mutations_denied"
+            result["blocked_by_execution_guard"] = True
+            result["reason_code"] = mutation.denial_reason or "story_mutations_denied"
+            result["provider_called"] = False
+            return result
 
         mention_user_ids = mention_user_ids or []
 
@@ -262,15 +280,20 @@ class StoryPublisher:
                 # Set privacy rules
                 privacy_rules = self._get_privacy_rules(privacy)
 
-                # Send story
-                story_result = await client(SendStoryRequest(
-                    media=media,
-                    caption=final_caption if final_caption else None,
-                    entities=entities if entities else None,
-                    privacy_rules=privacy_rules,
-                    pinned=False,
-                    noforwards=False,
-                ))
+                # Send story (canonical provider boundary)
+                story_result = await invoke_send_story(
+                    client,
+                    SendStoryRequest(
+                        media=media,
+                        caption=final_caption if final_caption else None,
+                        entities=entities if entities else None,
+                        privacy_rules=privacy_rules,
+                        pinned=False,
+                        noforwards=False,
+                    ),
+                    authorization=mutation.authorization,
+                    account_id=int(account_id),
+                )
 
                 # Extract story ID
                 story_id = getattr(story_result, 'id', None)

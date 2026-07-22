@@ -17,6 +17,26 @@ from src.stories.mention_plan import (
 from src.stories.rotation_audit import CONTROLLED_LIVE_ACCOUNT_ID
 
 
+def _bypass_mutation_boundary_for_unit_publish(monkeypatch) -> None:
+    """Publisher unit tests exercise mention/media paths, not Phase 1.1 gates."""
+
+    async def _fake_invoke(client, request, *, authorization, account_id):
+        return await client(request)
+
+    monkeypatch.setattr(
+        "src.stories.mutation_boundary.require_story_mutation_authorization",
+        lambda **_kwargs: SimpleNamespace(
+            allowed=True,
+            authorization=object(),
+            denial_reason=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "src.stories.mutation_boundary.invoke_send_story",
+        _fake_invoke,
+    )
+
+
 def test_dry_run_selects_exactly_one_candidate_shape() -> None:
     plan = evaluate_mention_plan_local(
         [{"user_id": 11, "username": "alice", "source_chat_title": "Grp"}],
@@ -140,6 +160,7 @@ async def test_strict_policy_blocks_publish_without_telegram_send(monkeypatch) -
     client.upload_file = AsyncMock()
     wrapper = SimpleNamespace(client=client, account=SimpleNamespace(id=140))
     monkeypatch.setattr("src.core.execution_guard.require_execution_allowed", lambda *a, **k: None)
+    _bypass_mutation_boundary_for_unit_publish(monkeypatch)
     monkeypatch.setattr(pub, "_get_media_type", lambda p: "photo")
 
     result = await pub.publish_story(
@@ -199,6 +220,7 @@ async def test_optional_policy_publishes_with_explicit_warning(monkeypatch) -> N
     client.side_effect = _invoke
     wrapper = SimpleNamespace(client=client, account=SimpleNamespace(id=140))
     monkeypatch.setattr("src.core.execution_guard.require_execution_allowed", lambda *a, **k: None)
+    _bypass_mutation_boundary_for_unit_publish(monkeypatch)
     monkeypatch.setattr(pub, "_get_media_type", lambda p: "photo")
     monkeypatch.setattr(pubmod.AntiDetection, "random_pause", AsyncMock())
 
@@ -257,6 +279,7 @@ async def test_zero_mention_story_publishing_unchanged(monkeypatch) -> None:
     client.side_effect = _invoke
     wrapper = SimpleNamespace(client=client, account=SimpleNamespace(id=140))
     monkeypatch.setattr("src.core.execution_guard.require_execution_allowed", lambda *a, **k: None)
+    _bypass_mutation_boundary_for_unit_publish(monkeypatch)
     monkeypatch.setattr(pub, "_get_media_type", lambda p: "photo")
     monkeypatch.setattr(pubmod.AntiDetection, "random_pause", AsyncMock())
 

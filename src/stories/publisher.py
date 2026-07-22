@@ -86,9 +86,10 @@ class StoryPublisher:
             normalize_mention_plan,
         )
 
+        account_id_i = int(getattr(account, "id", 0) or 0)
         blocked = require_execution_allowed(
             ACTION_STORY_PUBLISH,
-            account_id=int(getattr(account, "id", 0) or 0),
+            account_id=account_id_i,
             scope=execution_scope,
         )
         if blocked is not None:
@@ -98,6 +99,40 @@ class StoryPublisher:
                 reason=blocked.reason_code,
             )
             return guard_blocked_story_publish(blocked)
+
+        from src.stories.mutation_boundary import (
+            StoryMutationTrigger,
+            require_story_mutation_authorization,
+        )
+
+        trigger = (
+            StoryMutationTrigger.CANARY.value
+            if execution_scope == "controlled_live"
+            else (
+                StoryMutationTrigger.SCHEDULER.value
+                if execution_scope == "scheduler"
+                else StoryMutationTrigger.UNKNOWN.value
+            )
+        )
+        mutation = require_story_mutation_authorization(
+            account_id=account_id_i,
+            scope=execution_scope,
+            trigger=trigger,
+            caller="src.stories.publisher.StoryPublisher.publish_story",
+        )
+        if not mutation.allowed or mutation.authorization is None:
+            logger.warning(
+                "story_publisher_blocked_mutation_boundary",
+                account_id=account_id_i,
+                reason=mutation.denial_reason,
+            )
+            return {
+                "success": False,
+                "error": mutation.denial_reason or "story_mutations_denied",
+                "blocked_by_execution_guard": True,
+                "reason_code": mutation.denial_reason or "story_mutations_denied",
+                "provider_called": False,
+            }
 
         try:
             # Validate media
@@ -193,14 +228,21 @@ class StoryPublisher:
                     attributes=[]
                 )
 
-            result = await client(functions.stories.SendStoryRequest(
-                peer=types.InputPeerSelf(),
-                media=media,
-                caption=formatted_caption or None,
-                entities=caption_entities or None,
-                privacy_rules=privacy_rules,
-                pinned=pin_to_profile,
-            ))
+            from src.stories.mutation_boundary import invoke_send_story
+
+            result = await invoke_send_story(
+                client,
+                functions.stories.SendStoryRequest(
+                    peer=types.InputPeerSelf(),
+                    media=media,
+                    caption=formatted_caption or None,
+                    entities=caption_entities or None,
+                    privacy_rules=privacy_rules,
+                    pinned=pin_to_profile,
+                ),
+                authorization=mutation.authorization,
+                account_id=account_id_i,
+            )
             telegram_accepted = True
 
             # Extract story ID from result
