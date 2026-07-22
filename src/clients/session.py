@@ -155,6 +155,17 @@ class SessionManager:
 
     def sync_to_database(self) -> Dict[str, int]:
         """Sync file sessions with database"""
+        import os
+
+        if os.environ.get("LEGACY_FERNET_SESSION_MANAGER_ENABLED", "false").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+        }:
+            raise RuntimeError(
+                "Legacy Fernet clients.session sync is blocked; use EncryptedSessionText "
+                "and migrate_telegram_session_encryption tooling"
+            )
         stats = {"created": 0, "updated": 0, "errors": 0}
 
         with get_db_context() as db:

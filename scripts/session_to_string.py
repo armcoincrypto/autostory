@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 """
 Convert a Telethon .session file (SQLite) to a session string.
-Use when you have session/12345.session from an export (e.g. 50-us-27.01.zip)
-and need the string for Dashboard → Add Account → Import from tdata.
+
+SECURITY: Refuses to run unless ACKNOWLEDGE_SESSION_STRING_EXPORT=1 is set.
+Session strings are secret authentication material — never pipe to logs or tickets.
 
 Usage:
-  python scripts/session_to_string.py /path/to/session/15132239764.session
-  python scripts/session_to_string.py /path/to/session  # converts all .session in folder
-
-Prints the session string(s) to stdout.
+  ACKNOWLEDGE_SESSION_STRING_EXPORT=1 python scripts/session_to_string.py /path/to/file.session
 """
+import os
 import sys
 from pathlib import Path
 
-# Project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.core.tdata_convert import session_file_to_string
 
 
 def main():
+    if os.environ.get("ACKNOWLEDGE_SESSION_STRING_EXPORT", "").strip() != "1":
+        print(
+            "refusing: set ACKNOWLEDGE_SESSION_STRING_EXPORT=1 to run this export tool "
+            "(session strings are secret; prefer migrate_telegram_session_encryption "
+            "--materialize-filesystem-sessions on a disposable database copy)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if len(sys.argv) < 2:
-        print("Usage: python scripts/session_to_string.py <path-to.session> [path2.session ...]")
-        print("   or: python scripts/session_to_string.py <path-to-folder-with-session-files>")
+        print("Usage: ACKNOWLEDGE_SESSION_STRING_EXPORT=1 python scripts/session_to_string.py <path>")
         sys.exit(1)
     arg = Path(sys.argv[1]).expanduser().resolve()
     paths = []
@@ -43,7 +48,7 @@ def main():
             s = session_file_to_string(str(p))
             print(f"\n# {p.name}\n{s}\n")
         except Exception as e:
-            print(f"# Skip {p.name}: {e}", file=sys.stderr)
+            print(f"# Skip {p.name}: {type(e).__name__}", file=sys.stderr)
 
 
 if __name__ == "__main__":

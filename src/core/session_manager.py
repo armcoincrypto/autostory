@@ -150,6 +150,17 @@ class SessionManager:
 
     async def get_client(self, account_id: int) -> Optional[TelegramClient]:
         """Get or create a connected client for an account"""
+        import os
+
+        if os.environ.get("LEGACY_FERNET_SESSION_MANAGER_ENABLED", "false").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+        }:
+            raise RuntimeError(
+                "Legacy Fernet SessionManager is blocked; use ClientManager + "
+                "resolve_telethon_session / EncryptedSessionText"
+            )
         # Return existing client if connected
         if account_id in self._clients:
             client = self._clients[account_id]
