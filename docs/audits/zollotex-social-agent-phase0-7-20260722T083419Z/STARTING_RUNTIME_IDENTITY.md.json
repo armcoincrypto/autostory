@@ -1,0 +1,120 @@
+{
+  "autostory-readiness-worker": [
+    "MainPID=479277",
+    "NRestarts=0",
+    "ExecMainStartTimestamp=Wed 2026-07-22 06:58:03 CEST",
+    "ExecStart={ path=/opt/autostory/venv/bin/python ; argv[]=/opt/autostory/venv/bin/python /opt/autostory/scripts/run_readiness_worker.py ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "Environment=PYTHONUNBUFFERED=1 READINESS_WORKER_ENABLED=true",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=yes)",
+    "WorkingDirectory=/opt/autostory",
+    "ActiveState=active",
+    "SubState=running",
+    "FragmentPath=/etc/systemd/system/autostory-readiness-worker.service",
+    "DropInPaths="
+  ],
+  "autostory-scheduler": [
+    "MainPID=479281",
+    "NRestarts=0",
+    "ExecMainStartTimestamp=Wed 2026-07-22 06:58:03 CEST",
+    "ExecStart={ path=/opt/autostory/deploy/run_scheduler_singleton.sh ; argv[]=/opt/autostory/deploy/run_scheduler_singleton.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "Environment=PYTHONUNBUFFERED=1",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=yes)",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=no)",
+    "WorkingDirectory=/opt/autostory",
+    "ActiveState=active",
+    "SubState=running",
+    "FragmentPath=/etc/systemd/system/autostory-scheduler.service",
+    "DropInPaths=/etc/systemd/system/autostory-scheduler.service.d/override.conf"
+  ],
+  "autostory-web": [
+    "MainPID=479280",
+    "NRestarts=0",
+    "ExecMainStartTimestamp=Wed 2026-07-22 06:58:03 CEST",
+    "ExecStart={ path=/opt/autostory/venv/bin/gunicorn ; argv[]=/opt/autostory/venv/bin/gunicorn -w 1 -b 127.0.0.1:8000 --timeout 600 wsgi:app ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "Environment=PYTHONUNBUFFERED=1 READINESS_WORKER_ENABLED=false AI_AGENT_AUTO_LOOP_ENABLED=true AI_AGENT_AUTO_LOOP_CYCLE_SEC=15 AI_AGENT_USE_TELEGRAM_GATEWAY=true TELEGRAM_GATEWAY_CLIENT_WAIT_SEC=120 TELEGRAM_GATEWAY_RUNNING_STALE_SEC=600 AI_AGENT_ACCOUNT_PHONES=+18093262888,+18093262928,+18096084297 STORY_EXECUTION_ENABLED=false CONTROLLED_STORY_EXECUTION_ENABLED=false SCHEDULER_STORY_EXECUTION_ENABLED=false SCHEDULER_MUTATIONS_ENABLED=false CAMPAIGN_EXECUTION_ENABLED=false DISCOVERY_EXECUTION_ENABLED=false",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=yes)",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=no)",
+    "WorkingDirectory=/opt/autostory-releases/20260721T232351Z-499758e3465a",
+    "ActiveState=active",
+    "SubState=running",
+    "FragmentPath=/etc/systemd/system/autostory-web.service",
+    "DropInPaths=/etc/systemd/system/autostory-web.service.d/override.conf"
+  ],
+  "env_flag_status_redacted": {
+    "AI_AGENT_AUTO_LOOP_ENABLED": "missing",
+    "AI_AUTOPUBLISH_ENABLED": "missing",
+    "AI_CODING_EXECUTE_ENABLED": "false",
+    "CAMPAIGN_EXECUTION_ENABLED": "false",
+    "DISCOVERY_EXECUTION_ENABLED": "false",
+    "ENVIRONMENT": "production",
+    "EXECUTION_EMERGENCY_LOCK": "false",
+    "KATHLEEN_LISTENER_ACTIVE": "missing",
+    "READINESS_WORKER_ENABLED": "missing",
+    "SCHEDULER_MUTATIONS_ENABLED": "false",
+    "SOCIAL_PUBLISHING_ENABLED": "missing",
+    "STORY_EXECUTION_ENABLED": "false",
+    "TELEGRAM_BOT_ACTIVE": "missing",
+    "TELEGRAM_GATEWAY_ACTIVE": "missing"
+  },
+  "kathleen-account-listener": [
+    "MainPID=0",
+    "NRestarts=0",
+    "ExecMainStartTimestamp=",
+    "ExecStart={ path=/opt/autostory/venv/bin/python ; argv[]=/opt/autostory/venv/bin/python -m src.bot.kathleen_account_listener ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "Environment=PYTHONUNBUFFERED=1",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=yes)",
+    "WorkingDirectory=/opt/autostory",
+    "ActiveState=inactive",
+    "SubState=dead",
+    "FragmentPath=/etc/systemd/system/kathleen-account-listener.service",
+    "DropInPaths="
+  ],
+  "observed_shas": {
+    "candidate": "24e77d520121fc2394d4fe4c2d0d5a3f60320abe",
+    "prod_worktree_head": "499758e3465af1908fe31e197b0bd6e0e136b6ef",
+    "web_release": "499758e3465af1908fe31e197b0bd6e0e136b6ef"
+  },
+  "process_cwds": {
+    "readiness": "/opt/autostory",
+    "scheduler": "/opt/autostory",
+    "web": "/opt/autostory-releases/20260721T232351Z-499758e3465a"
+  },
+  "storyfleet-bot": [
+    "MainPID=0",
+    "NRestarts=0",
+    "ExecMainStartTimestamp=",
+    "ExecStart={ path=/opt/autostory/venv/bin/python ; argv[]=/opt/autostory/venv/bin/python main.py bot ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "Environment=PATH=/opt/autostory/venv/bin:/usr/bin",
+    "WorkingDirectory=/opt/autostory",
+    "ActiveState=inactive",
+    "SubState=dead",
+    "FragmentPath=/etc/systemd/system/storyfleet-bot.service",
+    "DropInPaths="
+  ],
+  "telegram-gateway": [
+    "MainPID=0",
+    "NRestarts=0",
+    "ExecMainStartTimestamp=",
+    "ExecStart={ path=/opt/autostory/venv/bin/python ; argv[]=/opt/autostory/venv/bin/python -m src.telegram_gateway.worker ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "Environment=PYTHONUNBUFFERED=1 AI_AGENT_USE_TELEGRAM_GATEWAY=true TELEGRAM_GATEWAY_POLL_SEC=2 AI_AGENT_ACCOUNT_PHONES=+18093262888,+18093262928,+18096084297 AI_AGENT_ACCOUNT_IDS=110,113,131 TELEGRAM_GATEWAY_RUNNING_STALE_SEC=120",
+    "EnvironmentFiles=/opt/autostory/.env (ignore_errors=yes)",
+    "WorkingDirectory=/opt/autostory",
+    "ActiveState=inactive",
+    "SubState=dead",
+    "FragmentPath=/etc/systemd/system/telegram-gateway.service",
+    "DropInPaths=/etc/systemd/system/telegram-gateway.service.d/override.conf"
+  ],
+  "web_release_manifest": {
+    "commit": "499758e3465af1908fe31e197b0bd6e0e136b6ef",
+    "created_at_utc": "20260721T232351Z",
+    "data_link": "symlink:/opt/autostory/data",
+    "data_reference": "/opt/autostory/data",
+    "env_reference": "/opt/autostory/.env",
+    "fixed_nested_data_symlink": true,
+    "method": "git archive",
+    "notes": "Clean tracked source only; production data/secrets/venv referenced externally.",
+    "release_path": "/opt/autostory-releases/20260721T232351Z-499758e3465a",
+    "source_repository": "/opt/autostory",
+    "venv_reference": "/opt/autostory/venv"
+  }
+}
