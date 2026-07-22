@@ -25,7 +25,7 @@ KEY_LIFECYCLE=PASS
 MIGRATION_REHEARSAL=PASS
 CLIENT_VALIDATION=PASS
 ROLLBACK=PASS
-PRODUCTION_READY=PASS_NOT_MIGRATED
+PRODUCTION_READY=PASS_NOT_MIGRATED_WITH_SHA_SPLIT_BLOCKER
 ```
 
 ## Social Agent decision matrix
@@ -41,3 +41,7 @@ TELEGRAM_PRODUCTION_MIGRATION_ALLOWED=false
 
 ## Next priority
 authorized Telegram production migration
+
+
+## Concurrent production note
+Web+readiness moved to `9b3ccc0` during this phase by another operator; scheduler remains `c9d1fe6`. Encryption readiness work did not deploy or migrate production.
