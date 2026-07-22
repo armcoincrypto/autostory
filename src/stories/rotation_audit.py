@@ -13,7 +13,7 @@ from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS, schedu
 from src.core.account_protection import PROTECTED_IDS, PURPOSE_HOLD_IDS
 from src.core.models import Account, AccountStatus, DiscoveredUser, StoryPool, StoryPoolMember, StoryRun
 from src.core.scheduler_models import AccountReadinessSnapshot, JobStatus, ScheduledJob
-from src.core.session_paths import account_has_canonical_session
+from src.core.session_paths import account_has_usable_story_session
 from src.core.safety_policy import get_story_safety_decision
 from src.utils.helpers import validate_media
 
@@ -353,8 +353,8 @@ def evaluate_account_story_runtime(
         blockers.append(f"readiness_not_ready:{snap_status or 'missing'}")
     elif not snap_fresh:
         live_only_blockers.append("readiness_snapshot_expired")
-    if not account_has_canonical_session(account):
-        blockers.append("missing_canonical_session")
+    if not account_has_usable_story_session(account):
+        blockers.append("missing_usable_session")
     try:
         decision = get_story_safety_decision(account, requested_action="story_publish")
         if not decision.allowed and not (

@@ -122,17 +122,17 @@ def get_story_safety_decision(
     cfg = _get_settings()
     now = utc_now()
 
-    # 1. Canonical session
+    # 1. Usable session (canonical file or resolvable session_string)
     try:
-        from src.core.session_paths import account_has_canonical_session
-        has_session = account_has_canonical_session(account, _canonical_exists=_canonical_exists)
+        from src.core.session_paths import account_has_usable_story_session
+        has_session = account_has_usable_story_session(account, _canonical_exists=_canonical_exists)
     except Exception:
         has_session = False
     if not has_session:
         return StorySafetyDecision(
             allowed=False,
             reason_code=REASON_NO_SESSION,
-            human_reason="No session file. Re-import via TDATA or session string.",
+            human_reason="No usable Telegram session (file or session string).",
             risk_level=RISK_BLOCKED,
             operator_action="Re-import session",
         )

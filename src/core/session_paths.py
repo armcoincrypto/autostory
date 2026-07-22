@@ -81,6 +81,29 @@ def account_has_canonical_session(
     return False
 
 
+def account_has_usable_story_session(
+    account: Any,
+    _canonical_exists: set[int] | None = None,
+) -> bool:
+    """
+    True when Story publish can resolve Telethon session material.
+
+    Accepts a canonical/on-disk session file **or** a resolvable ``session_string``
+    (including encrypted DB material). Encryption-era accounts may have string-only
+    sessions after file retirement; Story gates must not require re-importing a file
+    when the string session already authorizes.
+    """
+    if account_has_canonical_session(account, _canonical_exists=_canonical_exists):
+        return True
+    try:
+        from src.clients.session_resolve import probe_telethon_session_kind
+
+        kind, err = probe_telethon_session_kind(account)
+        return err is None and kind in ("file", "string")
+    except Exception:
+        return False
+
+
 def get_session_readiness(
     account: Any,
     _canonical_exists: set[int] | None = None,
