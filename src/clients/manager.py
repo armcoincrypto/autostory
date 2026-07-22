@@ -148,38 +148,16 @@ def _persist_profile_capability(account_id: int, status: str, reason: Optional[s
         db.commit()
 
 def _existing_session_source_for_healthcheck(account) -> tuple[object | None, str | None]:
+    """Resolve Telethon session via the canonical boundary only.
+
+    Returns: (session_source, source_kind) where source_kind is file|string|...
     """
-    Prefer real on-disk sessions used by production.
-    Fallback to session_path, then Telethon StringSession when valid.
-    Returns: (session_source, source_kind)
-    """
-    account_id = getattr(account, "id", None)
+    from src.clients.session_resolve import resolve_telethon_session
 
-    try:
-        if account_id is not None:
-            canonical = get_canonical_session_path(int(account_id))
-            if canonical.is_file():
-                return str(canonical), "canonical_file"
-    except Exception:
-        pass
-
-    session_path = getattr(account, "session_path", None)
-    if isinstance(session_path, str) and session_path.strip():
-        try:
-            sp = Path(session_path).expanduser()
-            if sp.is_file():
-                return str(sp), "session_path_file"
-        except Exception:
-            pass
-
-    session_string = getattr(account, "session_string", None)
-    if isinstance(session_string, str) and session_string.strip():
-        try:
-            return StringSession(session_string.strip()), "string_session"
-        except Exception:
-            return None, None
-
-    return None, None
+    session, kind, err = resolve_telethon_session(account)
+    if err or session is None:
+        return None, None
+    return session, kind
 
 
 class TelegramClientWrapper:

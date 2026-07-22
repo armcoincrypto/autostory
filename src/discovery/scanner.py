@@ -73,25 +73,31 @@ class GroupMessageScanner:
         """
         Get an active Telegram client from database, trying accounts until one works.
         If entity_hint is provided (username or ID), verify the account can resolve it.
+
+        Session material is resolved only through ``resolve_telethon_session``.
         """
-        from telethon.sessions import StringSession, SQLiteSession
+        from src.clients.session_resolve import resolve_telethon_session
 
         with get_db_context() as db:
             accounts = db.query(Account).filter(
                 Account.status == AccountStatus.ACTIVE,
                 Account.session_string.isnot(None),
             ).all()
-            session_pairs = [(a.id, a.session_string) for a in accounts]
+            # Detach plain id list then re-load per attempt via resolve (account objects
+            # already decrypted by EncryptedSessionText on ORM load).
+            account_rows = list(accounts)
 
-        for account_id, session_string in session_pairs:
+        for account in account_rows:
+            account_id = int(account.id)
             try:
-                # session_string stores a file path (e.g. /opt/.../account_13.session)
-                # SQLiteSession expects path without the .session extension
-                if session_string.startswith('/') or session_string.endswith('.session'):
-                    sess_path = session_string.removesuffix('.session')
-                    session = SQLiteSession(sess_path)
-                else:
-                    session = StringSession(session_string)
+                session, _kind, err = resolve_telethon_session(account)
+                if err or session is None:
+                    logger.warning(
+                        "Skipping account with unusable session",
+                        account_id=account_id,
+                        error=err or "empty_session",
+                    )
+                    continue
 
                 client = TelegramClient(
                     session,

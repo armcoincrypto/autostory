@@ -329,13 +329,26 @@ async def probe_account_telegram(
     source_hash_before = inspection.source_sha256
 
     try:
+        from src.clients.session_resolve import resolve_telethon_session
+
         with tempfile.TemporaryDirectory(prefix=f"storyfleet-fleet-{account.id}-") as temp_dir:
+            # Canonical resolve for string material; disposable SQLite copy for on-disk sessions.
             if inspection.kind == "file" and inspection.path is not None:
+                # Confirm resolve can see the account before probing a disposable copy.
+                _resolved, _kind, err = resolve_telethon_session(account)
+                if err:
+                    raise RuntimeError(err)
                 temp_file = Path(temp_dir) / f"account_{account.id}.session"
                 _copy_sqlite_session(inspection.path, temp_file)
                 session: Any = SQLiteSession(str(temp_file.with_suffix("")))
             elif inspection.kind == "string":
-                session = StringSession((account.session_string or "").strip())
+                resolved, kind, err = resolve_telethon_session(account)
+                if err is None and resolved is not None and kind == "string":
+                    session = resolved
+                else:
+                    # Module-level StringSession remains the narrow fallback for
+                    # operator-validated string inspections / test doubles.
+                    session = StringSession((account.session_string or "").strip())
             else:
                 raise RuntimeError("session_not_probeable")
 

@@ -640,23 +640,17 @@ def _run_fleet_health_check_bg(job_id: str, account_ids: list) -> None:
             FloodWaitError = Exception
             PhoneNumberBannedError = Exception
 
+        from src.clients.session_resolve import resolve_telethon_session
+
         with get_db_context() as db:
             account = db.query(Account).filter(Account.id == account_id).first()
             if not account:
                 return {"account_id": account_id, "status": "error", "reason": "not found"}
-            session_val = account.session_string or ""
             phone = account.phone_number
             proxy = account.proxy_config if account.proxy_config else None
+            session, _kind, err = resolve_telethon_session(account)
 
-        # Determine session — could be a Telethon string or a file path
-        import re as _re
-        if session_val and len(session_val) >= 90 and _re.match(r"^1[A-Za-z0-9+/=_-]+$", session_val.strip()):
-            session = StringSession(session_val.strip())
-        elif session_val and (session_val.startswith("/") or session_val.startswith(".")):
-            # File path — use SQLite session file
-            session = session_val.rstrip(".session") if session_val.endswith(".session") else session_val
-        else:
-            # No usable session
+        if err or session is None:
             _save_health_result(account_id, "auth_required", "No session data — re-login required.")
             return {"account_id": account_id, "status": "auth_required", "reason": "No session"}
 
@@ -918,19 +912,16 @@ def run_story_precheck():
             UserDeactivatedError = Exception
             FloodWaitError = Exception
 
+        from src.clients.session_resolve import resolve_telethon_session
+
         with get_db_context() as db:
             account = db.query(Account).filter(Account.id == account_id).first()
             if not account:
                 return {"account_id": account_id, "status": "error", "reason": "not found"}
-            session_val = account.session_string or ""
             proxy = account.proxy_config if account.proxy_config else None
+            session, _kind, err = resolve_telethon_session(account)
 
-        import re as _re
-        if session_val and len(session_val) >= 90 and _re.match(r"^1[A-Za-z0-9+/=_-]+$", session_val.strip()):
-            session = StringSession(session_val.strip())
-        elif session_val and (session_val.startswith("/") or session_val.startswith(".")):
-            session = session_val.rstrip(".session") if session_val.endswith(".session") else session_val
-        else:
+        if err or session is None:
             _save_precheck_result(account_id, "not_authorized", ttl)
             return {"account_id": account_id, "status": "not_authorized", "reason": "no session"}
 
