@@ -15,7 +15,24 @@ git -C "$REPO" archive --format=tar "$SHA" | tar -C "$OUT" -xf -
 rm -rf "$OUT/.git" "$OUT/.env" "$OUT/data" "$OUT/venv" "$OUT/.venv" 2>/dev/null || true
 # External shared refs (same convention as 499758e release)
 ln -sfn /opt/autostory/data "$OUT/data"
-# nested data symlink fix if archive had data placeholder — already removed
+ln -sfn /opt/autostory/.env "$OUT/.env"
+# Fail closed: never ship a release with a local SQLite DB under data/
+if [[ ! -L "$OUT/data" ]]; then
+  echo "release data must be symlink to /opt/autostory/data: $OUT/data" >&2
+  exit 1
+fi
+data_target="$(readlink -f "$OUT/data")"
+if [[ "$data_target" != "/opt/autostory/data" ]]; then
+  echo "release data symlink target mismatch: $data_target (expected /opt/autostory/data)" >&2
+  exit 1
+fi
+if [[ -e "$OUT/data/storyfleet.db" ]]; then
+  db_real="$(readlink -f "$OUT/data/storyfleet.db")"
+  if [[ "$db_real" != "/opt/autostory/data/storyfleet.db" ]]; then
+    echo "release resolves storyfleet.db away from shared DB: $db_real" >&2
+    exit 1
+  fi
+fi
 REQ_HASH="$(sha256sum "$OUT/requirements.txt" | awk '{print $1}')"
 TREE_HASH="$(git -C "$REPO" rev-parse "${SHA}^{tree}")"
 PY_VER="$(/opt/autostory/venv/bin/python -c 'import sys; print("%d.%d.%d"%sys.version_info[:3])')"
