@@ -239,10 +239,12 @@ class StoryPublisher:
                         discovered.times_mentioned += 1
                         discovered.last_mentioned_at = datetime.utcnow()
 
-                # Update account stats
+                # Update account stats (success-only; UTC day rollover before increment)
                 account_db = db.query(Account).filter(Account.id == account.id).first()
                 if account_db:
-                    account_db.stories_today += 1
+                    from src.stories.daily_story_counter import record_successful_story_publish
+
+                    record_successful_story_publish(account_db)
                     account_db.last_active = datetime.utcnow()
 
                 db.commit()

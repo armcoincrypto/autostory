@@ -171,7 +171,9 @@ def is_daily_cap_exceeded(account: Any) -> bool:
     cap = getattr(w, "max_story_successes_per_day", 3) or 0
     if cap <= 0:
         return False
-    stories_today = getattr(account, "stories_today", None) or 0
+    from src.stories.daily_story_counter import stories_today_effective
+
+    stories_today = stories_today_effective(account)
     return stories_today >= cap
 
 

@@ -364,8 +364,13 @@ class StoryPublisher:
                 # Update account story count
                 account = db.query(Account).filter(Account.id == account_id).first()
                 if account:
-                    account.stories_today += 1
-                    account.total_stories_published += 1
+                    from src.stories.daily_story_counter import record_successful_story_publish
+
+                    record_successful_story_publish(account)
+                    if hasattr(account, "total_stories_published"):
+                        account.total_stories_published = int(
+                            getattr(account, "total_stories_published", 0) or 0
+                        ) + 1
                     account.last_active = datetime.utcnow()
 
                 # Create story record

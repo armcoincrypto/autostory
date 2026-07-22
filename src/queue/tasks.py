@@ -227,18 +227,24 @@ def batch_publish_task(
 
 @shared_task
 def reset_daily_counters() -> Dict[str, Any]:
-    """Reset daily counters for all accounts"""
+    """Reset daily counters for all accounts (UTC day; optional Celery backup)."""
+    from datetime import datetime, timezone
+
+    from src.stories.daily_story_counter import production_story_day
+
     logger.info("Resetting daily counters")
+    today = production_story_day(datetime.now(timezone.utc))
 
     with get_db_context() as db:
         accounts = db.query(Account).all()
         for account in accounts:
             account.stories_today = 0
+            account.stories_today_on = today
             account.actions_today = 0
             if hasattr(account, "story_attempts_today"):
                 account.story_attempts_today = 0
 
-    return {"success": True, "accounts_reset": len(accounts)}
+    return {"success": True, "accounts_reset": len(accounts), "stories_today_on": str(today)}
 
 
 @shared_task

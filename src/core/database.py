@@ -591,6 +591,7 @@ def _ensure_accounts_safety_columns() -> None:
         ("last_story_failure_at", "DATETIME"),
         ("last_story_success_at", "DATETIME"),
         ("story_attempts_today", "INTEGER DEFAULT 0"),
+        ("stories_today_on", "DATE"),
     ]
     for name, ddl in to_add:
         if name in cols:
