@@ -171,7 +171,7 @@ def test_runs_stale_fresh_auth(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Non
             return None
 
     monkeypatch.setattr("src.stories.controlled_live_run.get_db_context", lambda: _Ctx())
-    monkeypatch.setattr("src.stories.rotation_audit.account_has_canonical_session", lambda account: True)
+    monkeypatch.setattr("src.stories.rotation_audit.account_has_usable_story_session", lambda account: True)
     monkeypatch.setattr("src.stories.rotation_audit.scheduler_telethon_excluded_account_ids", lambda db: set())
     monkeypatch.setattr(
         "src.stories.rotation_audit.get_story_safety_decision",
