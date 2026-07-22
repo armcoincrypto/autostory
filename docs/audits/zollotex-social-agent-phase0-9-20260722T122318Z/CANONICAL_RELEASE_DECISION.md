@@ -9,4 +9,4 @@ SCHEDULER_MUTATION_LOCK_PRESERVED=YES
 GATEWAY_BOT_KATHLEEN_DEFAULT_STOPPED=YES
 ```
 
-Candidate SHA: integration merge tip (see FINAL_REPORT after push).
+Candidate SHA: `a385a084b9071d320b5f7a4bc508d0a0ee18bdfc`
