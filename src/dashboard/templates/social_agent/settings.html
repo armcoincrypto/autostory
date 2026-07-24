@@ -1,0 +1,57 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Settings</h2>
+  <p class="sa-muted mb-3">Operator-safe configuration view. Secrets are never returned.</p>
+  <div id="sa-settings" class="sa-muted">Loading…</div>
+</section>
+
+<section class="sa-card">
+  <h2>Exswaping content integration</h2>
+  <div class="sa-empty">
+    <span class="sa-status missing">NOT_CONFIGURED</span>
+    <p class="mb-0 mt-2">Approved public-content API required. Rate and reserve tools remain blocked.</p>
+  </div>
+</section>
+
+<section class="sa-card">
+  <h2>Permissions (this session)</h2>
+  <p class="sa-muted small">Dashboard admins receive the full Social Agent permission set in this release. Granular RBAC maps later without changing service call sites.</p>
+  <ul class="sa-list">
+    <li>social_agent.view / chat</li>
+    <li>content.create / edit / approve</li>
+    <li>publishing.publish / schedule (live gated)</li>
+    <li>social_accounts.manage · brand.manage · audit.view</li>
+  </ul>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const el = document.getElementById("sa-settings");
+  try {
+    const [health, integ, tools] = await Promise.all([
+      SocialAgent.fetch("/health"),
+      SocialAgent.fetch("/integrations"),
+      SocialAgent.fetch("/tools"),
+    ]);
+    const meta = integ.integrations && integ.integrations.meta;
+    const tg = integ.integrations && integ.integrations.telegram;
+    const ex = integ.integrations && integ.integrations.exswaping;
+    const ai = integ.integrations && integ.integrations.ai;
+    const rows = [
+      ["Health", health.status || (health.ok ? "ok" : "error")],
+      ["Release SHA", health.release_sha || "—"],
+      ["Tools registered", (tools.tools || []).length],
+      ["AI provider", (ai && ai.status) || "—"],
+      ["Meta", (meta && meta.status) || "—"],
+      ["Telegram", (tg && tg.status) || "—"],
+      ["Exswaping", (ex && ex.status) || "—"],
+    ];
+    el.innerHTML = "<ul class='sa-list'>" + rows.map((r) => "<li><strong>" + r[0] + "</strong>: " + String(r[1]) + "</li>").join("") + "</ul>";
+  } catch (e) {
+    el.innerHTML = "<div class='text-danger'>" + String(e.message || e) + "</div>";
+  }
+});
+</script>
+{% endblock %}

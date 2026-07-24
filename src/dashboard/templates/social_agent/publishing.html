@@ -1,0 +1,13 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Publishing</h2>
+  <p class="sa-muted mb-3">
+    Live multi-destination publishing is not enabled in this release.
+    Use Content Studio dry-run preview. External mutations require confirmation and canary authorization.
+  </p>
+  <div class="sa-empty">
+    Status: <strong>preview only</strong>. Tool <code>publishing.publish</code> returns UNSUPPORTED until canary authorization.
+  </div>
+</section>
+{% endblock %}

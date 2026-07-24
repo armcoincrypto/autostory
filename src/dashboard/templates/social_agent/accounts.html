@@ -1,0 +1,90 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Social Accounts</h2>
+  <p class="sa-muted mb-3">Connect providers through the canonical Social Agent connection service. Tokens are never shown in the browser.</p>
+  <div id="sa-accounts" class="sa-muted">Loading…</div>
+</section>
+
+<section class="sa-card">
+  <h2>Meta (Facebook / Instagram)</h2>
+  <div id="sa-meta" class="sa-muted">Loading…</div>
+  <div class="mt-3 d-flex flex-wrap gap-2">
+    <button type="button" class="btn btn-primary btn-sm" id="sa-meta-connect" disabled>Connect Meta</button>
+    <span class="sa-muted small align-self-center" id="sa-meta-hint"></span>
+  </div>
+</section>
+
+<section class="sa-card">
+  <h2>Telegram</h2>
+  <div id="sa-telegram" class="sa-muted">Loading…</div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const accountsEl = document.getElementById("sa-accounts");
+  const metaEl = document.getElementById("sa-meta");
+  const tgEl = document.getElementById("sa-telegram");
+  const connectBtn = document.getElementById("sa-meta-connect");
+  const hint = document.getElementById("sa-meta-hint");
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+  }
+
+  try {
+    const data = await SocialAgent.fetch("/integrations");
+    const integ = data.integrations || {};
+    const meta = integ.meta || {};
+    const tg = integ.telegram || {};
+
+    metaEl.innerHTML =
+      "<div><span class='sa-status " + (meta.configured ? "ready" : "missing") + "'>" + escapeHtml(meta.status) + "</span></div>"
+      + "<p class='mt-2 mb-1'>" + escapeHtml(meta.message || "") + "</p>"
+      + "<ul class='sa-list'>"
+      + "<li>App ID present: " + (meta.app_id_present ? "yes" : "no") + "</li>"
+      + "<li>Redirect URI present: " + (meta.redirect_uri_present ? "yes" : "no") + "</li>"
+      + "<li>Capabilities: " + escapeHtml((meta.capabilities || []).join(", ")) + "</li>"
+      + "</ul>";
+
+    if (meta.configured) {
+      connectBtn.disabled = false;
+      hint.textContent = "Credentials present — OAuth activation still requires operator canary approval.";
+    } else {
+      connectBtn.disabled = true;
+      hint.textContent = "Set META_APP_ID, META_APP_SECRET, META_REDIRECT_URI on the server.";
+    }
+
+    tgEl.innerHTML =
+      "<div><span class='sa-status ready'>" + escapeHtml(tg.status) + "</span></div>"
+      + "<p class='mt-2 mb-1'>" + escapeHtml(tg.message || "") + "</p>"
+      + "<ul class='sa-list'>"
+      + "<li>Adapter: " + escapeHtml(tg.adapter || "") + "</li>"
+      + "<li>Story mutations enabled: " + (tg.story_mutations_enabled ? "yes" : "no (fail-closed)") + "</li>"
+      + "<li>Live publish: " + escapeHtml(tg.live_publish || "") + "</li>"
+      + "</ul>";
+
+    const conn = await SocialAgent.fetch("/tools/execute", {
+      method: "POST",
+      body: JSON.stringify({ tool: "social.list_connections", dry_run: true, arguments: {} }),
+    });
+    const rows = conn.connections || [];
+    accountsEl.innerHTML = rows.length
+      ? rows.map((c) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · health " + escapeHtml(c.health) + "</div><strong>" + escapeHtml(c.display_name || "(unnamed)") + "</strong></div>").join("")
+      : "<div class='sa-empty'>No connected accounts yet.</div>";
+  } catch (e) {
+    accountsEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>";
+  }
+
+  connectBtn.addEventListener("click", async () => {
+    try {
+      await SocialAgent.fetch("/meta/oauth/start");
+    } catch (e) {
+      const d = e.data || {};
+      hint.textContent = (d.message || d.error || e.message || "OAuth not activated").toString();
+    }
+  });
+});
+</script>
+{% endblock %}

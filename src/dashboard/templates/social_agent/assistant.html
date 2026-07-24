@@ -1,0 +1,72 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+    <h2 class="mb-0">AI Assistant</h2>
+    <button type="button" class="btn btn-outline-light btn-sm" id="sa-new-chat">New chat</button>
+  </div>
+  <p class="sa-muted mb-3">
+    Natural-language commands call the same canonical services as the UI.
+    Live publishing is blocked until an authorized canary; drafts and dry-runs work now.
+  </p>
+  <div class="sa-chat" id="sa-chat" aria-live="polite"></div>
+  <form class="sa-composer" id="sa-chat-form">
+    <label class="visually-hidden" for="sa-chat-input">Message</label>
+    <textarea id="sa-chat-input" placeholder="Create a Telegram post about USDT to AMD…" required></textarea>
+    <button type="submit" class="btn btn-primary align-self-end" id="sa-chat-send">Send</button>
+  </form>
+  <p class="sa-muted small mt-2 mb-0">Tip: ask about Meta / Telegram connections, or generate platform variants.</p>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  let conversationId = null;
+  const chat = document.getElementById("sa-chat");
+  const form = document.getElementById("sa-chat-form");
+  const input = document.getElementById("sa-chat-input");
+
+  function bubble(role, text) {
+    const el = document.createElement("div");
+    el.className = "sa-bubble " + role;
+    el.textContent = text;
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  document.getElementById("sa-new-chat").addEventListener("click", () => {
+    conversationId = null;
+    chat.innerHTML = "";
+    bubble("assistant", "New conversation ready. What should we draft?");
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const message = input.value.trim();
+    if (!message) return;
+    bubble("user", message);
+    input.value = "";
+    const sendBtn = document.getElementById("sa-chat-send");
+    sendBtn.disabled = true;
+    try {
+      const data = await SocialAgent.fetch("/chat", {
+        method: "POST",
+        body: JSON.stringify({ conversation_id: conversationId, message }),
+      });
+      conversationId = data.conversation_id;
+      bubble("assistant", data.reply || "(empty reply)");
+      (data.tool_calls || []).forEach((tc) => {
+        bubble("tool", "Tool: " + (tc.tool || "?") + " → " + JSON.stringify(tc.result && (tc.result.ok !== undefined ? { ok: tc.result.ok, content_id: tc.result.content_id, error: tc.result.error } : tc.result)).slice(0, 400));
+      });
+    } catch (err) {
+      bubble("assistant", "Error: " + err.message);
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  });
+
+  bubble("assistant", "I'm the Social Agent assistant. Drafts and connection checks are available. Live publish stays locked.");
+});
+</script>
+{% endblock %}
