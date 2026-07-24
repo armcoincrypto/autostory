@@ -4,26 +4,42 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from src.social_agent.credential_crypto import SocialCredentialCrypto
+from src.social_agent.providers.meta import MetaProviderAdapter, GRAPH_API_VERSION
+
 
 def meta_status() -> dict[str, Any]:
-    app_id = (os.environ.get("META_APP_ID") or "").strip()
-    secret = (os.environ.get("META_APP_SECRET") or "").strip()
-    redirect = (os.environ.get("META_REDIRECT_URI") or "").strip()
-    configured = bool(app_id and secret and redirect)
+    cfg = MetaProviderAdapter.config()
+    crypto_ok = SocialCredentialCrypto.configured()
+    if not cfg["configured"]:
+        status = "CREDENTIALS_MISSING"
+        message = (
+            "Meta OAuth ready; configure Meta app ID, app secret, and HTTPS redirect URI via server environment."
+        )
+    elif not crypto_ok:
+        status = "CREDENTIAL_KEY_MISSING"
+        message = "Meta app credentials present; install SOCIAL_CREDENTIAL_* encryption keys before connecting."
+    else:
+        status = "BACKEND_READY"
+        message = "Meta credentials and encryption configured; connect from Social Accounts."
     return {
         "provider": "meta",
-        "status": "CREDENTIALS_MISSING" if not configured else "BACKEND_READY",
-        "configured": configured,
-        "app_id_present": bool(app_id),
-        "redirect_uri_present": bool(redirect),
-        # never return secret
+        "status": status,
+        "configured": bool(cfg["configured"] and crypto_ok),
+        "app_credentials_present": bool(cfg["configured"]),
+        "app_id_present": bool(cfg.get("app_id")),
+        "redirect_uri_present": bool(cfg.get("redirect_uri")),
+        "redirect_https": bool(cfg.get("redirect_https")),
+        "credential_encryption_configured": crypto_ok,
+        "api_version": GRAPH_API_VERSION,
+        "app_mode": cfg.get("app_mode"),
+        "scopes_requested": cfg.get("scopes"),
+        "facebook_publishing_enabled": False,
+        "instagram_publishing_enabled": False,
         "capabilities": ["facebook_page", "instagram_professional"],
-        "oauth_start_path": "/api/v1/social-agent/meta/oauth/start",
-        "message": (
-            "Meta OAuth scaffolding ready; configure Meta app ID, app secret, and redirect URI via server environment."
-            if not configured
-            else "Meta credentials present; complete OAuth connection in Social Accounts."
-        ),
+        "oauth_start_path": "/api/v1/social-agent/connections/meta/start",
+        "callback_path": "/social-agent/accounts/meta/callback",
+        "message": message,
     }
 
 
@@ -54,7 +70,6 @@ def exswaping_status() -> dict[str, Any]:
 
 
 def ai_provider_status() -> dict[str, Any]:
-    # Reuse existing AI agent provider envs when present; do not invent keys.
     provider = (os.environ.get("AI_AGENT_PROVIDER") or os.environ.get("SOCIAL_AGENT_AI_PROVIDER") or "").strip()
     configured = bool(provider) and provider.lower() not in {"", "none", "off"}
     return {

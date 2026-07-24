@@ -3,16 +3,21 @@
 <section class="sa-card">
   <h2>Social Accounts</h2>
   <p class="sa-muted mb-3">Connect providers through the canonical Social Agent connection service. Tokens are never shown in the browser.</p>
+  <div id="sa-flash" class="mb-2"></div>
   <div id="sa-accounts" class="sa-muted">Loading…</div>
 </section>
 
-<section class="sa-card">
-  <h2>Meta (Facebook / Instagram)</h2>
+<section class="sa-card" id="sa-meta-card">
+  <h2>Meta — Facebook + Instagram</h2>
   <div id="sa-meta" class="sa-muted">Loading…</div>
   <div class="mt-3 d-flex flex-wrap gap-2">
     <button type="button" class="btn btn-primary btn-sm" id="sa-meta-connect" disabled>Connect Meta</button>
-    <span class="sa-muted small align-self-center" id="sa-meta-hint"></span>
+    <button type="button" class="btn btn-outline-light btn-sm" id="sa-meta-health" disabled>Check health</button>
+    <button type="button" class="btn btn-outline-light btn-sm" id="sa-meta-reconnect" disabled>Reconnect</button>
+    <button type="button" class="btn btn-outline-danger btn-sm" id="sa-meta-disconnect" disabled>Disconnect</button>
   </div>
+  <p class="sa-muted small mt-2 mb-0" id="sa-meta-hint"></p>
+  <div id="sa-meta-select" class="mt-3" hidden></div>
 </section>
 
 <section class="sa-card">
@@ -27,64 +32,150 @@ document.addEventListener("DOMContentLoaded", async () => {
   const metaEl = document.getElementById("sa-meta");
   const tgEl = document.getElementById("sa-telegram");
   const connectBtn = document.getElementById("sa-meta-connect");
+  const healthBtn = document.getElementById("sa-meta-health");
+  const reconnectBtn = document.getElementById("sa-meta-reconnect");
+  const disconnectBtn = document.getElementById("sa-meta-disconnect");
   const hint = document.getElementById("sa-meta-hint");
+  const selectEl = document.getElementById("sa-meta-select");
+  const flash = document.getElementById("sa-flash");
+  let connectionId = null;
 
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
   }
 
-  try {
-    const data = await SocialAgent.fetch("/integrations");
-    const integ = data.integrations || {};
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("meta") === "connected") {
+    flash.innerHTML = "<div class='sa-empty'>Meta authorization completed. Review destinations below.</div>";
+  } else if (params.get("meta_error")) {
+    flash.innerHTML = "<div class='text-danger'>Meta connection failed: " + escapeHtml(params.get("meta_error")) + "</div>";
+  }
+
+  async function refresh() {
+    const integ = (await SocialAgent.fetch("/integrations")).integrations || {};
     const meta = integ.meta || {};
     const tg = integ.telegram || {};
+    const connData = await SocialAgent.fetch("/connections/meta");
+    const conn = connData.connection;
 
     metaEl.innerHTML =
       "<div><span class='sa-status " + (meta.configured ? "ready" : "missing") + "'>" + escapeHtml(meta.status) + "</span></div>"
       + "<p class='mt-2 mb-1'>" + escapeHtml(meta.message || "") + "</p>"
       + "<ul class='sa-list'>"
-      + "<li>App ID present: " + (meta.app_id_present ? "yes" : "no") + "</li>"
-      + "<li>Redirect URI present: " + (meta.redirect_uri_present ? "yes" : "no") + "</li>"
-      + "<li>Capabilities: " + escapeHtml((meta.capabilities || []).join(", ")) + "</li>"
+      + "<li>API version: " + escapeHtml(meta.api_version || "") + "</li>"
+      + "<li>App credentials: " + (meta.app_credentials_present ? "present" : "missing") + "</li>"
+      + "<li>Credential encryption: " + (meta.credential_encryption_configured ? "configured" : "missing") + "</li>"
+      + "<li>Publishing: Facebook off · Instagram off</li>"
       + "</ul>";
 
-    if (meta.configured) {
-      connectBtn.disabled = false;
-      hint.textContent = "Credentials present — OAuth activation still requires operator canary approval.";
+    if (conn) {
+      connectionId = conn.id;
+      metaEl.innerHTML +=
+        "<hr class='border-secondary'/><div class='sa-variant'>"
+        + "<div class='meta'>Connection #" + conn.id + " · " + escapeHtml(conn.status) + " · health " + escapeHtml(conn.health) + "</div>"
+        + "<div>Facebook Page: " + escapeHtml(conn.selected_page_id || "(not selected)") + "</div>"
+        + "<div>Instagram: " + escapeHtml(conn.selected_instagram_id || "(none / not selected)") + "</div>"
+        + "<div>Token expiry: " + escapeHtml(conn.token_expires_at || "unknown / non-expiring page tokens may apply") + "</div>"
+        + "<div>Last verified: " + escapeHtml(conn.last_checked_at || "—") + "</div>"
+        + "<div class='mt-1'>Granted: " + escapeHtml((conn.permissions || []).join(", ") || "—") + "</div>"
+        + "<div>Missing: " + escapeHtml((conn.missing_permissions || []).join(", ") || "none") + "</div>"
+        + "</div>";
+
+      const dests = conn.destinations || [];
+      if (dests.length > 1 && !conn.selected_page_id) {
+        selectEl.hidden = false;
+        selectEl.innerHTML = "<h3 class='h6'>Select a Facebook Page</h3>" + dests.map((d) => (
+          "<div class='sa-variant d-flex justify-content-between align-items-center gap-2'>"
+          + "<div><strong>" + escapeHtml(d.page_name || d.page_id) + "</strong>"
+          + "<div class='meta'>IG: " + escapeHtml(d.instagram_username || d.instagram_account_id || "not linked") + "</div></div>"
+          + "<button type='button' class='btn btn-sm btn-outline-info' data-page='" + escapeHtml(d.page_id) + "' data-ig='" + escapeHtml(d.instagram_account_id || "") + "'>Select</button></div>"
+        )).join("");
+        selectEl.querySelectorAll("[data-page]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            await SocialAgent.fetch("/connections/meta/select", {
+              method: "POST",
+              body: JSON.stringify({
+                connection_id: connectionId,
+                page_id: btn.getAttribute("data-page"),
+                instagram_account_id: btn.getAttribute("data-ig") || null,
+              }),
+            });
+            await refresh();
+          });
+        });
+      } else {
+        selectEl.hidden = true;
+        selectEl.innerHTML = "";
+      }
     } else {
-      connectBtn.disabled = true;
-      hint.textContent = "Set META_APP_ID, META_APP_SECRET, META_REDIRECT_URI on the server.";
+      connectionId = null;
+      selectEl.hidden = true;
     }
+
+    connectBtn.disabled = !meta.configured;
+    healthBtn.disabled = !connectionId;
+    reconnectBtn.disabled = !connectionId;
+    disconnectBtn.disabled = !connectionId;
+    hint.textContent = meta.configured
+      ? "OAuth opens Meta authorization. Tokens stay server-side and encrypted."
+      : "Install META_APP_ID, META_APP_SECRET, META_REDIRECT_URI, and SOCIAL_CREDENTIAL_* keys.";
 
     tgEl.innerHTML =
       "<div><span class='sa-status ready'>" + escapeHtml(tg.status) + "</span></div>"
-      + "<p class='mt-2 mb-1'>" + escapeHtml(tg.message || "") + "</p>"
-      + "<ul class='sa-list'>"
-      + "<li>Adapter: " + escapeHtml(tg.adapter || "") + "</li>"
-      + "<li>Story mutations enabled: " + (tg.story_mutations_enabled ? "yes" : "no (fail-closed)") + "</li>"
-      + "<li>Live publish: " + escapeHtml(tg.live_publish || "") + "</li>"
-      + "</ul>";
+      + "<p class='mt-2 mb-1'>" + escapeHtml(tg.message || "") + "</p>";
 
-    const conn = await SocialAgent.fetch("/tools/execute", {
+    const list = await SocialAgent.fetch("/tools/execute", {
       method: "POST",
       body: JSON.stringify({ tool: "social.list_connections", dry_run: true, arguments: {} }),
     });
-    const rows = conn.connections || [];
+    const rows = list.connections || [];
     accountsEl.innerHTML = rows.length
-      ? rows.map((c) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · health " + escapeHtml(c.health) + "</div><strong>" + escapeHtml(c.display_name || "(unnamed)") + "</strong></div>").join("")
+      ? rows.map((c) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · " + escapeHtml(c.health) + "</div><strong>" + escapeHtml(c.display_name || "(unnamed)") + "</strong></div>").join("")
       : "<div class='sa-empty'>No connected accounts yet.</div>";
-  } catch (e) {
-    accountsEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>";
   }
 
   connectBtn.addEventListener("click", async () => {
+    hint.textContent = "Waiting for Meta authorization…";
     try {
-      await SocialAgent.fetch("/meta/oauth/start");
+      const data = await SocialAgent.fetch("/connections/meta/start", { method: "POST", body: JSON.stringify({ purpose: "connect" }) });
+      if (data.authorization_url) {
+        window.location.href = data.authorization_url;
+      } else {
+        hint.textContent = data.message || data.error || "Unable to start OAuth";
+      }
     } catch (e) {
-      const d = e.data || {};
-      hint.textContent = (d.message || d.error || e.message || "OAuth not activated").toString();
+      hint.textContent = e.message || String(e);
     }
   });
+
+  healthBtn.addEventListener("click", async () => {
+    await SocialAgent.fetch("/connections/meta/health", { method: "POST", body: JSON.stringify({ connection_id: connectionId }) });
+    await refresh();
+  });
+
+  reconnectBtn.addEventListener("click", async () => {
+    const data = await SocialAgent.fetch("/connections/meta/reconnect", {
+      method: "POST",
+      body: JSON.stringify({ connection_id: connectionId }),
+    });
+    if (data.authorization_url) window.location.href = data.authorization_url;
+    else hint.textContent = data.error || "Reconnect failed";
+  });
+
+  disconnectBtn.addEventListener("click", async () => {
+    if (!window.confirm("Disconnect Meta? Local encrypted credentials will be removed. Drafts are kept.")) return;
+    await SocialAgent.fetch("/connections/meta/disconnect", {
+      method: "POST",
+      body: JSON.stringify({ connection_id: connectionId, confirm: true }),
+    });
+    await refresh();
+  });
+
+  try {
+    await refresh();
+  } catch (e) {
+    accountsEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>";
+  }
 });
 </script>
 {% endblock %}

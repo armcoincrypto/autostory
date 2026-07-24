@@ -309,20 +309,163 @@ def api_integrations():
     return jsonify({"ok": True, "integrations": integration_matrix()})
 
 
-@social_agent_api.route("/meta/oauth/start", methods=["GET"])
+def _require_manage_accounts():
+    perms = _perms()
+    from src.social_agent.permissions import require_permission
+
+    ok, err = require_permission(perms, "social_accounts.manage")
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 403
+    return None
+
+
+@social_agent_api.route("/connections/meta", methods=["GET"])
+def api_meta_connection():
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        return jsonify(meta_svc.get_meta_connection(db))
+
+
+@social_agent_api.route("/connections/meta/start", methods=["POST", "GET"])
+def api_meta_start():
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.start_meta_oauth(
+            db,
+            actor=_actor(),
+            purpose=str(data.get("purpose") or "connect"),
+            connection_id=data.get("connection_id"),
+        )
+        db.commit()
+        status = 200 if out.get("ok") else 400
+        if out.get("error") == "CREDENTIALS_MISSING":
+            status = 503
+        return jsonify(out), status
+
+
+@social_agent_bp.route("/social-agent/accounts/meta/callback", methods=["GET"])
+def meta_oauth_callback_page():
+    """Browser OAuth callback — state validated server-side; never logs code."""
+    if not dashboard_api_authorized():
+        return redirect(url_for("auth.login", next="/social-agent/accounts"))
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.handle_meta_callback(
+            db,
+            actor=_actor(),
+            state=request.args.get("state"),
+            code=request.args.get("code"),
+            error=request.args.get("error"),
+            error_description=request.args.get("error_description"),
+        )
+        db.commit()
+    # Safe internal redirect only — never open redirect.
+    if out.get("ok"):
+        return redirect("/social-agent/accounts?meta=connected")
+    reason = out.get("error") or "callback_failed"
+    return redirect(f"/social-agent/accounts?meta_error={reason}")
+
+
+@social_agent_api.route("/meta/oauth/start", methods=["GET", "POST"])
 def meta_oauth_start():
-    status = meta_status()
-    if not status["configured"]:
-        return jsonify({"ok": False, "error": "CREDENTIALS_MISSING", "meta": status}), 503
-    # Scaffold only — do not redirect with secrets; front-end shows waiting state.
-    return jsonify(
-        {
-            "ok": False,
-            "error": "oauth_not_activated",
-            "message": "Meta credentials present but OAuth redirect activation awaits operator canary approval.",
-            "meta": {k: v for k, v in status.items() if k != "message"},
-        }
-    ), 501
+    """Backward-compatible alias — starts OAuth when configured."""
+    return api_meta_start()
+
+
+@social_agent_api.route("/connections/meta/select", methods=["POST"])
+def api_meta_select():
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    try:
+        connection_id = int(data["connection_id"])
+        page_id = str(data["page_id"])
+    except Exception:
+        return jsonify({"ok": False, "error": "connection_id_and_page_id_required"}), 400
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.select_meta_destination(
+            db,
+            actor=_actor(),
+            connection_id=connection_id,
+            page_id=page_id,
+            instagram_account_id=data.get("instagram_account_id"),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/connections/meta/health", methods=["POST", "GET"])
+def api_meta_health():
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.meta_health_check(
+            db,
+            actor=_actor(),
+            connection_id=data.get("connection_id") or request.args.get("connection_id", type=int),
+        )
+        db.commit()
+        return jsonify(out)
+
+
+@social_agent_api.route("/connections/meta/reconnect", methods=["POST"])
+def api_meta_reconnect():
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.start_meta_oauth(
+            db,
+            actor=_actor(),
+            purpose="reconnect",
+            connection_id=data.get("connection_id"),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/connections/meta/disconnect", methods=["POST"])
+def api_meta_disconnect():
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    try:
+        connection_id = int(data["connection_id"])
+    except Exception:
+        return jsonify({"ok": False, "error": "connection_id_required"}), 400
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.disconnect_meta(
+            db,
+            actor=_actor(),
+            connection_id=connection_id,
+            confirm=bool(data.get("confirm")),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/connections/meta/publish", methods=["POST"])
+def api_meta_publish_blocked():
+    from src.social_agent.meta_connection import assert_meta_publishing_disabled
+
+    return jsonify(assert_meta_publishing_disabled()), 403
 
 
 @social_agent_api.route("/debug", methods=["GET"])
@@ -336,6 +479,10 @@ def debug_safe():
     }
     if not enabled:
         return jsonify({"ok": False, "error": "debug_disabled"}), 404
+    from src.social_agent.credential_crypto import SocialCredentialCrypto
+    from src.social_agent.providers.meta import MetaProviderAdapter
+
+    cfg = MetaProviderAdapter.config()
     return jsonify(
         {
             "ok": True,
@@ -345,7 +492,15 @@ def debug_safe():
             "AI_PROVIDER_CONFIGURED": bool(
                 (os.environ.get("AI_AGENT_PROVIDER") or os.environ.get("SOCIAL_AGENT_AI_PROVIDER") or "").strip()
             ),
-            "META_CONFIGURED": meta_status()["configured"],
+            "META_CONFIGURED": bool(cfg["configured"]),
+            "META_APP_ID_CONFIGURED": bool(cfg.get("app_id")),
+            "META_APP_SECRET_CONFIGURED": bool(cfg.get("app_secret_present")),
+            "META_REDIRECT_URI_CONFIGURED": bool(cfg.get("redirect_uri")),
+            "META_APP_MODE": cfg.get("app_mode"),
+            "META_API_VERSION": cfg.get("api_version"),
+            "SOCIAL_CREDENTIAL_KEY_CONFIGURED": SocialCredentialCrypto.configured(),
+            "META_FACEBOOK_PUBLISHING_ENABLED": False,
+            "META_INSTAGRAM_PUBLISHING_ENABLED": False,
             "TELEGRAM_CONFIGURED": True,
             "EXSWAPING_API_CONFIGURED": False,
             "STORAGE_CONFIGURED": True,
