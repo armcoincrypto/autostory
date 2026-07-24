@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Agents — STORYFLEET{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='social_agent/social_agent.css') }}">
+{% endblock %}
+{% block content %}
+<div class="sa-workspace">
+  <header class="mb-4">
+    <p class="sa-eyebrow mb-1">STORYFLEET</p>
+    <h1 class="sa-title">Agents</h1>
+    <p class="sa-subtitle">Select an agent workspace. Social Agent is the unified social operations surface.</p>
+  </header>
+  <div class="row g-3">
+    {% for a in agents %}
+    <div class="col-md-6 col-xl-4">
+      <a href="{{ a.route }}" class="sa-card d-block text-decoration-none h-100" style="color:inherit;">
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+          <h2 class="h5 mb-0">{{ a.display_name }}</h2>
+          <span class="sa-status {% if a.status == 'active' %}ready{% elif a.status == 'limited' %}missing{% else %}blocked{% endif %}">{{ a.status }}</span>
+        </div>
+        <p class="sa-muted mb-0">{{ a.description }}</p>
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

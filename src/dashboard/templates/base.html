@@ -222,6 +222,12 @@
                     <a class="nav-link {% if request.path == '/broadcast' %}active{% endif %}" href="/broadcast">
                         <i class="bi bi-megaphone-fill"></i> Broadcast
                     </a>
+                    <a class="nav-link {% if request.path == '/agents' or request.path.startswith('/social-agent') %}active{% endif %}" href="/agents">
+                        <i class="bi bi-grid-3x3-gap"></i> Agents
+                    </a>
+                    <a class="nav-link {% if request.path.startswith('/social-agent') %}active{% endif %}" href="/social-agent">
+                        <i class="bi bi-share"></i> Social Agent
+                    </a>
                     <a class="nav-link {% if request.path == '/dexpert' %}active{% endif %}" href="/dexpert">
                         <i class="bi bi-shield-check"></i> Dexpert
                     </a>

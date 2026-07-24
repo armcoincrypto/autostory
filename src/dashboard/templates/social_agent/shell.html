@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.display_name if agent else "Social Agent" }} — STORYFLEET{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='social_agent/social_agent.css') }}">
+{% endblock %}
+{% block content %}
+<div class="sa-workspace">
+  <header class="sa-header d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+    <div>
+      <p class="sa-eyebrow mb-1">STORYFLEET · Agents</p>
+      <h1 class="sa-title mb-1">
+        <i class="bi bi-share" aria-hidden="true"></i>
+        {{ agent.display_name if agent else "Social Agent" }}
+      </h1>
+      <p class="sa-subtitle mb-0">{{ agent.description if agent else "" }}</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2 align-items-center">
+      <a class="btn btn-outline-light btn-sm" href="/agents">All agents</a>
+      <span class="sa-pill" id="sa-health-pill" title="Social Agent health">Checking…</span>
+    </div>
+  </header>
+
+  <div class="sa-layout">
+    <nav class="sa-nav" aria-label="Social Agent sections">
+      {% for item in nav %}
+      <a
+        class="sa-nav-link {% if section == item.id %}active{% endif %}"
+        href="{{ item.path }}"
+        {% if item.badge %}data-badge="{{ item.badge }}"{% endif %}
+      >
+        <span>{{ item.label }}</span>
+        {% if item.badge %}
+        <span class="sa-badge">{{ item.badge.replace('_', ' ') }}</span>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </nav>
+    <main class="sa-main" id="sa-main">
+      {% block sa_content %}{% endblock %}
+    </main>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='social_agent/social_agent.js') }}" defer></script>
+{% block sa_scripts %}{% endblock %}
+{% endblock %}
