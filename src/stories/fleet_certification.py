@@ -51,15 +51,35 @@ from src.clients.session_sqlite_copy import copy_sqlite_session_readonly
 
 CLASSIFICATIONS = (
     "CERTIFIED_PUBLISH",
-    "AUTH_OK",
+    "READY_FOR_SEPARATE_CONTROLLED_CANARY",
+    "AUTH_OK",  # legacy alias; normalize to READY_FOR_SEPARATE_CONTROLLED_CANARY
     "AUTH_STALE",
     "AUTH_FAILED",
     "SESSION_CORRUPT",
     "ACCOUNT_DISABLED",
+    "INTENTIONALLY_EXCLUDED",
+    "IDENTITY_MISMATCH",
+    "STORY_CAPABILITY_FAILED",
+    "SESSION_CONFLICT",
+    "COUNTER_INVALID",
     "FLOOD_WAIT",
     "BANNED",
     "CONFIG_INCOMPLETE",
+    "UNKNOWN",
 )
+
+# Healthy publishing-ready statuses (includes legacy AUTH_OK for older artifacts).
+READY_CANARY_STATUSES = frozenset(
+    {"READY_FOR_SEPARATE_CONTROLLED_CANARY", "AUTH_OK"}
+)
+HEALTHY_STATUSES = frozenset({"CERTIFIED_PUBLISH"}) | READY_CANARY_STATUSES
+
+
+def normalize_classification(classification: str) -> str:
+    """Map legacy AUTH_OK onto the canonical canary-ready status."""
+    if classification == "AUTH_OK":
+        return "READY_FOR_SEPARATE_CONTROLLED_CANARY"
+    return classification
 
 TELEGRAM_OPERATION_ALLOWLIST = {
     # Telethon 1.43.2 connect() internals (receive_updates=False).
@@ -561,10 +581,28 @@ def classify_account(
     if probe_status == "unauthorized":
         return "AUTH_FAILED", ["telegram_unauthorized"]
     if probe.get("auth_valid") and not probe.get("identity_matches"):
-        return "AUTH_FAILED", ["identity_mismatch"]
+        return "IDENTITY_MISMATCH", ["identity_mismatch"]
     if probe.get("auth_valid") and not probe.get("story_api_available"):
-        reason = "story_probe_unavailable" if probe.get("story_probe_status") == "not_run" else "story_probe_failed"
-        return "AUTH_FAILED", [reason]
+        story_status = str(probe.get("story_probe_status") or "")
+        # Same-day Story limit is capacity, not a capability failure.
+        if story_status in {"premium_needed", "boost_needed", "stories_too_much"}:
+            # Still auth+identity OK; treat as ready with capacity note via reason.
+            if certified:
+                return "CERTIFIED_PUBLISH", ["durable_controlled_story_evidence", story_status]
+            return "READY_FOR_SEPARATE_CONTROLLED_CANARY", [
+                "no_certified_story_evidence",
+                f"capacity_{story_status}",
+            ]
+        reason = (
+            "story_probe_unavailable"
+            if story_status in {"not_run", "not_probed", ""}
+            else "story_probe_failed"
+        )
+        return "STORY_CAPABILITY_FAILED", [reason, story_status] if story_status else [reason]
+    if probe.get("session_conflict"):
+        return "SESSION_CONFLICT", ["worker_session_conflict"]
+    if probe.get("counter_invalid"):
+        return "COUNTER_INVALID", ["daily_counter_invalid"]
     if probe_status in {"timeout", "error", "session_error", "get_me_failed"}:
         if historical_auth_evidence(account):
             return "AUTH_STALE", ["last_auth_too_old", f"probe_{probe_status}"]
@@ -572,20 +610,28 @@ def classify_account(
     if probe.get("auth_valid") and probe.get("identity_matches") and probe.get("story_api_available"):
         if certified:
             return "CERTIFIED_PUBLISH", ["durable_controlled_story_evidence"]
-        return "AUTH_OK", ["no_certified_story_evidence"]
+        return "READY_FOR_SEPARATE_CONTROLLED_CANARY", ["no_certified_story_evidence"]
     if historical_auth_evidence(account):
         return "AUTH_STALE", ["last_auth_too_old"]
     return "AUTH_FAILED", ["auth_not_established"]
 
 
 def calculate_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
-    classes = Counter(row["classification"] for row in rows)
+    classes = Counter(normalize_classification(row["classification"]) for row in rows)
+    ready = classes["READY_FOR_SEPARATE_CONTROLLED_CANARY"]
+    certified = classes["CERTIFIED_PUBLISH"]
     return {
         "total_accounts": len(rows),
-        "healthy": classes["CERTIFIED_PUBLISH"] + classes["AUTH_OK"],
+        "healthy": certified + ready,
         "need_auth": classes["AUTH_STALE"] + classes["AUTH_FAILED"],
         "broken_sessions": classes["SESSION_CORRUPT"],
         "disabled": classes["ACCOUNT_DISABLED"],
+        "intentionally_excluded": classes["INTENTIONALLY_EXCLUDED"],
+        "identity_mismatch": classes["IDENTITY_MISMATCH"],
+        "story_capability_failed": classes["STORY_CAPABILITY_FAILED"],
+        "session_conflict": classes["SESSION_CONFLICT"],
+        "counter_invalid": classes["COUNTER_INVALID"],
+        "unknown": classes["UNKNOWN"],
         "story_capable": sum(
             1
             for row in rows
@@ -593,8 +639,8 @@ def calculate_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
             and row.get("identity_matches")
             and row.get("story_api_available")
         ),
-        "already_certified": classes["CERTIFIED_PUBLISH"],
-        "ready_for_next_canary": classes["AUTH_OK"],
+        "already_certified": certified,
+        "ready_for_next_canary": ready,
     }
 
 
@@ -625,6 +671,7 @@ def inventory_row(
         probe=probe,
         certified=bool(certification),
     )
+    classification = normalize_classification(classification)
     probe = probe or {}
     last_story = certification.get("published_at") if certification else iso(account.last_story_success_at)
     display_name = " ".join(
@@ -741,13 +788,14 @@ async def audit_fleet(
         "safety_after": safety_after,
         "totals_definitions": {
             "total_accounts": "All configured account rows, including disabled/incomplete.",
-            "healthy": "CERTIFIED_PUBLISH + AUTH_OK.",
+            "healthy": "CERTIFIED_PUBLISH + READY_FOR_SEPARATE_CONTROLLED_CANARY.",
             "need_auth": "AUTH_STALE + AUTH_FAILED.",
             "broken_sessions": "SESSION_CORRUPT.",
             "disabled": "ACCOUNT_DISABLED.",
+            "intentionally_excluded": "Protected, AI-reserved, or purpose-hold accounts not in Story publish scope.",
             "story_capable": "Current auth + identity match + CanSendStoryRequest allowed.",
             "already_certified": "CERTIFIED_PUBLISH from durable controlled-publish evidence.",
-            "ready_for_next_canary": "AUTH_OK only; excludes already certified.",
+            "ready_for_next_canary": "READY_FOR_SEPARATE_CONTROLLED_CANARY only; excludes already certified.",
         },
         "totals": calculate_totals(rows),
         "accounts": rows,

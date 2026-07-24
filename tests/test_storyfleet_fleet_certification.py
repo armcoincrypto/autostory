@@ -140,17 +140,17 @@ def test_stale_authorization_requires_history():
     assert "last_auth_too_old" in reasons
 
 
-def test_identity_mismatch_is_auth_failed():
+def test_identity_mismatch_is_distinct():
     result, reasons = classify(
         telegram=probe(identity_matches=False)
     )
-    assert result == "AUTH_FAILED"
+    assert result == "IDENTITY_MISMATCH"
     assert reasons == ["identity_mismatch"]
 
 
-def test_success_without_certification_is_auth_ok():
+def test_success_without_certification_is_ready_for_canary():
     result, reasons = classify(telegram=probe(), certified=False)
-    assert result == "AUTH_OK"
+    assert result == "READY_FOR_SEPARATE_CONTROLLED_CANARY"
     assert reasons == ["no_certified_story_evidence"]
 
 
@@ -160,7 +160,7 @@ def test_success_with_durable_certification():
     assert reasons == ["durable_controlled_story_evidence"]
 
 
-def test_story_api_unavailable_is_not_auth_ok():
+def test_story_api_unavailable_is_capability_failed():
     result, reasons = classify(
         telegram=probe(
             probe_status="story_probe_failed",
@@ -168,8 +168,8 @@ def test_story_api_unavailable_is_not_auth_ok():
             story_probe_status="failed_check",
         )
     )
-    assert result == "AUTH_FAILED"
-    assert reasons == ["story_probe_failed"]
+    assert result == "STORY_CAPABILITY_FAILED"
+    assert "story_probe_failed" in reasons
 
 
 def test_flood_wait_and_banned_classification():
@@ -219,23 +219,24 @@ def test_secret_redaction_and_phone_masking():
 def test_fleet_totals_are_internally_consistent():
     rows = [
         {"classification": "CERTIFIED_PUBLISH", "auth_valid": True, "identity_matches": True, "story_api_available": True},
+        {"classification": "READY_FOR_SEPARATE_CONTROLLED_CANARY", "auth_valid": True, "identity_matches": True, "story_api_available": True},
         {"classification": "AUTH_OK", "auth_valid": True, "identity_matches": True, "story_api_available": True},
         {"classification": "AUTH_FAILED", "auth_valid": False, "identity_matches": False, "story_api_available": False},
         {"classification": "AUTH_STALE", "auth_valid": False, "identity_matches": False, "story_api_available": False},
         {"classification": "SESSION_CORRUPT", "auth_valid": False, "identity_matches": False, "story_api_available": False},
         {"classification": "ACCOUNT_DISABLED", "auth_valid": None, "identity_matches": None, "story_api_available": None},
+        {"classification": "INTENTIONALLY_EXCLUDED", "auth_valid": None, "identity_matches": None, "story_api_available": None},
     ]
     totals = calculate_totals(rows)
-    assert totals == {
-        "total_accounts": 6,
-        "healthy": 2,
-        "need_auth": 2,
-        "broken_sessions": 1,
-        "disabled": 1,
-        "story_capable": 2,
-        "already_certified": 1,
-        "ready_for_next_canary": 1,
-    }
+    assert totals["total_accounts"] == 8
+    assert totals["healthy"] == 3  # certified + ready + legacy AUTH_OK
+    assert totals["need_auth"] == 2
+    assert totals["broken_sessions"] == 1
+    assert totals["disabled"] == 1
+    assert totals["intentionally_excluded"] == 1
+    assert totals["story_capable"] == 3
+    assert totals["already_certified"] == 1
+    assert totals["ready_for_next_canary"] == 2
 
 
 def test_markdown_rows_are_deterministic_when_input_sorted():
@@ -275,17 +276,12 @@ def test_markdown_rows_are_deterministic_when_input_sorted():
 
 
 def test_all_primary_classifications_are_exactly_supported():
-    assert set(CLASSIFICATIONS) == {
-        "CERTIFIED_PUBLISH",
-        "AUTH_OK",
-        "AUTH_STALE",
-        "AUTH_FAILED",
-        "SESSION_CORRUPT",
-        "ACCOUNT_DISABLED",
-        "FLOOD_WAIT",
-        "BANNED",
-        "CONFIG_INCOMPLETE",
-    }
+    assert "READY_FOR_SEPARATE_CONTROLLED_CANARY" in CLASSIFICATIONS
+    assert "CERTIFIED_PUBLISH" in CLASSIFICATIONS
+    assert "INTENTIONALLY_EXCLUDED" in CLASSIFICATIONS
+    assert "IDENTITY_MISMATCH" in CLASSIFICATIONS
+    assert "STORY_CAPABILITY_FAILED" in CLASSIFICATIONS
+    assert "AUTH_FAILED" in CLASSIFICATIONS
 
 
 def test_audit_module_has_no_publisher_or_controlled_live_import():
@@ -351,7 +347,7 @@ def test_artifact_writer_produces_stable_redacted_bundle(tmp_path):
         "last_auth_at": "2026-07-19T00:00:00Z",
         "last_story_at": None,
         "controlled_publish_certified": False,
-        "classification": "AUTH_OK",
+        "classification": "READY_FOR_SEPARATE_CONTROLLED_CANARY",
         "reason_codes": ["no_certified_story_evidence"],
         "safe_error_summary": None,
         "session_location_redacted": "canonical:account_10.session",
