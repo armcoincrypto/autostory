@@ -893,6 +893,9 @@ def create_app() -> Flask:
         app, "src.dashboard.ai_coding_routes", ("ai_coding_bp", "ai_coding_api")
     )
     optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.social_agent_routes", ("social_agent_bp", "social_agent_api")
+    )
+    optional_blueprints += _load_optional_blueprints(
         app, "src.dashboard.operator_control_routes", ("operator_control_bp",)
     )
 
