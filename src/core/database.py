@@ -230,6 +230,7 @@ def init_db() -> None:
     _ensure_scheduled_jobs_lease_columns()
     _ensure_message_deliveries_send_intent_columns()
     _ensure_story_runs_mention_plan_column()
+    _ensure_social_connections_meta_columns()
     logger.info("Database initialized", tables=list(Base.metadata.tables.keys()))
     if _is_sqlite(settings.database.url):
         try:
@@ -264,6 +265,33 @@ def _ensure_accounts_purpose_column() -> None:
         logger.info("Added accounts.purpose column")
     except Exception as e:
         logger.warning("Could not add accounts.purpose column (may already exist)", error=str(e))
+
+
+def _ensure_social_connections_meta_columns() -> None:
+    """Additive Meta OAuth columns on social_connections for existing DBs."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "social_connections" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("social_connections")}
+    additions = [
+        ("destinations_json", "TEXT"),
+        ("selected_page_id", "VARCHAR(128)"),
+        ("selected_instagram_id", "VARCHAR(128)"),
+        ("workspace_id", "VARCHAR(64) DEFAULT 'default'"),
+        ("created_by", "VARCHAR(128)"),
+    ]
+    try:
+        with engine.connect() as conn:
+            for name, ddl in additions:
+                if name in cols:
+                    continue
+                conn.execute(text(f"ALTER TABLE social_connections ADD COLUMN {name} {ddl}"))
+                logger.info("Added social_connections.%s column", name)
+            conn.commit()
+    except Exception as e:
+        logger.warning("Could not ensure social_connections Meta columns", error=str(e))
 
 
 def _ensure_ai_agent_tasks_negotiation_stage_column() -> None:
