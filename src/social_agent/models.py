@@ -70,10 +70,31 @@ class SocialConnection(Base):
     permissions_json = Column(Text, nullable=True)
     token_expires_at = Column(DateTime, nullable=True)
     last_checked_at = Column(DateTime, nullable=True)
-    # Never store raw tokens in plaintext columns in future; placeholder for encrypted blob.
+    # Encrypted JSON envelope — never plaintext tokens.
     credentials_encrypted = Column(Text, nullable=True)
+    destinations_json = Column(Text, nullable=True)
+    selected_page_id = Column(String(128), nullable=True)
+    selected_instagram_id = Column(String(128), nullable=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    created_by = Column(String(128), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class SocialOAuthState(Base):
+    __tablename__ = "social_oauth_states"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    state = Column(String(128), nullable=False, unique=True, index=True)
+    provider = Column(String(64), nullable=False, index=True)
+    actor = Column(String(128), nullable=False)
+    workspace_id = Column(String(64), nullable=False, default="default")
+    redirect_uri = Column(String(512), nullable=False)
+    purpose = Column(String(64), nullable=False, default="connect")  # connect | reconnect
+    connection_id = Column(Integer, nullable=True)
+    used_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class SocialAgentAuditEvent(Base):
