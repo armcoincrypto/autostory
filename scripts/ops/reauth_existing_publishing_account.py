@@ -49,7 +49,7 @@ from config.settings import settings
 from src.core.account_operational_state import CONTROLLER_ACCOUNT_IDS
 from src.core.account_protection import PROTECTED_IDS, PURPOSE_HOLD_IDS
 from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
-from src.core.database import get_db_context
+from src.core.database import get_db_context, engine
 from src.core.models import Account
 from src.core.session_lock import acquire_session_lock, inspect_session_lock
 from src.stories.fleet_certification import (
@@ -59,6 +59,8 @@ from src.stories.fleet_certification import (
     normalize_classification,
 )
 from src.stories.daily_story_counter import stories_today_effective
+
+ROLLBACK_ROOT = Path("/opt/autostory/data/session_backups_reauth")
 
 
 def utc_now() -> str:
@@ -76,6 +78,39 @@ def session_hash(account: Account) -> dict[str, Any]:
         "material_len": len(raw),
         "present": insp.present,
         "readable": insp.readable,
+    }
+
+
+def backup_encrypted_session_blob(account_id: int) -> dict[str, Any]:
+    """Copy the on-disk encrypted session column to a restricted rollback file.
+
+    Evidence must never receive session material or QR tokens — only the path + hashes.
+    """
+    from sqlalchemy import text
+
+    ROLLBACK_ROOT.mkdir(parents=True, exist_ok=True)
+    try:
+        ROLLBACK_ROOT.chmod(0o700)
+    except OSError:
+        pass
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT session_string FROM accounts WHERE id = :id"),
+            {"id": int(account_id)},
+        ).fetchone()
+    blob = (row[0] if row else None) or ""
+    if not blob:
+        return {"ok": False, "reason": "empty_session_blob", "path": None}
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = ROLLBACK_ROOT / f"account_{int(account_id)}.enc.bak.{stamp}"
+    path.write_bytes(blob.encode("utf-8") if isinstance(blob, str) else bytes(blob))
+    path.chmod(0o600)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "ok": True,
+        "path": str(path),
+        "sha256": digest,
+        "bytes": path.stat().st_size,
     }
 
 
@@ -165,10 +200,8 @@ async def reauth_qr(account: Account, evidence_dir: Path, timeout: float) -> dic
         await client.connect()
         qr = await client.qr_login()
         url = qr.url
+        # QR tokens must never be written to evidence/logs on disk — stdout only for the operator TTY.
         result["qr_url_present"] = bool(url)
-        (evidence_dir / f"account-{account.id}-qr-url.txt").write_text(
-            (url or "") + "\n", encoding="utf-8"
-        )
         print(f"QR_LOGIN_URL={url}", flush=True)
         print(
             f"Scan this QR with the Telegram account that must be user_id={account.user_id} "
@@ -200,6 +233,7 @@ async def reauth_qr(account: Account, evidence_dir: Path, timeout: float) -> dic
         if not story_ok:
             result.update({"success": False, "error": f"STORY_CAPABILITY_FAILED:{story_status}"})
             return result
+        result["session_rollback"] = backup_encrypted_session_blob(int(account.id))
         new_session = client.session.save()
         await persist_session_string(int(account.id), new_session)
         reopen = await verify_reopen(int(account.id), expected)
@@ -217,6 +251,7 @@ async def reauth_qr(account: Account, evidence_dir: Path, timeout: float) -> dic
 
 
 async def reauth_phone(account: Account, evidence_dir: Path) -> dict[str, Any]:
+    del evidence_dir  # reserved for parity; secrets must never be written here
     if not sys.stdin.isatty():
         return {
             "success": False,
@@ -271,6 +306,7 @@ async def reauth_phone(account: Account, evidence_dir: Path) -> dict[str, Any]:
                 "error": f"STORY_CAPABILITY_FAILED:{story_status}",
                 "2fa_required": result.get("2fa_required"),
             }
+        result["session_rollback"] = backup_encrypted_session_blob(int(account.id))
         await persist_session_string(int(account.id), client.session.save())
         reopen = await verify_reopen(int(account.id), expected)
         result["reopen"] = reopen
@@ -379,8 +415,8 @@ async def main_async(args: argparse.Namespace) -> int:
     auth_result["session_changed"] = after_hash.get("sha256") != pre["session_before"].get(
         "sha256"
     )
-    # Never persist secrets
-    for key in ("session_string", "password", "code", "otp"):
+    # Never persist secrets / QR tokens in evidence artifacts
+    for key in ("session_string", "password", "code", "otp", "qr_url", "url"):
         auth_result.pop(key, None)
 
     (evidence_dir / f"account-{aid}-auth-result.md").write_text(
@@ -398,16 +434,20 @@ async def main_async(args: argparse.Namespace) -> int:
     (evidence_dir / f"account-{aid}-isolated-audit.json").write_text(
         json.dumps(audit, indent=2, default=str) + "\n", encoding="utf-8"
     )
+    rollback = auth_result.get("session_rollback") or {}
     (evidence_dir / f"account-{aid}-session-verification.md").write_text(
-        "# Account {aid} session verification\n\n"
-        f"- before_sha256: `{pre['session_before'].get('sha256')}`\n"
-        f"- after_sha256: `{after_hash.get('sha256')}`\n"
-        f"- session_changed: `{auth_result.get('session_changed')}`\n"
-        f"- reopen_ok: `{auth_result.get('reopen', {}).get('ok')}`\n"
-        f"- isolated_classification: `{audit.get('classification')}`\n"
-        f"- rollback: restore prior session_string from DB backup if needed "
-        f"(hash `{pre['session_before'].get('sha256')}` recorded; material not stored here)\n".format(
-            aid=aid
+        (
+            f"# Account {aid} session verification\n\n"
+            f"- before_sha256: `{pre['session_before'].get('sha256')}`\n"
+            f"- after_sha256: `{after_hash.get('sha256')}`\n"
+            f"- session_changed: `{auth_result.get('session_changed')}`\n"
+            f"- reopen_ok: `{auth_result.get('reopen', {}).get('ok')}`\n"
+            f"- isolated_classification: `{audit.get('classification')}`\n"
+            f"- rollback_path: `{rollback.get('path')}`\n"
+            f"- rollback_blob_sha256: `{rollback.get('sha256')}`\n"
+            "- rollback_restore: copy encrypted blob from rollback_path back into "
+            "`accounts.session_string` for this account id only "
+            "(material not stored in evidence)\n"
         ),
         encoding="utf-8",
     )
