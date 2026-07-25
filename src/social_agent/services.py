@@ -65,6 +65,7 @@ def overview(db: Session) -> dict[str, Any]:
     )
     recent_msgs = db.query(SocialAgentMessage).order_by(SocialAgentMessage.id.desc()).limit(5).all()
     integ = integration_matrix()
+    meta_sum = _meta_connection_summary(connections)
     return {
         "ok": True,
         "connections": [
@@ -77,6 +78,7 @@ def overview(db: Session) -> dict[str, Any]:
             }
             for c in connections
         ],
+        "meta_connection_summary": meta_sum,
         "drafts_awaiting_review": [
             {"id": d.id, "title": d.title, "status": d.status} for d in drafts
         ],
@@ -93,12 +95,52 @@ def overview(db: Session) -> dict[str, Any]:
     }
 
 
+def _meta_connection_summary(connections: list[SocialConnection]) -> dict[str, Any]:
+    meta = next((c for c in connections if c.provider == "meta"), None)
+    if not meta:
+        return {
+            "connected": False,
+            "health": None,
+            "page_healthy": False,
+            "instagram_healthy": False,
+            "summary": "Meta not connected",
+        }
+    health = (meta.health or "").upper()
+    connected = meta.status == "connected" or health == "CONNECTED"
+    page_healthy = health == "CONNECTED"
+    instagram_healthy = page_healthy and bool(meta.selected_instagram_id)
+    if health == "INSTAGRAM_UNAVAILABLE":
+        summary = "Meta connected · Facebook Page healthy · Instagram needs attention"
+    elif page_healthy and instagram_healthy:
+        summary = "Meta connected · Facebook Page healthy · Instagram account healthy"
+    elif page_healthy:
+        summary = "Meta connected · Facebook Page healthy · Instagram not selected"
+    elif connected:
+        summary = f"Meta connected · health {meta.health or meta.status}"
+    else:
+        summary = f"Meta status {meta.status} · health {meta.health or 'unknown'}"
+    return {
+        "connected": connected,
+        "health": meta.health,
+        "page_healthy": page_healthy,
+        "instagram_healthy": instagram_healthy,
+        "summary": summary,
+    }
+
+
 def _build_alerts(integ: dict[str, Any], connections: list[SocialConnection]) -> list[str]:
     alerts: list[str] = []
-    if not connections:
-        alerts.append("No social connections yet.")
+    meta_sum = _meta_connection_summary(connections)
     if integ["meta"]["status"] == "CREDENTIALS_MISSING":
         alerts.append("Meta credentials not configured.")
+    elif not meta_sum["connected"]:
+        alerts.append("Meta not connected.")
+    else:
+        alerts.append(meta_sum["summary"])
+        if (meta_sum.get("health") or "").upper() == "INSTAGRAM_UNAVAILABLE":
+            alerts.append("Instagram account is no longer linked to the selected Facebook Page.")
+    if not connections and integ["meta"]["status"] != "CREDENTIALS_MISSING":
+        alerts.append("No social connections yet.")
     if integ["exswaping"]["status"] == "NOT_CONFIGURED":
         alerts.append("Exswaping public-content API not configured.")
     if not integ["telegram"].get("story_mutations_enabled"):
@@ -108,12 +150,16 @@ def _build_alerts(integ: dict[str, Any], connections: list[SocialConnection]) ->
 
 def _onboarding(integ: dict[str, Any], connections: list[SocialConnection]) -> list[str]:
     steps: list[str] = []
-    if not any(c.provider == "meta" and c.status == "connected" for c in connections):
-        steps.append("Connect Meta to publish to Facebook and Instagram.")
+    meta_sum = _meta_connection_summary(connections)
+    if integ["meta"]["status"] == "CREDENTIALS_MISSING":
+        steps.append("Install Meta App ID/Secret on the server, then connect Meta from Social Accounts.")
+    elif not meta_sum["connected"]:
+        steps.append("Connect Meta to discover the Exswaping Facebook Page and linked Instagram Professional account.")
+    else:
+        steps.append(meta_sum["summary"] + ".")
     steps.append("Telegram status is available via AutoStory adapter; live Story publish stays locked.")
     steps.append("Add Exswaping content access once the official public-content API exists.")
     return steps
-
 
 def create_conversation(db: Session, *, actor: str | None, title: str | None = None) -> dict[str, Any]:
     row = SocialAgentConversation(title=(title or "New chat").strip()[:255], created_by=actor)

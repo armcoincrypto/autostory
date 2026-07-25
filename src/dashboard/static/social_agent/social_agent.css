@@ -94,6 +94,48 @@
 .sa-status.missing { color: #fde68a; border-color: rgba(234, 179, 8, 0.4); }
 .sa-status.blocked { color: #fda4af; border-color: rgba(244, 63, 94, 0.35); }
 
+.sa-checklist {
+  list-style: none; padding: 0; margin: 0 0 0.75rem;
+}
+.sa-checklist li {
+  position: relative;
+  padding: 0.35rem 0 0.35rem 1.35rem;
+  color: #e2e8f0; font-size: 0.9rem;
+}
+.sa-checklist li::before {
+  content: "";
+  position: absolute; left: 0; top: 0.55rem;
+  width: 0.55rem; height: 0.55rem; border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.12);
+}
+.sa-banner {
+  border-radius: 10px; padding: 0.75rem 0.9rem; font-size: 0.9rem;
+  border: 1px solid var(--sa-border); background: #0f172a; color: #e2e8f0;
+}
+.sa-banner-warn {
+  border-color: rgba(234, 179, 8, 0.45);
+  background: rgba(234, 179, 8, 0.08);
+  color: #fde68a;
+}
+.sa-conn-grid { display: grid; gap: 0.65rem; }
+.sa-conn-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.7);
+}
+.sa-conn-row:last-child { border-bottom: 0; }
+.sa-conn-row .label {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sa-muted);
+}
+.sa-conn-row .value {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+  color: #f1f5f9; font-size: 0.92rem;
+}
+
 @media (max-width: 900px) {
   .sa-layout { grid-template-columns: 1fr; }
   .sa-nav {
@@ -101,6 +143,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   }
+  .sa-conn-row { grid-template-columns: 1fr; gap: 0.2rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

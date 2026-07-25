@@ -117,9 +117,15 @@ def get_meta_connection(db: Session, *, workspace_id: str = WORKSPACE_DEFAULT) -
     adapter = MetaProviderAdapter()
     cfg = adapter.config()
     crypto_ok = SocialCredentialCrypto.configured()
+    connection_state = "CREDENTIALS_MISSING"
+    if cfg["configured"] and crypto_ok:
+        connection_state = "NOT_CONNECTED"
+    elif cfg["configured"] and not crypto_ok:
+        connection_state = "CREDENTIAL_KEY_MISSING"
+
     base = {
         "ok": True,
-        "configured": cfg["configured"],
+        "configured": bool(cfg["configured"]),
         "credential_encryption_configured": crypto_ok,
         "api_version": cfg["api_version"],
         "app_mode": cfg["app_mode"],
@@ -127,12 +133,14 @@ def get_meta_connection(db: Session, *, workspace_id: str = WORKSPACE_DEFAULT) -
         "facebook_publishing_enabled": False,
         "instagram_publishing_enabled": False,
         "connection": None,
+        "connection_state": connection_state,
         "capabilities": capability_matrix(),
     }
     if not row:
         return base
     pub = _public_connection(row)
     base["connection"] = pub
+    base["connection_state"] = "CONNECTED" if (row.status == "connected" or (row.health or "").upper() == "CONNECTED") else (row.health or row.status or "DEGRADED")
     base["capabilities"] = capability_matrix(pub.get("permissions") or [])
     return base
 

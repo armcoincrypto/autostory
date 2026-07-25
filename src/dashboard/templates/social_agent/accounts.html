@@ -2,27 +2,38 @@
 {% block sa_content %}
 <section class="sa-card">
   <h2>Social Accounts</h2>
-  <p class="sa-muted mb-3">Connect providers through the canonical Social Agent connection service. Tokens are never shown in the browser.</p>
-  <div id="sa-flash" class="mb-2"></div>
-  <div id="sa-accounts" class="sa-muted">Loading…</div>
+  <p class="sa-muted mb-0">Connect your Facebook Page and linked Instagram Professional account. Tokens stay on the server and are never shown in the browser.</p>
+  <div id="sa-flash" class="mt-3"></div>
 </section>
 
-<section class="sa-card" id="sa-meta-card">
-  <h2>Meta — Facebook + Instagram</h2>
-  <div id="sa-meta" class="sa-muted">Loading…</div>
-  <div class="mt-3 d-flex flex-wrap gap-2">
+<section class="sa-card" id="sa-meta-card" aria-labelledby="sa-meta-heading">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
+    <div>
+      <h2 id="sa-meta-heading" class="mb-1">Meta</h2>
+      <p class="sa-muted mb-0">Facebook and Instagram</p>
+    </div>
+    <span class="sa-status" id="sa-meta-status-pill">Loading</span>
+  </div>
+  <p class="sa-muted mb-3" id="sa-meta-lead">Connect your Facebook Page and linked Instagram Professional account.</p>
+  <div id="sa-meta"></div>
+  <div class="mt-3 d-flex flex-wrap gap-2" id="sa-meta-actions">
     <button type="button" class="btn btn-primary btn-sm" id="sa-meta-connect" disabled>Connect Meta</button>
-    <button type="button" class="btn btn-outline-light btn-sm" id="sa-meta-health" disabled>Check health</button>
+    <button type="button" class="btn btn-outline-light btn-sm" id="sa-meta-health" disabled>Check connection</button>
     <button type="button" class="btn btn-outline-light btn-sm" id="sa-meta-reconnect" disabled>Reconnect</button>
     <button type="button" class="btn btn-outline-danger btn-sm" id="sa-meta-disconnect" disabled>Disconnect</button>
   </div>
-  <p class="sa-muted small mt-2 mb-0" id="sa-meta-hint"></p>
+  <p class="sa-muted small mt-2 mb-0" id="sa-meta-hint" role="status" aria-live="polite"></p>
   <div id="sa-meta-select" class="mt-3" hidden></div>
 </section>
 
 <section class="sa-card">
   <h2>Telegram</h2>
   <div id="sa-telegram" class="sa-muted">Loading…</div>
+</section>
+
+<section class="sa-card">
+  <h2>Other connections</h2>
+  <div id="sa-accounts" class="sa-muted">Loading…</div>
 </section>
 {% endblock %}
 {% block sa_scripts %}
@@ -38,17 +49,48 @@ document.addEventListener("DOMContentLoaded", async () => {
   const hint = document.getElementById("sa-meta-hint");
   const selectEl = document.getElementById("sa-meta-select");
   const flash = document.getElementById("sa-flash");
+  const statusPill = document.getElementById("sa-meta-status-pill");
+  const lead = document.getElementById("sa-meta-lead");
   let connectionId = null;
 
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
   }
 
+  function humanTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return escapeHtml(iso);
+    try {
+      return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    } catch (_) {
+      return d.toISOString();
+    }
+  }
+
+  function destFor(conn) {
+    const dests = conn.destinations || [];
+    const page = dests.find((d) => String(d.page_id) === String(conn.selected_page_id)) || dests[0] || {};
+    const igLinked = !!(conn.selected_instagram_id || page.instagram_account_id);
+    return {
+      pageName: page.page_name || conn.display_name || "Facebook Page",
+      pageId: conn.selected_page_id || page.page_id || "",
+      igUser: page.instagram_username ? ("@" + page.instagram_username.replace(/^@/, "")) : (conn.selected_instagram_id ? "Instagram account" : null),
+      igId: conn.selected_instagram_id || page.instagram_account_id || "",
+      igLinked,
+    };
+  }
+
+  function setPill(text, cls) {
+    statusPill.textContent = text;
+    statusPill.className = "sa-status " + (cls || "");
+  }
+
   const params = new URLSearchParams(window.location.search);
   if (params.get("meta") === "connected") {
-    flash.innerHTML = "<div class='sa-empty'>Meta authorization completed. Review destinations below.</div>";
+    flash.innerHTML = "<div class='sa-empty'>Meta authorization completed. Confirm your Facebook Page and Instagram account below.</div>";
   } else if (params.get("meta_error")) {
-    flash.innerHTML = "<div class='text-danger'>Meta connection failed: " + escapeHtml(params.get("meta_error")) + "</div>";
+    flash.innerHTML = "<div class='sa-banner sa-banner-warn'>Meta connection failed: " + escapeHtml(params.get("meta_error")) + "</div>";
   }
 
   async function refresh() {
@@ -57,39 +99,88 @@ document.addEventListener("DOMContentLoaded", async () => {
     const tg = integ.telegram || {};
     const connData = await SocialAgent.fetch("/connections/meta");
     const conn = connData.connection;
+    const configured = !!meta.configured;
+    const health = (conn && conn.health) || "";
 
-    metaEl.innerHTML =
-      "<div><span class='sa-status " + (meta.configured ? "ready" : "missing") + "'>" + escapeHtml(meta.status) + "</span></div>"
-      + "<p class='mt-2 mb-1'>" + escapeHtml(meta.message || "") + "</p>"
-      + "<ul class='sa-list'>"
-      + "<li>API version: " + escapeHtml(meta.api_version || "") + "</li>"
-      + "<li>App credentials: " + (meta.app_credentials_present ? "present" : "missing") + "</li>"
-      + "<li>Credential encryption: " + (meta.credential_encryption_configured ? "configured" : "missing") + "</li>"
-      + "<li>Publishing: Facebook off · Instagram off</li>"
-      + "</ul>";
-
-    if (conn) {
+    if (!configured) {
+      connectionId = null;
+      setPill("Not configured", "missing");
+      lead.textContent = "Connect your Facebook Page and linked Instagram Professional account.";
+      metaEl.innerHTML =
+        "<div class='sa-banner sa-banner-warn mb-3'>Meta app credentials are not installed on the server yet. An operator must set App ID and App Secret outside Git.</div>"
+        + "<p class='mb-2'>Before connecting, confirm:</p>"
+        + "<ul class='sa-checklist'>"
+        + "<li>A Facebook Page exists (Exswaping)</li>"
+        + "<li>You are a Page administrator</li>"
+        + "<li>Instagram is a Professional account</li>"
+        + "<li>Instagram is linked to the Facebook Page</li>"
+        + "</ul>"
+        + "<p class='sa-muted small mb-0'>Publishing stays disabled. This step only discovers and selects accounts.</p>";
+      selectEl.hidden = true;
+      selectEl.innerHTML = "";
+    } else if (!conn) {
+      connectionId = null;
+      setPill("Not connected", "missing");
+      lead.textContent = "Connect your Facebook Page and linked Instagram Professional account.";
+      metaEl.innerHTML =
+        "<p class='mb-2'>Status: <strong>Not connected</strong></p>"
+        + "<p class='sa-muted mb-2'>Authorize Meta, then select the Exswaping Facebook Page and its linked Instagram Professional account.</p>"
+        + "<ul class='sa-checklist'>"
+        + "<li>Facebook Page</li>"
+        + "<li>Page administrator</li>"
+        + "<li>Instagram Professional account</li>"
+        + "<li>Instagram linked to Facebook Page</li>"
+        + "</ul>";
+      selectEl.hidden = true;
+      selectEl.innerHTML = "";
+    } else {
       connectionId = conn.id;
-      metaEl.innerHTML +=
-        "<hr class='border-secondary'/><div class='sa-variant'>"
-        + "<div class='meta'>Connection #" + conn.id + " · " + escapeHtml(conn.status) + " · health " + escapeHtml(conn.health) + "</div>"
-        + "<div>Facebook Page: " + escapeHtml(conn.selected_page_id || "(not selected)") + "</div>"
-        + "<div>Instagram: " + escapeHtml(conn.selected_instagram_id || "(none / not selected)") + "</div>"
-        + "<div>Token expiry: " + escapeHtml(conn.token_expires_at || "unknown / non-expiring page tokens may apply") + "</div>"
-        + "<div>Last verified: " + escapeHtml(conn.last_checked_at || "—") + "</div>"
-        + "<div class='mt-1'>Granted: " + escapeHtml((conn.permissions || []).join(", ") || "—") + "</div>"
-        + "<div>Missing: " + escapeHtml((conn.missing_permissions || []).join(", ") || "none") + "</div>"
-        + "</div>";
+      const d = destFor(conn);
+      const healthy = String(health).toUpperCase() === "CONNECTED";
+      const degraded = !healthy;
+      setPill(healthy ? "Connected" : (health || conn.status || "Degraded"), healthy ? "ready" : "blocked");
+      lead.textContent = healthy
+        ? "Meta is connected for read-only account discovery."
+        : "Meta needs attention. Use Check connection or Reconnect.";
+
+      let banner = "";
+      if (String(health).toUpperCase() === "INSTAGRAM_UNAVAILABLE") {
+        banner = "<div class='sa-banner sa-banner-warn mb-3'>Instagram account is no longer linked to the selected Facebook Page.</div>";
+      } else if (degraded) {
+        banner = "<div class='sa-banner sa-banner-warn mb-3'>Connection health: " + escapeHtml(health || conn.status) + ". Reconnect if the issue persists.</div>";
+      }
+
+      const granted = (conn.permissions || []).length;
+      const missing = (conn.missing_permissions || []).length;
+      const pageHealth = healthy ? "Healthy" : "Needs attention";
+      const igHealth = !d.igLinked
+        ? "Not linked"
+        : (String(health).toUpperCase() === "INSTAGRAM_UNAVAILABLE" ? "Unlinked" : (healthy ? "Healthy" : "Needs attention"));
+
+      metaEl.innerHTML = banner
+        + "<div class='sa-conn-grid'>"
+        + "<div class='sa-conn-row'><div class='label'>Facebook</div><div class='value'><strong>" + escapeHtml(d.pageName) + "</strong><span class='sa-status " + (healthy ? "ready" : "blocked") + "'>" + pageHealth + "</span></div></div>"
+        + "<div class='sa-conn-row'><div class='label'>Instagram</div><div class='value'><strong>" + escapeHtml(d.igUser || "Not selected") + "</strong><span class='sa-status " + (igHealth === "Healthy" ? "ready" : (igHealth === "Not linked" ? "missing" : "blocked")) + "'>" + igHealth + "</span></div></div>"
+        + "<div class='sa-conn-row'><div class='label'>Permissions</div><div class='value'>" + granted + " granted · " + missing + " missing</div></div>"
+        + "<div class='sa-conn-row'><div class='label'>Token</div><div class='value'>Expires " + humanTime(conn.token_expires_at) + "</div></div>"
+        + "<div class='sa-conn-row'><div class='label'>Last checked</div><div class='value'>" + humanTime(conn.last_checked_at) + "</div></div>"
+        + "</div>"
+        + "<p class='sa-muted small mt-3 mb-0'>Facebook and Instagram publishing remain disabled.</p>";
 
       const dests = conn.destinations || [];
-      if (dests.length > 1 && !conn.selected_page_id) {
+      const needsSelect = dests.length > 0 && !conn.selected_page_id;
+      if (needsSelect || (dests.length > 1 && !conn.selected_page_id)) {
         selectEl.hidden = false;
-        selectEl.innerHTML = "<h3 class='h6'>Select a Facebook Page</h3>" + dests.map((d) => (
-          "<div class='sa-variant d-flex justify-content-between align-items-center gap-2'>"
-          + "<div><strong>" + escapeHtml(d.page_name || d.page_id) + "</strong>"
-          + "<div class='meta'>IG: " + escapeHtml(d.instagram_username || d.instagram_account_id || "not linked") + "</div></div>"
-          + "<button type='button' class='btn btn-sm btn-outline-info' data-page='" + escapeHtml(d.page_id) + "' data-ig='" + escapeHtml(d.instagram_account_id || "") + "'>Select</button></div>"
-        )).join("");
+        selectEl.innerHTML = "<h3 class='h6'>Select a Facebook Page</h3>"
+          + "<p class='sa-muted small'>Choose the Exswaping Page explicitly. Do not guess from a partial name.</p>"
+          + dests.map((row) => (
+            "<div class='sa-variant d-flex justify-content-between align-items-center gap-2'>"
+            + "<div><strong>" + escapeHtml(row.page_name || row.page_id) + "</strong>"
+            + "<div class='meta'>" + escapeHtml(row.category || "Page")
+            + " · IG: " + escapeHtml(row.instagram_username ? ("@" + row.instagram_username) : (row.instagram_account_id || "not linked"))
+            + "</div></div>"
+            + "<button type='button' class='btn btn-sm btn-outline-info' data-page='" + escapeHtml(row.page_id) + "' data-ig='" + escapeHtml(row.instagram_account_id || "") + "'>Select</button></div>"
+          )).join("");
         selectEl.querySelectorAll("[data-page]").forEach((btn) => {
           btn.addEventListener("click", async () => {
             await SocialAgent.fetch("/connections/meta/select", {
@@ -107,22 +198,23 @@ document.addEventListener("DOMContentLoaded", async () => {
         selectEl.hidden = true;
         selectEl.innerHTML = "";
       }
-    } else {
-      connectionId = null;
-      selectEl.hidden = true;
     }
 
-    connectBtn.disabled = !meta.configured;
+    connectBtn.disabled = !configured;
     healthBtn.disabled = !connectionId;
     reconnectBtn.disabled = !connectionId;
     disconnectBtn.disabled = !connectionId;
-    hint.textContent = meta.configured
-      ? "OAuth opens Meta authorization. Tokens stay server-side and encrypted."
-      : "Install META_APP_ID, META_APP_SECRET, META_REDIRECT_URI, and SOCIAL_CREDENTIAL_* keys.";
+    hint.textContent = !configured
+      ? "Operator: install META_APP_ID and META_APP_SECRET in /etc/autostory/social-agent-meta.env, then restart autostory-web."
+      : (connectionId
+        ? "Check connection runs a read-only health probe. Reconnect refreshes credentials without publishing."
+        : "Connect Meta opens Facebook authorization. Only read-only discovery scopes are requested.");
 
     tgEl.innerHTML =
-      "<div><span class='sa-status ready'>" + escapeHtml(tg.status) + "</span></div>"
-      + "<p class='mt-2 mb-1'>" + escapeHtml(tg.message || "") + "</p>";
+      "<div class='d-flex justify-content-between align-items-center gap-2'>"
+      + "<div><strong>Telegram</strong><div class='sa-muted small'>AutoStory adapter status</div></div>"
+      + "<span class='sa-status ready'>" + escapeHtml(tg.status || "unknown") + "</span></div>"
+      + "<p class='sa-muted small mt-2 mb-0'>" + escapeHtml(tg.message || "") + "</p>";
 
     const list = await SocialAgent.fetch("/tools/execute", {
       method: "POST",
@@ -131,7 +223,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const rows = list.connections || [];
     accountsEl.innerHTML = rows.length
       ? rows.map((c) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · " + escapeHtml(c.health) + "</div><strong>" + escapeHtml(c.display_name || "(unnamed)") + "</strong></div>").join("")
-      : "<div class='sa-empty'>No connected accounts yet.</div>";
+      : "<div class='sa-empty'>No other connected accounts yet.</div>";
   }
 
   connectBtn.addEventListener("click", async () => {
@@ -139,6 +231,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const data = await SocialAgent.fetch("/connections/meta/start", { method: "POST", body: JSON.stringify({ purpose: "connect" }) });
       if (data.authorization_url) {
+        try {
+          const u = new URL(data.authorization_url);
+          const host = u.hostname.toLowerCase();
+          if (host !== "www.facebook.com" && host !== "facebook.com" && !host.endsWith(".facebook.com")) {
+            hint.textContent = "Unexpected authorization host. OAuth aborted.";
+            return;
+          }
+        } catch (_) {
+          hint.textContent = "Invalid authorization URL.";
+          return;
+        }
         window.location.href = data.authorization_url;
       } else {
         hint.textContent = data.message || data.error || "Unable to start OAuth";
@@ -149,6 +252,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   healthBtn.addEventListener("click", async () => {
+    hint.textContent = "Running read-only health check…";
     await SocialAgent.fetch("/connections/meta/health", { method: "POST", body: JSON.stringify({ connection_id: connectionId }) });
     await refresh();
   });
@@ -163,7 +267,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   disconnectBtn.addEventListener("click", async () => {
-    if (!window.confirm("Disconnect Meta? Local encrypted credentials will be removed. Drafts are kept.")) return;
+    if (!window.confirm("Disconnect Meta? Local encrypted credentials will be removed. Drafts are kept. Telegram is unchanged.")) return;
     await SocialAgent.fetch("/connections/meta/disconnect", {
       method: "POST",
       body: JSON.stringify({ connection_id: connectionId, confirm: true }),
@@ -175,6 +279,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await refresh();
   } catch (e) {
     accountsEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>";
+    setPill("Error", "blocked");
   }
 });
 </script>

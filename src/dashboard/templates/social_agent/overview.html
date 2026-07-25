@@ -50,9 +50,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     set("scheduled", (data.scheduled_posts || []).length);
     set("failures", (data.publishing_failures || []).length);
 
+    const metaSum = data.meta_connection_summary || {};
     const alerts = document.getElementById("sa-alerts");
-    alerts.innerHTML = (data.alerts || []).length
-      ? data.alerts.map((a) => "<li>" + escapeHtml(a) + "</li>").join("")
+    const alertItems = (data.alerts || []).slice();
+    if (metaSum.summary && !alertItems.includes(metaSum.summary)) {
+      // Prefer backend alerts; summary already included when Meta is connected.
+    }
+    alerts.innerHTML = alertItems.length
+      ? alertItems.map((a) => "<li>" + escapeHtml(a) + "</li>").join("")
       : "<li class='sa-muted'>No alerts.</li>";
 
     const onboard = document.getElementById("sa-onboarding");
