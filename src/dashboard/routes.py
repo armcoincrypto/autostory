@@ -595,6 +595,8 @@ def update_account(account_id):
     ``purpose=disabled`` is the canonical safe-disable marker (ACCOUNT_DISABLED).
     Re-enable requires an explicit later PATCH back to an allowed publishing purpose.
     """
+    from sqlalchemy import text as sa_text
+
     data = request.get_json() or {}
     with get_db_context() as db:
         account = db.query(Account).filter(Account.id == account_id).first()
@@ -603,19 +605,31 @@ def update_account(account_id):
         if "purpose" in data and data["purpose"] in ("autostory", "messaging", "both", "disabled"):
             account.purpose = data["purpose"]
             # Optional operator reason for disable/re-enable audits (never secrets).
+            # manual_review_* exist as DB columns but are not mapped on Account ORM —
+            # persist them via SQL while keeping the reason in notes (canonical audit).
             reason = data.get("disable_reason") or data.get("purpose_reason")
             if reason and data["purpose"] == "disabled":
                 text = str(reason).strip()[:240]
                 if text:
-                    account.manual_review_required = True
-                    account.manual_review_reason = text
                     existing = (account.notes or "").strip()
                     note_line = f"disabled:{text}"
                     if note_line not in existing:
                         account.notes = f"{existing}\n{note_line}".strip() if existing else note_line
+                    db.execute(
+                        sa_text(
+                            "UPDATE accounts SET manual_review_required = 1, "
+                            "manual_review_reason = :reason WHERE id = :id"
+                        ),
+                        {"reason": text, "id": account_id},
+                    )
             elif data["purpose"] != "disabled" and data.get("clear_disable_markers"):
-                account.manual_review_required = False
-                account.manual_review_reason = None
+                db.execute(
+                    sa_text(
+                        "UPDATE accounts SET manual_review_required = 0, "
+                        "manual_review_reason = NULL WHERE id = :id"
+                    ),
+                    {"id": account_id},
+                )
         return jsonify({"success": True, "purpose": account.purpose})
 
 
