@@ -232,7 +232,14 @@ def _consume_state(
     if row.provider != "meta":
         return None, "wrong_provider"
     if row.actor != actor:
-        return None, "wrong_user"
+        # Canary OAuth is often started via X-Admin-Token (actor=admin_token) then
+        # completed in a browser session as a dashboard admin user.
+        if not (
+            row.purpose in {"publish_canary", "facebook_canary"}
+            and row.actor in {"admin_token", "admin"}
+            and actor in {"admin_token", "admin"}
+        ):
+            return None, "wrong_user"
     if row.workspace_id != workspace_id:
         return None, "wrong_workspace"
     if row.used_at is not None:
