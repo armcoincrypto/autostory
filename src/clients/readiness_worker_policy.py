@@ -135,7 +135,8 @@ def account_probe_due(
     if account_id_excluded_from_readiness_worker_core(aid):
         return False, "excluded_ai_reserved"
     purpose = (getattr(account, "purpose", None) or "both").strip().lower()
-    if purpose in ("autostory", "ai_agent"):
+    # purpose=disabled is the canonical ACCOUNT_DISABLED marker — never probe.
+    if purpose in ("autostory", "ai_agent", "disabled"):
         return False, "excluded_purpose"
 
     status_val = getattr(account.status, "value", str(account.status or "")).lower()
