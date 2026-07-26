@@ -55,6 +55,8 @@ def _audit(
 
 
 def overview(db: Session) -> dict[str, Any]:
+    from src.social_agent.meta_connection import public_connection_summary
+
     connections = db.query(SocialConnection).order_by(SocialConnection.id.desc()).limit(20).all()
     drafts = (
         db.query(SocialContentItem)
@@ -69,7 +71,7 @@ def overview(db: Session) -> dict[str, Any]:
     return {
         "ok": True,
         "connections": [
-            {
+            public_connection_summary(c) if c.provider == "meta" else {
                 "id": c.id,
                 "provider": c.provider,
                 "display_name": c.display_name,
@@ -104,19 +106,28 @@ def _meta_connection_summary(connections: list[SocialConnection]) -> dict[str, A
             "page_healthy": False,
             "instagram_healthy": False,
             "summary": "Meta not connected",
+            "display_name": None,
         }
+    from src.social_agent.meta_connection import public_connection_summary
+
+    pub = public_connection_summary(meta)
     health = (meta.health or "").upper()
-    connected = meta.status == "connected" or health == "CONNECTED"
-    page_healthy = health == "CONNECTED"
+    connected = bool(meta.selected_page_id) and (meta.status == "connected" or health == "CONNECTED")
+    page_healthy = connected and health == "CONNECTED"
     instagram_healthy = page_healthy and bool(meta.selected_instagram_id)
-    if health == "INSTAGRAM_UNAVAILABLE":
-        summary = "Meta connected · Facebook Page healthy · Instagram needs attention"
+    display = pub.get("display_name")
+    if not meta.selected_page_id:
+        summary = "Meta authorized · Facebook Page selection required"
+    elif health == "INSTAGRAM_UNAVAILABLE":
+        summary = f"Meta connected · {display} healthy · Instagram needs attention"
     elif page_healthy and instagram_healthy:
-        summary = "Meta connected · Facebook Page healthy · Instagram account healthy"
+        ig = pub.get("selected_instagram_username")
+        ig_bit = f"@{ig}" if ig else "Instagram account"
+        summary = f"Meta connected · {display} healthy · {ig_bit} healthy"
     elif page_healthy:
-        summary = "Meta connected · Facebook Page healthy · Instagram not selected"
+        summary = f"Meta connected · {display} healthy · Instagram not selected"
     elif connected:
-        summary = f"Meta connected · health {meta.health or meta.status}"
+        summary = f"Meta connected · {display} · health {meta.health or meta.status}"
     else:
         summary = f"Meta status {meta.status} · health {meta.health or 'unknown'}"
     return {
@@ -125,6 +136,9 @@ def _meta_connection_summary(connections: list[SocialConnection]) -> dict[str, A
         "page_healthy": page_healthy,
         "instagram_healthy": instagram_healthy,
         "summary": summary,
+        "display_name": display,
+        "selected_page_id": meta.selected_page_id,
+        "selected_instagram_id": meta.selected_instagram_id,
     }
 
 
@@ -493,11 +507,13 @@ def execute_tool(
 
     # Canonical handlers
     if tool_name == "social.list_connections":
+        from src.social_agent.meta_connection import public_connection_summary
+
         rows = db.query(SocialConnection).order_by(SocialConnection.id.desc()).all()
         result = {
             "ok": True,
             "connections": [
-                {
+                public_connection_summary(c) if c.provider == "meta" else {
                     "id": c.id,
                     "provider": c.provider,
                     "display_name": c.display_name,

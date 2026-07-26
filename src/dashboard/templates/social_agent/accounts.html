@@ -70,14 +70,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function destFor(conn) {
     const dests = conn.destinations || [];
-    const page = dests.find((d) => String(d.page_id) === String(conn.selected_page_id)) || dests[0] || {};
-    const igLinked = !!(conn.selected_instagram_id || page.instagram_account_id);
+    // Never fall back to the first discovered page — that fakes a selection.
+    const page = dests.find((d) => String(d.page_id) === String(conn.selected_page_id)) || null;
+    if (!conn.selected_page_id || !page) {
+      return {
+        pageName: null,
+        pageId: "",
+        igUser: null,
+        igId: "",
+        igLinked: false,
+        selected: false,
+      };
+    }
+    const igUser = conn.selected_instagram_username
+      || page.instagram_username
+      || (page.instagram_business_account && page.instagram_business_account.username)
+      || null;
     return {
-      pageName: page.page_name || conn.display_name || "Facebook Page",
-      pageId: conn.selected_page_id || page.page_id || "",
-      igUser: page.instagram_username ? ("@" + page.instagram_username.replace(/^@/, "")) : (conn.selected_instagram_id ? "Instagram account" : null),
+      pageName: conn.selected_page_name || page.page_name || null,
+      pageId: conn.selected_page_id,
+      igUser: igUser ? ("@" + String(igUser).replace(/^@/, "")) : null,
       igId: conn.selected_instagram_id || page.instagram_account_id || "",
-      igLinked,
+      igLinked: !!(conn.selected_instagram_id || page.instagram_account_id),
+      selected: true,
     };
   }
 
@@ -136,15 +151,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else {
       connectionId = conn.id;
       const d = destFor(conn);
-      const healthy = String(health).toUpperCase() === "CONNECTED";
-      const degraded = !healthy;
-      setPill(healthy ? "Connected" : (health || conn.status || "Degraded"), healthy ? "ready" : "blocked");
-      lead.textContent = healthy
-        ? "Meta is connected for read-only account discovery."
-        : "Meta needs attention. Use Check connection or Reconnect.";
+      const selected = !!conn.selected_page_id && d.selected;
+      const healthy = selected && String(health).toUpperCase() === "CONNECTED";
+      const degraded = selected && !healthy;
+      setPill(
+        selected ? (healthy ? "Connected" : (health || conn.status || "Degraded")) : "Selection required",
+        selected ? (healthy ? "ready" : "blocked") : "missing"
+      );
+      lead.textContent = selected
+        ? (healthy
+          ? "Meta is connected for read-only account discovery."
+          : "Meta needs attention. Use Check connection or Reconnect.")
+        : "Authorize completed. Select the Facebook Page to use — nothing is chosen automatically.";
 
       let banner = "";
-      if (String(health).toUpperCase() === "INSTAGRAM_UNAVAILABLE") {
+      if (!selected) {
+        banner = "<div class='sa-banner sa-banner-warn mb-3'>No Facebook Page selected yet. Choose one below.</div>";
+      } else if (String(health).toUpperCase() === "INSTAGRAM_UNAVAILABLE") {
         banner = "<div class='sa-banner sa-banner-warn mb-3'>Instagram account is no longer linked to the selected Facebook Page.</div>";
       } else if (degraded) {
         banner = "<div class='sa-banner sa-banner-warn mb-3'>Connection health: " + escapeHtml(health || conn.status) + ". Reconnect if the issue persists.</div>";
@@ -152,15 +175,17 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       const granted = (conn.permissions || []).length;
       const missing = (conn.missing_permissions || []).length;
-      const pageHealth = healthy ? "Healthy" : "Needs attention";
-      const igHealth = !d.igLinked
-        ? "Not linked"
-        : (String(health).toUpperCase() === "INSTAGRAM_UNAVAILABLE" ? "Unlinked" : (healthy ? "Healthy" : "Needs attention"));
+      const pageHealth = !selected ? "Not selected" : (healthy ? "Healthy" : "Needs attention");
+      const igHealth = !selected
+        ? "Not selected"
+        : (!d.igLinked
+          ? "Not linked"
+          : (String(health).toUpperCase() === "INSTAGRAM_UNAVAILABLE" ? "Unlinked" : (healthy ? "Healthy" : "Needs attention")));
 
       metaEl.innerHTML = banner
         + "<div class='sa-conn-grid'>"
-        + "<div class='sa-conn-row'><div class='label'>Facebook</div><div class='value'><strong>" + escapeHtml(d.pageName) + "</strong><span class='sa-status " + (healthy ? "ready" : "blocked") + "'>" + pageHealth + "</span></div></div>"
-        + "<div class='sa-conn-row'><div class='label'>Instagram</div><div class='value'><strong>" + escapeHtml(d.igUser || "Not selected") + "</strong><span class='sa-status " + (igHealth === "Healthy" ? "ready" : (igHealth === "Not linked" ? "missing" : "blocked")) + "'>" + igHealth + "</span></div></div>"
+        + "<div class='sa-conn-row'><div class='label'>Facebook</div><div class='value'><strong>" + escapeHtml(d.pageName || "Not selected") + "</strong><span class='sa-status " + (pageHealth === "Healthy" ? "ready" : (pageHealth === "Not selected" ? "missing" : "blocked")) + "'>" + pageHealth + "</span></div></div>"
+        + "<div class='sa-conn-row'><div class='label'>Instagram</div><div class='value'><strong>" + escapeHtml(d.igUser || "Not selected") + "</strong><span class='sa-status " + (igHealth === "Healthy" ? "ready" : (igHealth === "Not selected" || igHealth === "Not linked" ? "missing" : "blocked")) + "'>" + igHealth + "</span></div></div>"
         + "<div class='sa-conn-row'><div class='label'>Permissions</div><div class='value'>" + granted + " granted · " + missing + " missing</div></div>"
         + "<div class='sa-conn-row'><div class='label'>Token</div><div class='value'>Expires " + humanTime(conn.token_expires_at) + "</div></div>"
         + "<div class='sa-conn-row'><div class='label'>Last checked</div><div class='value'>" + humanTime(conn.last_checked_at) + "</div></div>"
@@ -169,6 +194,68 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       let dests = conn.destinations || [];
       const needsSelect = !conn.selected_page_id;
+      let showChooser = needsSelect;
+      selectEl.hidden = false;
+
+      function renderChooser(title, showSelectedMarker) {
+        if (!dests.length) {
+          selectEl.innerHTML = "<div class='sa-banner sa-banner-warn'>No Facebook Pages were discovered for this Meta login. Use Refresh pages or Reconnect after confirming Page admin access.</div>"
+            + "<button type='button' class='btn btn-sm btn-outline-light mt-2' id='sa-meta-refresh-pages'>Refresh pages</button>";
+        } else {
+          selectEl.innerHTML = "<h3 class='h6'>" + escapeHtml(title) + "</h3>"
+            + "<p class='sa-muted small'>Every discovered Page is listed. The selected Instagram account always comes from the chosen Page.</p>"
+            + dests.map((row) => {
+              const igBiz = row.instagram_business_account || {};
+              const igConn = row.connected_instagram_account || {};
+              const igUser = row.instagram_username || igBiz.username || igConn.username || null;
+              const isCurrent = showSelectedMarker && String(row.page_id) === String(conn.selected_page_id);
+              return "<div class='sa-variant d-flex justify-content-between align-items-start gap-2'>"
+                + "<div>"
+                + "<strong>" + escapeHtml(row.page_name || row.page_id) + "</strong>"
+                + (isCurrent ? " <span class='sa-status ready'>Selected</span>" : "")
+                + "<div class='meta'>Page ID: " + escapeHtml(row.page_id || "") + "</div>"
+                + "<div class='meta'>" + escapeHtml(row.category || "Page") + "</div>"
+                + "<div class='meta'>instagram_business_account: " + escapeHtml(igBiz.id ? ((igBiz.username ? ("@" + igBiz.username + " ") : "") + igBiz.id) : "none") + "</div>"
+                + "<div class='meta'>connected_instagram_account: " + escapeHtml(igConn.id ? ((igConn.username ? ("@" + igConn.username + " ") : "") + igConn.id) : "none") + "</div>"
+                + "</div>"
+                + "<button type='button' class='btn btn-sm " + (isCurrent ? "btn-outline-light" : "btn-outline-info") + "' data-page='" + escapeHtml(row.page_id) + "'>" + (isCurrent ? "Keep" : "Select") + "</button></div>";
+            }).join("")
+            + "<button type='button' class='btn btn-sm btn-outline-light mt-2' id='sa-meta-refresh-pages'>Refresh pages</button>"
+            + (showSelectedMarker ? "<button type='button' class='btn btn-sm btn-outline-light mt-2 ms-2' id='sa-meta-hide-chooser'>Done</button>" : "");
+        }
+        selectEl.querySelectorAll("[data-page]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            hint.textContent = "Selecting Page and rediscovering Instagram…";
+            await SocialAgent.fetch("/connections/meta/select", {
+              method: "POST",
+              body: JSON.stringify({
+                connection_id: connectionId,
+                page_id: btn.getAttribute("data-page"),
+              }),
+            });
+            await refresh();
+          });
+        });
+        const refreshBtn = document.getElementById("sa-meta-refresh-pages");
+        if (refreshBtn) {
+          refreshBtn.addEventListener("click", async () => {
+            hint.textContent = "Rediscovering Facebook Pages…";
+            await SocialAgent.fetch("/connections/meta/pages", {
+              method: "POST",
+              body: JSON.stringify({ connection_id: connectionId }),
+            });
+            await refresh();
+          });
+        }
+        const hideBtn = document.getElementById("sa-meta-hide-chooser");
+        if (hideBtn) {
+          hideBtn.addEventListener("click", () => {
+            selectEl.hidden = true;
+            selectEl.innerHTML = "";
+          });
+        }
+      }
+
       if (needsSelect) {
         if (!dests.length) {
           try {
@@ -181,69 +268,15 @@ document.addEventListener("DOMContentLoaded", async () => {
             dests = [];
           }
         }
-        selectEl.hidden = false;
-        if (!dests.length) {
-          selectEl.innerHTML = "<div class='sa-banner sa-banner-warn'>No Facebook Pages were discovered for this Meta login. Use Refresh pages or Reconnect after confirming Page admin access.</div>"
-            + "<button type='button' class='btn btn-sm btn-outline-light mt-2' id='sa-meta-refresh-pages'>Refresh pages</button>";
-          const refreshBtn = document.getElementById("sa-meta-refresh-pages");
-          if (refreshBtn) {
-            refreshBtn.addEventListener("click", async () => {
-              hint.textContent = "Rediscovering Facebook Pages…";
-              await SocialAgent.fetch("/connections/meta/pages", {
-                method: "POST",
-                body: JSON.stringify({ connection_id: connectionId }),
-              });
-              await refresh();
-            });
-          }
-        } else {
-          selectEl.innerHTML = "<h3 class='h6'>Select a Facebook Page</h3>"
-            + "<p class='sa-muted small'>Every discovered Page is listed. Choose the correct Page explicitly — nothing is auto-selected.</p>"
-            + dests.map((row) => {
-              const igBiz = row.instagram_business_account || {};
-              const igConn = row.connected_instagram_account || {};
-              const igUser = row.instagram_username || igBiz.username || igConn.username || null;
-              const igId = row.instagram_account_id || igBiz.id || igConn.id || "";
-              return "<div class='sa-variant d-flex justify-content-between align-items-start gap-2'>"
-                + "<div>"
-                + "<strong>" + escapeHtml(row.page_name || row.page_id) + "</strong>"
-                + "<div class='meta'>Page ID: " + escapeHtml(row.page_id || "") + "</div>"
-                + "<div class='meta'>" + escapeHtml(row.category || "Page") + "</div>"
-                + "<div class='meta'>instagram_business_account: " + escapeHtml(igBiz.id ? ((igBiz.username ? ("@" + igBiz.username + " ") : "") + igBiz.id) : "none") + "</div>"
-                + "<div class='meta'>connected_instagram_account: " + escapeHtml(igConn.id ? ((igConn.username ? ("@" + igConn.username + " ") : "") + igConn.id) : "none") + "</div>"
-                + "<div class='meta'>IG for selection: " + escapeHtml(igUser ? ("@" + String(igUser).replace(/^@/, "")) : (igId || "not linked")) + "</div>"
-                + "</div>"
-                + "<button type='button' class='btn btn-sm btn-outline-info' data-page='" + escapeHtml(row.page_id) + "'>Select</button></div>";
-            }).join("")
-            + "<button type='button' class='btn btn-sm btn-outline-light mt-2' id='sa-meta-refresh-pages'>Refresh pages</button>";
-          selectEl.querySelectorAll("[data-page]").forEach((btn) => {
-            btn.addEventListener("click", async () => {
-              hint.textContent = "Selecting Page and rediscovering Instagram…";
-              await SocialAgent.fetch("/connections/meta/select", {
-                method: "POST",
-                body: JSON.stringify({
-                  connection_id: connectionId,
-                  page_id: btn.getAttribute("data-page"),
-                }),
-              });
-              await refresh();
-            });
-          });
-          const refreshBtn = document.getElementById("sa-meta-refresh-pages");
-          if (refreshBtn) {
-            refreshBtn.addEventListener("click", async () => {
-              hint.textContent = "Rediscovering Facebook Pages…";
-              await SocialAgent.fetch("/connections/meta/pages", {
-                method: "POST",
-                body: JSON.stringify({ connection_id: connectionId }),
-              });
-              await refresh();
-            });
-          }
-        }
+        renderChooser("Select a Facebook Page", false);
       } else {
-        selectEl.hidden = true;
-        selectEl.innerHTML = "";
+        selectEl.innerHTML = "<button type='button' class='btn btn-sm btn-outline-light' id='sa-meta-change-page'>Change Page</button>";
+        const changeBtn = document.getElementById("sa-meta-change-page");
+        if (changeBtn) {
+          changeBtn.addEventListener("click", () => {
+            renderChooser("Change Facebook Page", true);
+          });
+        }
       }
     }
 
@@ -269,7 +302,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
     const rows = list.connections || [];
     accountsEl.innerHTML = rows.length
-      ? rows.map((c) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · " + escapeHtml(c.health) + "</div><strong>" + escapeHtml(c.display_name || "(unnamed)") + "</strong></div>").join("")
+      ? rows.map((c) => {
+          const label = c.selected_page_name || c.display_name || "(unnamed)";
+          const ig = c.selected_instagram_username ? (" · @" + String(c.selected_instagram_username).replace(/^@/, "")) : "";
+          return "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · " + escapeHtml(c.health) + escapeHtml(ig) + "</div><strong>" + escapeHtml(label) + "</strong></div>";
+        }).join("")
       : "<div class='sa-empty'>No other connected accounts yet.</div>";
   }
 

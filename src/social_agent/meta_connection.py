@@ -98,6 +98,42 @@ def _safe_destinations(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _destination_for_selection(dests: list[dict[str, Any]], selected_page_id: str | None) -> dict[str, Any] | None:
+    if not selected_page_id:
+        return None
+    return next((d for d in dests if str(d.get("page_id")) == str(selected_page_id)), None)
+
+
+def _canonical_display_name(row: SocialConnection, dests: list[dict[str, Any]]) -> str:
+    """Prefer selected Facebook Page name. Never present Meta user name as the destination label."""
+    selected = _destination_for_selection(dests, row.selected_page_id)
+    if selected and selected.get("page_name"):
+        return str(selected["page_name"])
+    if row.selected_page_id:
+        return f"Facebook Page {row.selected_page_id}"
+    if (row.status or "") in {"connected_pending_selection", "connected_no_pages"}:
+        return "Meta (page selection required)"
+    # Fall back only when disconnected / no destinations.
+    return "Meta"
+
+
+def public_connection_summary(row: SocialConnection) -> dict[str, Any]:
+    """Canonical connection projection shared by Accounts, Overview, and list_connections."""
+    return {k: v for k, v in _public_connection(row).items() if k in {
+        "id",
+        "provider",
+        "display_name",
+        "status",
+        "health",
+        "selected_page_id",
+        "selected_page_name",
+        "selected_instagram_id",
+        "selected_instagram_username",
+        "needs_page_selection",
+        "workspace_id",
+    }}
+
+
 def _public_connection(row: SocialConnection) -> dict[str, Any]:
     perms = []
     try:
@@ -109,15 +145,37 @@ def _public_connection(row: SocialConnection) -> dict[str, Any]:
         dests = json.loads(row.destinations_json or "[]")
     except json.JSONDecodeError:
         dests = []
+    selected = _destination_for_selection(dests, row.selected_page_id)
+    selected_ig_username = None
+    if selected:
+        selected_ig_username = selected.get("instagram_username")
+        if not selected_ig_username and isinstance(selected.get("instagram_business_account"), dict):
+            selected_ig_username = selected["instagram_business_account"].get("username")
+        if not selected_ig_username and isinstance(selected.get("connected_instagram_account"), dict):
+            selected_ig_username = selected["connected_instagram_account"].get("username")
+    # Instagram ID must come from the selected Page only — never from another destination.
+    selected_ig_id = None
+    if row.selected_page_id and selected:
+        candidate = selected.get("instagram_account_id")
+        if row.selected_instagram_id and candidate and str(row.selected_instagram_id) != str(candidate):
+            # Prefer the Page-linked IG; DB should already match after select rediscovery.
+            selected_ig_id = str(candidate)
+        else:
+            selected_ig_id = str(row.selected_instagram_id or candidate) if (row.selected_instagram_id or candidate) else None
+    display = _canonical_display_name(row, dests)
     return {
         "id": row.id,
         "provider": row.provider,
-        "display_name": row.display_name,
+        "display_name": display,
+        "meta_user_name": row.display_name if row.display_name and row.display_name != display else None,
         "status": row.status,
         "health": row.health,
         "external_account_id": row.external_account_id,
         "selected_page_id": row.selected_page_id,
-        "selected_instagram_id": row.selected_instagram_id,
+        "selected_page_name": (selected or {}).get("page_name") if selected else None,
+        "selected_instagram_id": selected_ig_id,
+        "selected_instagram_username": selected_ig_username,
+        "needs_page_selection": not bool(row.selected_page_id),
         "permissions": perms,
         "missing_permissions": [
             c["required_permission"]
@@ -184,13 +242,18 @@ def get_meta_connection(db: Session, *, workspace_id: str = WORKSPACE_DEFAULT) -
                 .first()
             ) or row
     pub = _public_connection(row)
+    # Heal stale display_name (Meta user) when a Page is already selected.
+    if row.selected_page_id and pub.get("selected_page_name") and row.display_name != pub["selected_page_name"]:
+        row.display_name = str(pub["selected_page_name"])
+        db.flush()
+        pub = _public_connection(row)
     base["connection"] = pub
     base["connection_state"] = (
         "CONNECTED"
-        if (row.status == "connected" or (row.health or "").upper() == "CONNECTED") and row.selected_page_id
+        if row.selected_page_id and (row.status == "connected" or (row.health or "").upper() == "CONNECTED")
         else (row.status or row.health or "DEGRADED")
     )
-    base["needs_page_selection"] = bool(pub.get("destinations")) and not pub.get("selected_page_id")
+    base["needs_page_selection"] = bool(pub.get("needs_page_selection"))
     base["capabilities"] = capability_matrix(pub.get("permissions") or [])
     return base
 
@@ -566,6 +629,9 @@ def select_meta_destination(
     row.selected_page_id = str(page_id)
     row.selected_instagram_id = str(ig) if ig else None
     row.status = "connected" if ig else "connected_no_instagram"
+    # Persist canonical destination label (Facebook Page name), not Meta user name.
+    if match.get("page_name"):
+        row.display_name = str(match["page_name"])
     row.updated_at = datetime.utcnow()
     row.last_checked_at = datetime.utcnow()
     db.flush()
@@ -582,6 +648,7 @@ def select_meta_destination(
             "instagram_username": match.get("instagram_username"),
             "instagram_source": ig_source,
             "instagram_rediscovered": rediscovered_ig is not None,
+            "display_name": row.display_name,
         },
     )
     return {
