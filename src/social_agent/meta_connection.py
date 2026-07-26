@@ -211,7 +211,7 @@ def start_meta_oauth(
         "purpose": purpose,
         "scopes_requested": (
             adapter.config().get("canary_scopes")
-            if purpose in {"publish_canary", "facebook_canary"}
+            if purpose in {"publish_canary", "facebook_canary", "reconnect"}
             else adapter.config().get("scopes")
         ),
     }
@@ -319,6 +319,23 @@ def handle_meta_callback(
         return {"ok": False, "error": "pages_discovery_failed", "category": pages_result.get("category")}
 
     pages = pages_result["pages"]
+    if not pages:
+        _audit(
+            db,
+            actor=actor,
+            action="meta.callback_rejected",
+            decision="deny",
+            detail={
+                "reason": "pages_discovery_empty",
+                "discovery_source": pages_result.get("discovery_source"),
+            },
+        )
+        return {
+            "ok": False,
+            "error": "pages_discovery_empty",
+            "message": "No Pages discovered; refusing to overwrite stored credentials.",
+            "discovery_source": pages_result.get("discovery_source"),
+        }
     # Enrich Instagram via page token when list omitted details
     for p in pages:
         if p.get("page_access_token") and not p.get("instagram_account_id"):

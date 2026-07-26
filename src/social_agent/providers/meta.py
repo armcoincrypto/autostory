@@ -110,7 +110,12 @@ class MetaProviderAdapter:
         cfg = self.config()
         if not cfg["configured"]:
             raise RuntimeError("META_NOT_CONFIGURED")
-        scopes = FACEBOOK_CANARY_SCOPES if purpose in {"publish_canary", "facebook_canary"} else READ_ONLY_SCOPES
+        # Reconnect in this phase also requests pages_manage_posts for the Facebook canary.
+        scopes = (
+            FACEBOOK_CANARY_SCOPES
+            if purpose in {"publish_canary", "facebook_canary", "reconnect"}
+            else READ_ONLY_SCOPES
+        )
         params = {
             "client_id": cfg["app_id"],
             "redirect_uri": cfg["redirect_uri"],
@@ -183,41 +188,101 @@ class MetaProviderAdapter:
             return {"ok": False, "error": "me_failed", "status": status, "category": _error_category(data)}
         return {"ok": True, "id": str(data["id"]), "name": data.get("name")}
 
+    @staticmethod
+    def _page_from_graph_row(row: dict[str, Any]) -> dict[str, Any]:
+        ig_biz = row.get("instagram_business_account") or {}
+        ig_conn = row.get("connected_instagram_account") or {}
+        ig = ig_biz if ig_biz.get("id") else ig_conn
+        return {
+            "page_id": str(row.get("id") or ""),
+            "page_name": row.get("name") or "",
+            "category": row.get("category"),
+            "tasks": row.get("tasks") or [],
+            "page_access_token": row.get("access_token"),
+            "instagram_account_id": str(ig.get("id")) if ig.get("id") else None,
+            "instagram_username": ig.get("username"),
+        }
+
     def list_pages(self, *, access_token: str) -> dict[str, Any]:
-        """Discover Pages; paginate; never return page tokens to callers outside services."""
-        pages: list[dict[str, Any]] = []
-        url = (
-            f"{GRAPH_BASE}/me/accounts?"
-            f"{urlencode({'fields': 'id,name,category,tasks,access_token,instagram_business_account{id,username}', 'limit': '50', 'access_token': access_token})}"
+        """Discover Pages; fall back to debug_token granular target_ids when /me/accounts is empty."""
+        page_fields = (
+            "id,name,category,tasks,access_token,"
+            "instagram_business_account{id,username},"
+            "connected_instagram_account{id,username}"
         )
+        pages: list[dict[str, Any]] = []
+        url = f"{GRAPH_BASE}/me/accounts?{urlencode({'fields': page_fields, 'limit': '50', 'access_token': access_token})}"
         guard = 0
+        accounts_ok = True
         while url and guard < 20:
             guard += 1
             status, data = self.http("GET", url, None, None, 20.0)
             if status != 200:
+                accounts_ok = False
+                break
+            for row in data.get("data") or []:
+                parsed = self._page_from_graph_row(row)
+                if parsed.get("page_id"):
+                    pages.append(parsed)
+            paging = data.get("paging") or {}
+            url = paging.get("next")
+
+        discovery_source = "me_accounts"
+        if accounts_ok and not pages:
+            debug = self.debug_token(input_token=access_token)
+            if not debug.get("ok"):
                 return {
                     "ok": False,
                     "error": "pages_failed",
-                    "status": status,
-                    "category": _error_category(data),
-                    "pages": pages,
+                    "category": debug.get("category") or "debug_token_failed",
+                    "pages": [],
+                    "discovery_source": "granular_scopes",
                 }
-            for row in data.get("data") or []:
-                ig = row.get("instagram_business_account") or {}
-                pages.append(
-                    {
-                        "page_id": str(row.get("id") or ""),
-                        "page_name": row.get("name") or "",
-                        "category": row.get("category"),
-                        "tasks": row.get("tasks") or [],
-                        "page_access_token": row.get("access_token"),
-                        "instagram_account_id": str(ig.get("id")) if ig.get("id") else None,
-                        "instagram_username": ig.get("username"),
-                    }
-                )
-            paging = data.get("paging") or {}
-            url = paging.get("next")
-        return {"ok": True, "pages": pages}
+            page_ids: list[str] = []
+            for entry in (debug.get("data") or {}).get("granular_scopes") or []:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("scope") or "") not in {
+                    "pages_show_list",
+                    "pages_read_engagement",
+                    "pages_manage_posts",
+                }:
+                    continue
+                for tid in entry.get("target_ids") or []:
+                    sid = str(tid)
+                    if sid and sid not in page_ids:
+                        page_ids.append(sid)
+            for page_id in page_ids:
+                fetched = self.get_page(page_id=page_id, access_token=access_token)
+                if fetched.get("ok") and fetched.get("page"):
+                    pages.append(fetched["page"])
+            discovery_source = "granular_scopes"
+
+        if not accounts_ok and not pages:
+            return {
+                "ok": False,
+                "error": "pages_failed",
+                "category": "provider_error",
+                "pages": pages,
+                "discovery_source": discovery_source,
+            }
+        return {"ok": True, "pages": pages, "discovery_source": discovery_source}
+
+    def get_page(self, *, page_id: str, access_token: str) -> dict[str, Any]:
+        qs = urlencode(
+            {
+                "fields": (
+                    "id,name,category,tasks,access_token,"
+                    "instagram_business_account{id,username},"
+                    "connected_instagram_account{id,username}"
+                ),
+                "access_token": access_token,
+            }
+        )
+        status, data = self.http("GET", f"{GRAPH_BASE}/{urllib.parse.quote(page_id)}?{qs}", None, None, 20.0)
+        if status != 200 or not data.get("id"):
+            return {"ok": False, "error": "page_lookup_failed", "status": status, "category": _error_category(data)}
+        return {"ok": True, "page": self._page_from_graph_row(data)}
 
     def page_instagram(self, *, page_id: str, page_access_token: str) -> dict[str, Any]:
         qs = urlencode(
