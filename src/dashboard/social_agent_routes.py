@@ -404,6 +404,25 @@ def api_meta_select():
         return jsonify(out), (200 if out.get("ok") else 400)
 
 
+@social_agent_api.route("/connections/meta/pages", methods=["POST", "GET"])
+def api_meta_rediscover_pages():
+    """Re-run read-only Page discovery and return every discovered Page for operator selection."""
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.rediscover_meta_pages(
+            db,
+            actor=_actor(),
+            connection_id=data.get("connection_id") or request.args.get("connection_id", type=int),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
 @social_agent_api.route("/connections/meta/health", methods=["POST", "GET"])
 def api_meta_health():
     data = request.get_json(silent=True) or {}

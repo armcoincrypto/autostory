@@ -167,33 +167,80 @@ document.addEventListener("DOMContentLoaded", async () => {
         + "</div>"
         + "<p class='sa-muted small mt-3 mb-0'>Facebook and Instagram publishing remain disabled.</p>";
 
-      const dests = conn.destinations || [];
-      const needsSelect = dests.length > 0 && !conn.selected_page_id;
-      if (needsSelect || (dests.length > 1 && !conn.selected_page_id)) {
-        selectEl.hidden = false;
-        selectEl.innerHTML = "<h3 class='h6'>Select a Facebook Page</h3>"
-          + "<p class='sa-muted small'>Choose the Exswaping Page explicitly. Do not guess from a partial name.</p>"
-          + dests.map((row) => (
-            "<div class='sa-variant d-flex justify-content-between align-items-center gap-2'>"
-            + "<div><strong>" + escapeHtml(row.page_name || row.page_id) + "</strong>"
-            + "<div class='meta'>" + escapeHtml(row.category || "Page")
-            + " · IG: " + escapeHtml(row.instagram_username ? ("@" + row.instagram_username) : (row.instagram_account_id || "not linked"))
-            + "</div></div>"
-            + "<button type='button' class='btn btn-sm btn-outline-info' data-page='" + escapeHtml(row.page_id) + "' data-ig='" + escapeHtml(row.instagram_account_id || "") + "'>Select</button></div>"
-          )).join("");
-        selectEl.querySelectorAll("[data-page]").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            await SocialAgent.fetch("/connections/meta/select", {
+      let dests = conn.destinations || [];
+      const needsSelect = !conn.selected_page_id;
+      if (needsSelect) {
+        if (!dests.length) {
+          try {
+            const rediscovered = await SocialAgent.fetch("/connections/meta/pages", {
               method: "POST",
-              body: JSON.stringify({
-                connection_id: connectionId,
-                page_id: btn.getAttribute("data-page"),
-                instagram_account_id: btn.getAttribute("data-ig") || null,
-              }),
+              body: JSON.stringify({ connection_id: connectionId }),
             });
-            await refresh();
+            dests = rediscovered.destinations || (rediscovered.connection && rediscovered.connection.destinations) || [];
+          } catch (_) {
+            dests = [];
+          }
+        }
+        selectEl.hidden = false;
+        if (!dests.length) {
+          selectEl.innerHTML = "<div class='sa-banner sa-banner-warn'>No Facebook Pages were discovered for this Meta login. Use Refresh pages or Reconnect after confirming Page admin access.</div>"
+            + "<button type='button' class='btn btn-sm btn-outline-light mt-2' id='sa-meta-refresh-pages'>Refresh pages</button>";
+          const refreshBtn = document.getElementById("sa-meta-refresh-pages");
+          if (refreshBtn) {
+            refreshBtn.addEventListener("click", async () => {
+              hint.textContent = "Rediscovering Facebook Pages…";
+              await SocialAgent.fetch("/connections/meta/pages", {
+                method: "POST",
+                body: JSON.stringify({ connection_id: connectionId }),
+              });
+              await refresh();
+            });
+          }
+        } else {
+          selectEl.innerHTML = "<h3 class='h6'>Select a Facebook Page</h3>"
+            + "<p class='sa-muted small'>Every discovered Page is listed. Choose the correct Page explicitly — nothing is auto-selected.</p>"
+            + dests.map((row) => {
+              const igBiz = row.instagram_business_account || {};
+              const igConn = row.connected_instagram_account || {};
+              const igUser = row.instagram_username || igBiz.username || igConn.username || null;
+              const igId = row.instagram_account_id || igBiz.id || igConn.id || "";
+              return "<div class='sa-variant d-flex justify-content-between align-items-start gap-2'>"
+                + "<div>"
+                + "<strong>" + escapeHtml(row.page_name || row.page_id) + "</strong>"
+                + "<div class='meta'>Page ID: " + escapeHtml(row.page_id || "") + "</div>"
+                + "<div class='meta'>" + escapeHtml(row.category || "Page") + "</div>"
+                + "<div class='meta'>instagram_business_account: " + escapeHtml(igBiz.id ? ((igBiz.username ? ("@" + igBiz.username + " ") : "") + igBiz.id) : "none") + "</div>"
+                + "<div class='meta'>connected_instagram_account: " + escapeHtml(igConn.id ? ((igConn.username ? ("@" + igConn.username + " ") : "") + igConn.id) : "none") + "</div>"
+                + "<div class='meta'>IG for selection: " + escapeHtml(igUser ? ("@" + String(igUser).replace(/^@/, "")) : (igId || "not linked")) + "</div>"
+                + "</div>"
+                + "<button type='button' class='btn btn-sm btn-outline-info' data-page='" + escapeHtml(row.page_id) + "'>Select</button></div>";
+            }).join("")
+            + "<button type='button' class='btn btn-sm btn-outline-light mt-2' id='sa-meta-refresh-pages'>Refresh pages</button>";
+          selectEl.querySelectorAll("[data-page]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              hint.textContent = "Selecting Page and rediscovering Instagram…";
+              await SocialAgent.fetch("/connections/meta/select", {
+                method: "POST",
+                body: JSON.stringify({
+                  connection_id: connectionId,
+                  page_id: btn.getAttribute("data-page"),
+                }),
+              });
+              await refresh();
+            });
           });
-        });
+          const refreshBtn = document.getElementById("sa-meta-refresh-pages");
+          if (refreshBtn) {
+            refreshBtn.addEventListener("click", async () => {
+              hint.textContent = "Rediscovering Facebook Pages…";
+              await SocialAgent.fetch("/connections/meta/pages", {
+                method: "POST",
+                body: JSON.stringify({ connection_id: connectionId }),
+              });
+              await refresh();
+            });
+          }
+        }
       } else {
         selectEl.hidden = true;
         selectEl.innerHTML = "";

@@ -130,7 +130,18 @@ class _FakeMetaHttp:
         if "oauth/access_token" in url:
             return 200, {"access_token": "SHORT_TOKEN", "token_type": "bearer", "expires_in": 3600}
         if "debug_token" in url:
-            return 200, {"data": {"is_valid": True, "scopes": list(READ_ONLY_SCOPES), "user_id": "99"}}
+            return 200, {
+                "data": {
+                    "is_valid": True,
+                    "scopes": list(READ_ONLY_SCOPES),
+                    "user_id": "99",
+                    "granular_scopes": [
+                        {"scope": "pages_show_list", "target_ids": ["page-1", "page-2"]},
+                        {"scope": "pages_read_engagement", "target_ids": ["page-1", "page-2"]},
+                        {"scope": "instagram_basic", "target_ids": ["ig-1"]},
+                    ],
+                }
+            }
         if url.startswith("https://graph.facebook.com/") and "/me?" in url and "accounts" not in url:
             return 200, {"id": "99", "name": "Tester"}
         if "/me/accounts" in url:
@@ -140,9 +151,9 @@ class _FakeMetaHttp:
                         "id": "page-1",
                         "name": "Exswaping Page",
                         "category": "Business",
-                        "tasks": ["MANAGE", "CREATE_CONTENT"],
                         "access_token": "PAGE_TOKEN_1",
-                        "instagram_business_account": {"id": "ig-1", "username": "exswaping"},
+                        "instagram_business_account": {"id": "ig-1", "username": "exswaping", "name": "Exswaping"},
+                        "connected_instagram_account": {"id": "ig-1", "username": "exswaping", "name": "Exswaping"},
                     },
                     {
                         "id": "page-2",
@@ -152,9 +163,16 @@ class _FakeMetaHttp:
                 ]
             }
         if "/page-1?" in url or url.rstrip("/").endswith("/page-1"):
-            return 200, {"id": "page-1", "name": "Exswaping Page", "instagram_business_account": {"id": "ig-1", "username": "exswaping"}}
-        if "/page-2?" in url:
-            return 200, {"id": "page-2", "name": "Other Page"}
+            return 200, {
+                "id": "page-1",
+                "name": "Exswaping Page",
+                "category": "Business",
+                "access_token": "PAGE_TOKEN_1",
+                "instagram_business_account": {"id": "ig-1", "username": "exswaping", "name": "Exswaping"},
+                "connected_instagram_account": {"id": "ig-1", "username": "exswaping", "name": "Exswaping"},
+            }
+        if "/page-2?" in url or url.rstrip("/").endswith("/page-2"):
+            return 200, {"id": "page-2", "name": "Other Page", "access_token": "PAGE_TOKEN_2"}
         return 500, {"error": {"message": "unexpected", "code": 1}}
 
 
@@ -226,7 +244,7 @@ def test_publishing_blocked():
     assert pub.available is False
 
 
-def test_single_page_auto_select(crypto_env, db_session):
+def test_single_page_requires_explicit_selection(crypto_env, db_session):
     class OnePage(_FakeMetaHttp):
         def __call__(self, method, url, headers=None, body=None, timeout=20.0):
             if "/me/accounts" in url:
@@ -237,6 +255,7 @@ def test_single_page_auto_select(crypto_env, db_session):
                             "name": "Only",
                             "access_token": "PAGE_TOKEN_1",
                             "instagram_business_account": {"id": "ig-1", "username": "only"},
+                            "connected_instagram_account": {"id": "ig-1", "username": "only"},
                         }
                     ]
                 }
@@ -247,8 +266,47 @@ def test_single_page_auto_select(crypto_env, db_session):
     state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
     out = handle_meta_callback(db_session, actor="admin", state=state, code="c", adapter=adapter)
     assert out["ok"]
-    assert out["needs_page_selection"] is False
-    assert out["connection"]["selected_page_id"] == "page-1"
+    assert out["needs_page_selection"] is True
+    assert out["connection"]["selected_page_id"] is None
+    assert out["pages_discovered"] == 1
+    conn = db_session.query(SocialConnection).one()
+    assert conn.status == "connected_pending_selection"
+
+
+def test_granular_scope_fallback_when_me_accounts_empty(crypto_env, db_session):
+    class EmptyAccounts(_FakeMetaHttp):
+        def __call__(self, method, url, headers=None, body=None, timeout=20.0):
+            if "/me/accounts" in url:
+                return 200, {"data": []}
+            return super().__call__(method, url, headers, body, timeout)
+
+    adapter = MetaProviderAdapter(http=EmptyAccounts())
+    start_meta_oauth(db_session, actor="admin", adapter=adapter)
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    out = handle_meta_callback(db_session, actor="admin", state=state, code="AUTH_CODE", adapter=adapter)
+    assert out["ok"]
+    assert out["pages_discovered"] == 2
+    assert out["discovery_source"] == "granular_scopes"
+    assert out["needs_page_selection"] is True
+    names = {d["page_name"] for d in out["connection"]["destinations"]}
+    assert names == {"Exswaping Page", "Other Page"}
+
+
+def test_select_rediscovers_instagram(crypto_env, db_session):
+    http = _FakeMetaHttp()
+    adapter = MetaProviderAdapter(http=http)
+    start_meta_oauth(db_session, actor="admin", adapter=adapter)
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    handle_meta_callback(db_session, actor="admin", state=state, code="AUTH_CODE", adapter=adapter)
+    conn = db_session.query(SocialConnection).one()
+    selected = select_meta_destination(
+        db_session, actor="admin", connection_id=conn.id, page_id="page-1", adapter=adapter
+    )
+    assert selected["ok"]
+    assert selected["connection"]["selected_page_id"] == "page-1"
+    assert selected["connection"]["selected_instagram_id"] == "ig-1"
+    assert selected["instagram_rediscovered"]["found"] is True
+    assert selected["instagram_rediscovered"]["username"] == "exswaping"
 
 
 def test_api_routes_meta(crypto_env, monkeypatch):

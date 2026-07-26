@@ -59,14 +59,39 @@ def assert_meta_publishing_disabled() -> dict[str, Any]:
 def _safe_destinations(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for p in pages:
+        ig_biz = p.get("instagram_business_account")
+        ig_conn = p.get("connected_instagram_account")
+        if not isinstance(ig_biz, dict):
+            ig_biz = None
+        if not isinstance(ig_conn, dict):
+            ig_conn = None
         out.append(
             {
                 "page_id": p.get("page_id"),
                 "page_name": p.get("page_name"),
                 "category": p.get("category"),
                 "tasks": p.get("tasks") or [],
+                "instagram_business_account": (
+                    {
+                        "id": str(ig_biz["id"]) if ig_biz and ig_biz.get("id") else None,
+                        "username": (ig_biz or {}).get("username"),
+                        "name": (ig_biz or {}).get("name"),
+                    }
+                    if ig_biz and ig_biz.get("id")
+                    else None
+                ),
+                "connected_instagram_account": (
+                    {
+                        "id": str(ig_conn["id"]) if ig_conn and ig_conn.get("id") else None,
+                        "username": (ig_conn or {}).get("username"),
+                        "name": (ig_conn or {}).get("name"),
+                    }
+                    if ig_conn and ig_conn.get("id")
+                    else None
+                ),
                 "instagram_account_id": p.get("instagram_account_id"),
                 "instagram_username": p.get("instagram_username"),
+                "instagram_name": p.get("instagram_name"),
                 "token_available": bool(p.get("page_access_token")),
             }
         )
@@ -138,9 +163,34 @@ def get_meta_connection(db: Session, *, workspace_id: str = WORKSPACE_DEFAULT) -
     }
     if not row:
         return base
+    # If OAuth completed but destinations are empty (granular-scope /me/accounts gap), rediscover.
+    try:
+        existing_dests = json.loads(row.destinations_json or "[]")
+    except json.JSONDecodeError:
+        existing_dests = []
+    if row.credentials_encrypted and not existing_dests and row.status in {
+        "connected_pending_selection",
+        "connected_no_pages",
+        "connected",
+        "connected_no_instagram",
+    }:
+        refreshed = rediscover_meta_pages(
+            db, actor="system:auto-rediscover", connection_id=row.id, workspace_id=workspace_id, adapter=adapter
+        )
+        if refreshed.get("ok"):
+            row = (
+                db.query(SocialConnection)
+                .filter(SocialConnection.id == row.id)
+                .first()
+            ) or row
     pub = _public_connection(row)
     base["connection"] = pub
-    base["connection_state"] = "CONNECTED" if (row.status == "connected" or (row.health or "").upper() == "CONNECTED") else (row.health or row.status or "DEGRADED")
+    base["connection_state"] = (
+        "CONNECTED"
+        if (row.status == "connected" or (row.health or "").upper() == "CONNECTED") and row.selected_page_id
+        else (row.status or row.health or "DEGRADED")
+    )
+    base["needs_page_selection"] = bool(pub.get("destinations")) and not pub.get("selected_page_id")
     base["capabilities"] = capability_matrix(pub.get("permissions") or [])
     return base
 
@@ -306,6 +356,7 @@ def handle_meta_callback(
         return {"ok": False, "error": "pages_discovery_failed", "category": pages_result.get("category")}
 
     pages = pages_result["pages"]
+    discovery_source = pages_result.get("discovery_source") or "me_accounts"
     # Enrich Instagram via page token when list omitted details
     for p in pages:
         if p.get("page_access_token") and not p.get("instagram_account_id"):
@@ -313,6 +364,9 @@ def handle_meta_callback(
             if ig.get("ok") and ig.get("instagram"):
                 p["instagram_account_id"] = ig["instagram"]["instagram_account_id"]
                 p["instagram_username"] = ig["instagram"].get("username")
+                p["instagram_name"] = ig["instagram"].get("name")
+                p["instagram_business_account"] = ig.get("instagram_business_account")
+                p["connected_instagram_account"] = ig.get("connected_instagram_account")
 
     try:
         crypto = SocialCredentialCrypto.from_environment()
@@ -358,23 +412,17 @@ def handle_meta_callback(
 
     target.display_name = display
     target.external_account_id = me["id"]
-    target.status = "connected_pending_selection" if len(safe_dests) != 1 else "connected"
+    # Never auto-select a Page — operator must choose explicitly, even if only one Page exists.
+    target.status = "connected_pending_selection" if safe_dests else "connected_no_pages"
     target.health = "CONNECTED"
     target.permissions_json = json.dumps(granted)
     target.credentials_encrypted = envelope
     target.destinations_json = json.dumps(safe_dests)
+    target.selected_page_id = None
+    target.selected_instagram_id = None
     target.token_expires_at = expires_at
     target.last_checked_at = datetime.utcnow()
     target.created_by = actor
-
-    if len(safe_dests) == 1:
-        only = safe_dests[0]
-        target.selected_page_id = only.get("page_id")
-        target.selected_instagram_id = only.get("instagram_account_id")
-        if not only.get("instagram_account_id"):
-            target.status = "connected_no_instagram"
-        else:
-            target.status = "connected"
 
     db.flush()
     _audit(
@@ -387,6 +435,8 @@ def handle_meta_callback(
             "pages_discovered": len(safe_dests),
             "instagram_accounts_discovered": sum(1 for d in safe_dests if d.get("instagram_account_id")),
             "granted_permission_count": len(granted),
+            "discovery_source": discovery_source,
+            "needs_page_selection": True,
         },
     )
     _audit(
@@ -401,7 +451,12 @@ def handle_meta_callback(
         actor=actor,
         action="meta.pages_discovered",
         decision="allow",
-        detail={"connection_id": target.id, "count": len(safe_dests)},
+        detail={
+            "connection_id": target.id,
+            "count": len(safe_dests),
+            "discovery_source": discovery_source,
+            "page_names": [d.get("page_name") for d in safe_dests],
+        },
     )
     if oauth_row and oauth_row.purpose == "reconnect":
         _audit(
@@ -417,7 +472,8 @@ def handle_meta_callback(
         "connection": _public_connection(target),
         "pages_discovered": len(safe_dests),
         "instagram_accounts_discovered": sum(1 for d in safe_dests if d.get("instagram_account_id")),
-        "needs_page_selection": len(safe_dests) > 1,
+        "needs_page_selection": bool(safe_dests),
+        "discovery_source": discovery_source,
         "provider_mutations": 0,
     }
 
@@ -430,7 +486,9 @@ def select_meta_destination(
     page_id: str,
     instagram_account_id: str | None = None,
     workspace_id: str = WORKSPACE_DEFAULT,
+    adapter: MetaProviderAdapter | None = None,
 ) -> dict[str, Any]:
+    adapter = adapter or MetaProviderAdapter()
     row = (
         db.query(SocialConnection)
         .filter(
@@ -449,13 +507,67 @@ def select_meta_destination(
     match = next((d for d in dests if str(d.get("page_id")) == str(page_id)), None)
     if not match:
         return {"ok": False, "error": "page_not_in_discovered_set"}
-    ig = instagram_account_id if instagram_account_id is not None else match.get("instagram_account_id")
-    if ig and match.get("instagram_account_id") and str(ig) != str(match.get("instagram_account_id")):
+
+    # After explicit Page selection, rediscover Instagram linkage for that Page only.
+    rediscovered_ig = None
+    ig_source = None
+    if row.credentials_encrypted:
+        try:
+            crypto = SocialCredentialCrypto.from_environment()
+            payload = crypto.decrypt_json(row.credentials_encrypted)
+            page_tokens = payload.get("page_access_tokens") or {}
+            page_token = page_tokens.get(str(page_id)) or payload.get("user_access_token")
+            if page_token:
+                ig = adapter.page_instagram(page_id=str(page_id), page_access_token=page_token)
+                if ig.get("ok"):
+                    rediscovered_ig = ig.get("instagram")
+                    if rediscovered_ig:
+                        ig_source = rediscovered_ig.get("source")
+                        match["instagram_account_id"] = rediscovered_ig.get("instagram_account_id")
+                        match["instagram_username"] = rediscovered_ig.get("username")
+                        match["instagram_name"] = rediscovered_ig.get("name")
+                        match["instagram_business_account"] = ig.get("instagram_business_account")
+                        match["connected_instagram_account"] = ig.get("connected_instagram_account")
+                    else:
+                        match["instagram_account_id"] = None
+                        match["instagram_username"] = None
+                        match["instagram_name"] = None
+                        match["instagram_business_account"] = None
+                        match["connected_instagram_account"] = None
+                    # Persist refreshed destination metadata (no tokens).
+                    for i, d in enumerate(dests):
+                        if str(d.get("page_id")) == str(page_id):
+                            dests[i] = {k: v for k, v in match.items() if k != "page_access_token"}
+                            break
+                    row.destinations_json = json.dumps(dests)
+                    # Refresh stored page token map if Graph returned a page token via get_page.
+                    fetched = adapter.get_page(page_id=str(page_id), access_token=payload.get("user_access_token") or page_token)
+                    if fetched.get("ok") and (fetched.get("page") or {}).get("page_access_token"):
+                        page_tokens[str(page_id)] = fetched["page"]["page_access_token"]
+                        payload["page_access_tokens"] = page_tokens
+                        row.credentials_encrypted = crypto.encrypt_json(payload)
+        except (CredentialCryptoConfigurationError, CredentialCryptoError):
+            pass
+
+    ig = (
+        instagram_account_id
+        if instagram_account_id is not None
+        else (rediscovered_ig or {}).get("instagram_account_id")
+        if rediscovered_ig
+        else match.get("instagram_account_id")
+    )
+    if (
+        instagram_account_id is not None
+        and match.get("instagram_account_id")
+        and str(instagram_account_id) != str(match.get("instagram_account_id"))
+    ):
         return {"ok": False, "error": "instagram_not_linked_to_page"}
+
     row.selected_page_id = str(page_id)
     row.selected_instagram_id = str(ig) if ig else None
     row.status = "connected" if ig else "connected_no_instagram"
     row.updated_at = datetime.utcnow()
+    row.last_checked_at = datetime.utcnow()
     db.flush()
     _audit(
         db,
@@ -465,10 +577,120 @@ def select_meta_destination(
         detail={
             "connection_id": row.id,
             "page_id": row.selected_page_id,
+            "page_name": match.get("page_name"),
             "instagram_selected": bool(row.selected_instagram_id),
+            "instagram_username": match.get("instagram_username"),
+            "instagram_source": ig_source,
+            "instagram_rediscovered": rediscovered_ig is not None,
         },
     )
-    return {"ok": True, "connection": _public_connection(row)}
+    return {
+        "ok": True,
+        "connection": _public_connection(row),
+        "instagram_rediscovered": {
+            "found": bool(rediscovered_ig),
+            "source": ig_source,
+            "instagram_account_id": (rediscovered_ig or {}).get("instagram_account_id") if rediscovered_ig else None,
+            "username": (rediscovered_ig or {}).get("username") if rediscovered_ig else None,
+        },
+        "provider_mutations": 0,
+    }
+
+
+def rediscover_meta_pages(
+    db: Session,
+    *,
+    actor: str,
+    connection_id: int | None = None,
+    workspace_id: str = WORKSPACE_DEFAULT,
+    adapter: MetaProviderAdapter | None = None,
+) -> dict[str, Any]:
+    """Re-run Page discovery for an existing Meta connection without publishing."""
+    adapter = adapter or MetaProviderAdapter()
+    q = db.query(SocialConnection).filter(
+        SocialConnection.provider == "meta", SocialConnection.workspace_id == workspace_id
+    )
+    if connection_id is not None:
+        q = q.filter(SocialConnection.id == int(connection_id))
+    row = q.order_by(SocialConnection.id.desc()).first()
+    if not row:
+        return {"ok": False, "error": "not_found"}
+    if not row.credentials_encrypted:
+        return {"ok": False, "error": "missing_credentials"}
+    try:
+        crypto = SocialCredentialCrypto.from_environment()
+        payload = crypto.decrypt_json(row.credentials_encrypted)
+    except CredentialCryptoConfigurationError:
+        return {"ok": False, "error": "CREDENTIAL_KEY_MISSING"}
+    except CredentialCryptoError:
+        return {"ok": False, "error": "decrypt_failed"}
+    token = payload.get("user_access_token")
+    if not token:
+        return {"ok": False, "error": "token_missing"}
+
+    pages_result = adapter.list_pages(access_token=token)
+    if not pages_result.get("ok"):
+        return {
+            "ok": False,
+            "error": "pages_discovery_failed",
+            "category": pages_result.get("category"),
+            "discovery_source": pages_result.get("discovery_source"),
+        }
+    pages = pages_result["pages"]
+    for p in pages:
+        if p.get("page_access_token") and not p.get("instagram_account_id"):
+            ig = adapter.page_instagram(page_id=p["page_id"], page_access_token=p["page_access_token"])
+            if ig.get("ok") and ig.get("instagram"):
+                p["instagram_account_id"] = ig["instagram"]["instagram_account_id"]
+                p["instagram_username"] = ig["instagram"].get("username")
+                p["instagram_name"] = ig["instagram"].get("name")
+                p["instagram_business_account"] = ig.get("instagram_business_account")
+                p["connected_instagram_account"] = ig.get("connected_instagram_account")
+
+    safe_dests = _safe_destinations(pages)
+    page_token_map = {p["page_id"]: p.get("page_access_token") for p in pages if p.get("page_id") and p.get("page_access_token")}
+    if page_token_map:
+        existing = payload.get("page_access_tokens") or {}
+        existing.update(page_token_map)
+        payload["page_access_tokens"] = existing
+        try:
+            row.credentials_encrypted = crypto.encrypt_json(payload)
+        except CredentialCryptoError:
+            return {"ok": False, "error": "encrypt_failed"}
+
+    row.destinations_json = json.dumps(safe_dests)
+    # Preserve an existing explicit selection only if it remains in the rediscovered set.
+    if row.selected_page_id and not any(str(d.get("page_id")) == str(row.selected_page_id) for d in safe_dests):
+        row.selected_page_id = None
+        row.selected_instagram_id = None
+    if not row.selected_page_id:
+        row.status = "connected_pending_selection" if safe_dests else "connected_no_pages"
+    row.last_checked_at = datetime.utcnow()
+    db.flush()
+    _audit(
+        db,
+        actor=actor,
+        action="meta.pages_rediscovered",
+        decision="allow",
+        detail={
+            "connection_id": row.id,
+            "count": len(safe_dests),
+            "discovery_source": pages_result.get("discovery_source"),
+            "page_names": [d.get("page_name") for d in safe_dests],
+            "needs_page_selection": not bool(row.selected_page_id),
+        },
+    )
+    return {
+        "ok": True,
+        "connection": _public_connection(row),
+        "pages_discovered": len(safe_dests),
+        "instagram_accounts_discovered": sum(1 for d in safe_dests if d.get("instagram_account_id")),
+        "discovery_source": pages_result.get("discovery_source"),
+        "pagination_used": bool(pages_result.get("pagination_used")),
+        "needs_page_selection": not bool(row.selected_page_id),
+        "destinations": safe_dests,
+        "provider_mutations": 0,
+    }
 
 
 def meta_health_check(
