@@ -71,7 +71,7 @@ document.addEventListener("DOMContentLoaded", () => {
   async function previewDraft(id) {
     const data = await SocialAgent.fetch("/publishing/preview", {
       method: "POST",
-      body: JSON.stringify({ content_id: Number(id), destinations: ["telegram", "facebook", "instagram"] }),
+      body: JSON.stringify({ content_id: Number(id), destinations: ["facebook_page", "instagram_feed"] }),
     });
     resultEl.innerHTML = "<h3 class='h6'>Dry-run preview</h3><pre class='small text-light mb-0' style='white-space:pre-wrap'>"
       + escapeHtml(JSON.stringify(data, null, 2)) + "</pre>";

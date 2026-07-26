@@ -136,6 +136,17 @@
   color: #f1f5f9; font-size: 0.92rem;
 }
 
+.sa-workflow {
+  list-style: none; display: flex; flex-wrap: wrap; gap: 0.35rem; padding: 0; margin: 0;
+}
+.sa-workflow li {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 0.25rem 0.55rem; border-radius: 999px;
+  border: 1px solid var(--sa-border); color: var(--sa-muted); background: #0f172a;
+}
+.sa-workflow li.active { color: #bae6fd; border-color: rgba(56, 189, 248, 0.35); }
+.sa-workflow li.current { color: #e0f2fe; background: rgba(56, 189, 248, 0.12); }
+
 @media (max-width: 900px) {
   .sa-layout { grid-template-columns: 1fr; }
   .sa-nav {

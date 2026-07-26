@@ -9,7 +9,7 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
-from src.social_agent.integrations import integration_matrix, meta_status, telegram_adapter_status
+from src.social_agent.integrations import integration_matrix
 from src.social_agent.models import (
     SocialAgentAuditEvent,
     SocialAgentConversation,
@@ -394,56 +394,76 @@ def publish_preview(
     actor: str | None,
     content_id: int,
     destinations: list[str],
+    content: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Backward-compatible alias → canonical publishing dry-run (never publishes)."""
+    from src.social_agent.publishing.service import run_publishing_dry_run
+
     draft = get_draft(db, content_id)
     if not draft.get("ok"):
         return draft
-    dest_results = []
-    for dest in destinations:
-        provider = dest.lower()
-        if provider in {"facebook", "instagram"}:
-            meta = meta_status()
-            dest_results.append(
+    # Telegram and other non-Meta destinations stay fail-closed and are not rendered.
+    meta_dests = []
+    skipped = []
+    for dest in destinations or []:
+        d = str(dest).strip().lower()
+        if d in {"telegram", "x", "linkedin", "discord", "youtube", "tiktok"}:
+            skipped.append(
                 {
-                    "destination": provider,
-                    "ready": meta["configured"] is True and False,  # not connected yet
-                    "reason": "meta_not_connected" if meta["configured"] else "meta_credentials_missing",
-                }
-            )
-        elif provider == "telegram":
-            tg = telegram_adapter_status()
-            dest_results.append(
-                {
-                    "destination": "telegram",
+                    "destination": d,
                     "ready": False,
-                    "reason": "telegram_live_publish_fail_closed",
-                    "adapter": tg,
+                    "reason": "provider_not_in_dry_run_pipeline",
                 }
             )
-        else:
-            dest_results.append(
-                {"destination": provider, "ready": False, "reason": "provider_not_started"}
-            )
-    idem = f"preview:{content_id}:{uuid.uuid4().hex[:12]}"
-    _audit(
+            continue
+        meta_dests.append(d)
+    if not meta_dests:
+        # Preserve previous fail-closed preview shape when only non-Meta dests requested.
+        idem = f"preview:{content_id}:{uuid.uuid4().hex[:12]}"
+        _audit(
+            db,
+            actor=actor,
+            action="publishing.preview",
+            tool_name="publishing.preview",
+            decision="dry_run",
+            dry_run=True,
+            detail={"content_id": content_id, "destinations": skipped, "idempotency_key": idem},
+        )
+        return {
+            "ok": True,
+            "dry_run": True,
+            "published": False,
+            "idempotency_key": idem,
+            "content": draft["item"],
+            "variants": draft["variants"],
+            "destinations": skipped,
+            "provider_called": False,
+            "provider_http_posts": 0,
+            "meta_provider_mutations": 0,
+            "external_ids": {},
+            "message": "No Meta destinations selected. Live publishing remains disabled.",
+        }
+    out = run_publishing_dry_run(
         db,
         actor=actor,
-        action="publishing.preview",
-        tool_name="publishing.preview",
-        decision="dry_run",
-        dry_run=True,
-        detail={"content_id": content_id, "destinations": dest_results, "idempotency_key": idem},
+        destinations=meta_dests,
+        content=content,
+        content_id=int(content_id),
     )
-    return {
-        "ok": True,
-        "dry_run": True,
-        "idempotency_key": idem,
-        "content": draft["item"],
-        "variants": draft["variants"],
-        "destinations": dest_results,
-        "provider_called": False,
-        "external_ids": {},
-    }
+    out["content_item"] = draft["item"]
+    out["variants"] = draft["variants"]
+    out["skipped_destinations"] = skipped
+    # Legacy key used by Content Studio UI.
+    out["destinations"] = [
+        {
+            "destination": p.get("destination"),
+            "ready": out.get("ready_for_publishing") is True and bool(p.get("would_send") is False),
+            "reason": "dry_run_payload_ready" if out.get("validation", {}).get("ok") else "validation_failed",
+            "payload_preview": True,
+        }
+        for p in (out.get("payloads") or [])
+    ] + skipped
+    return out
 
 
 def execute_tool(
@@ -559,13 +579,36 @@ def execute_tool(
                 )
             db.flush()
             result = {"ok": True, "content_id": created["content_id"], "variants": generated["variants"], "ai_used": False}
-    elif tool_name == "publishing.preview":
-        result = publish_preview(
-            db,
-            actor=actor,
-            content_id=int(arguments["content_id"]),
-            destinations=list(arguments.get("destinations") or ["telegram"]),
-        )
+    elif tool_name in {"publishing.preview", "publishing.dry_run"}:
+        from src.social_agent.publishing.service import run_publishing_dry_run
+
+        content_id = arguments.get("content_id")
+        destinations = list(arguments.get("destinations") or ["facebook_page"])
+        if content_id is not None:
+            result = publish_preview(
+                db,
+                actor=actor,
+                content_id=int(content_id),
+                destinations=destinations,
+                content=arguments.get("content") if isinstance(arguments.get("content"), dict) else None,
+            )
+        else:
+            result = run_publishing_dry_run(
+                db,
+                actor=actor,
+                destinations=destinations,
+                content=arguments.get("content") if isinstance(arguments.get("content"), dict) else {
+                    "text": arguments.get("text") or arguments.get("body") or arguments.get("brief") or "",
+                    "hashtags": arguments.get("hashtags") or [],
+                    "images": arguments.get("images") or [],
+                    "videos": arguments.get("videos") or [],
+                    "link": arguments.get("link"),
+                    "cta": arguments.get("cta"),
+                    "language": arguments.get("language") or "EN",
+                    "brand_voice": arguments.get("brand_voice"),
+                    "title": arguments.get("title"),
+                },
+            )
     elif tool_name == "media.list_assets":
         result = {"ok": True, "assets": [], "message": "Media library empty — upload not yet enabled in this release."}
     elif tool_name == "brand.search_knowledge":
@@ -623,7 +666,100 @@ def chat_turn(
             "пост",
         )
     )
-    if wants_draft:
+    wants_publish = any(
+        k in lower
+        for k in (
+            "publish",
+            "dry-run",
+            "dry run",
+            "preview publish",
+            "post to facebook",
+            "post to instagram",
+            "опублик",
+        )
+    )
+    if wants_publish:
+        destinations: list[str] = []
+        if "carousel" in lower:
+            destinations.append("instagram_carousel")
+        if "story" in lower or "stories" in lower:
+            destinations.append("instagram_story")
+        if "instagram" in lower or " ig" in lower:
+            if "instagram_feed" not in destinations and "instagram_carousel" not in destinations and "instagram_story" not in destinations:
+                destinations.append("instagram_feed")
+        if "facebook" in lower or " fb" in lower or "page" in lower:
+            destinations.append("facebook_page")
+        if not destinations:
+            destinations = ["facebook_page"]
+
+        draft_result = execute_tool(
+            db,
+            actor=actor,
+            perms=perms,
+            tool_name="content.generate_variants",
+            arguments={
+                "brief": text,
+                "title": (text[:80] or "Publish dry-run"),
+                "platforms": ["facebook", "instagram"],
+                "languages": ["EN"],
+                "persist": True,
+            },
+            dry_run=False,
+        )
+        tool_calls.append({"tool": "content.generate_variants", "result": draft_result})
+        if not draft_result.get("ok"):
+            reply_parts.append(f"Could not create draft: {draft_result.get('error') or draft_result.get('message')}")
+        else:
+            content_id = int(draft_result["content_id"])
+            # Default media for IG destinations so validation can produce a payload preview.
+            content_payload: dict[str, Any] = {
+                "text": text,
+                "hashtags": ["Exswaping", "USDT"],
+                "language": "EN",
+                "brand_voice": "clear, trustworthy",
+            }
+            if any(d.startswith("instagram") for d in destinations):
+                if "carousel" in lower:
+                    content_payload["images"] = [
+                        {"url": "https://cdn.example.com/rates-1.jpg"},
+                        {"url": "https://cdn.example.com/rates-2.jpg"},
+                    ]
+                else:
+                    content_payload["images"] = [{"url": "https://cdn.example.com/rates.jpg"}]
+            dry = execute_tool(
+                db,
+                actor=actor,
+                perms=perms,
+                tool_name="publishing.dry_run",
+                arguments={"content_id": content_id, "destinations": destinations, "content": content_payload},
+                dry_run=True,
+            )
+            tool_calls.append({"tool": "publishing.dry_run", "result": dry})
+            reply_parts.append(f"Draft created: #{content_id}")
+            validation = dry.get("validation") or {}
+            reply_parts.append(
+                "Validation: "
+                + ("OK" if validation.get("ok") else "FAILED")
+                + (f" · status={dry.get('status')}" if dry.get("status") else "")
+            )
+            payloads = dry.get("payloads") or []
+            if payloads:
+                summary = ", ".join(
+                    f"{p.get('destination')} → {p.get('endpoint') or ((p.get('steps') or [{}])[0].get('endpoint'))}"
+                    for p in payloads
+                )
+                reply_parts.append(f"Payload preview: {summary}")
+            else:
+                reply_parts.append("Payload preview: none (fix failed).")
+            if dry.get("ready_for_publishing"):
+                reply_parts.append("Ready for publishing (dry-run only). Nothing was published.")
+            else:
+                reply_parts.append("Not ready for publishing. Nothing was published.")
+            reply_parts.append(
+                f"Dry-run id #{dry.get('dry_run_id')} · hash={dry.get('payload_hash')} · "
+                f"provider_called={dry.get('provider_called')} · META_PROVIDER_MUTATIONS={dry.get('meta_provider_mutations', 0)}"
+            )
+    elif wants_draft:
         platforms = ["facebook", "instagram", "telegram", "x", "linkedin"]
         languages = ["EN"]
         if "armenian" in lower or "հայերեն" in lower or " hy" in lower:
@@ -667,8 +803,8 @@ def chat_turn(
         reply_parts.append(
             "I'm the Social Agent assistant. I can create drafts, generate platform variants, "
             "check connection status, and prepare dry-run publish previews. "
-            "Live publishing requires confirmation and an authorized canary. "
-            "Try: “Create a Telegram post about USDT to AMD”."
+            "Live Meta publishing is disabled — publish commands return draft + validation + payload preview only. "
+            "Try: “Publish today's rates to Facebook” or “Create a Telegram post about USDT to AMD”."
         )
         reply_parts.append(f"Available tools: {', '.join(t['name'] for t in list_tools()[:8])}…")
 

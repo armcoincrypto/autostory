@@ -118,3 +118,25 @@ class SocialIdempotencyRecord(Base):
     action = Column(String(128), nullable=False)
     result_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SocialPublishDryRun(Base):
+    """Persisted publishing dry-run previews — never a live publish receipt."""
+
+    __tablename__ = "social_publish_dry_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    actor = Column(String(128), nullable=True)
+    content_id = Column(Integer, nullable=True, index=True)
+    destinations_json = Column(Text, nullable=False, default="[]")
+    content_snapshot_json = Column(Text, nullable=True)
+    validation_json = Column(Text, nullable=True)
+    payloads_json = Column(Text, nullable=True)
+    warnings_json = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=False, index=True)
+    status = Column(String(64), nullable=False, default="READY", index=True)
+    provider_called = Column(Boolean, nullable=False, default=False)
+    provider_http_posts = Column(Integer, nullable=False, default=0)
+    idempotency_key = Column(String(128), nullable=True, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

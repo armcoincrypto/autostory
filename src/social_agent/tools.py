@@ -86,12 +86,30 @@ def _tools() -> list[ToolSpec]:
             provider_dependency="ai",
         ),
         ToolSpec(
-            name="publishing.preview",
-            description="Build a dry-run publish preview for selected destinations.",
+            name="publishing.dry_run",
+            description="Validate content and render Meta provider payloads without calling Graph API.",
             side_effect_class=SideEffectClass.READ_ONLY,
             required_permission="publishing.publish",
             confirmation_required=False,
             dry_run_support=True,
+            input_schema={
+                "destinations": "string[]",
+                "content_id": "number?",
+                "content": "object?",
+            },
+        ),
+        ToolSpec(
+            name="publishing.preview",
+            description="Alias for publishing.dry_run — build payload previews only.",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="publishing.publish",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={
+                "destinations": "string[]",
+                "content_id": "number?",
+                "content": "object?",
+            },
         ),
         ToolSpec(
             name="publishing.publish",

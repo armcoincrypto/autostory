@@ -1,13 +1,209 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
 <section class="sa-card">
-  <h2>Publishing</h2>
-  <p class="sa-muted mb-3">
-    Live multi-destination publishing is not enabled in this release.
-    Use Content Studio dry-run preview. External mutations require confirmation and canary authorization.
+  <h2>Publishing Preview</h2>
+  <p class="sa-muted mb-2">
+    Dry-run only. Payloads are built exactly as they would be sent to Meta Graph — nothing is posted.
+    Live publishing stays disabled (<code>META_*_PUBLISHING_ENABLED=false</code>).
   </p>
-  <div class="sa-empty">
-    Status: <strong>preview only</strong>. Tool <code>publishing.publish</code> returns UNSUPPORTED until canary authorization.
-  </div>
+  <ol class="sa-workflow mb-3" id="sa-workflow">
+    <li data-step="draft" class="active">Draft</li>
+    <li data-step="destination">Select destination</li>
+    <li data-step="preview">Preview</li>
+    <li data-step="validate">Validate</li>
+    <li data-step="payload">Provider payload</li>
+    <li data-step="ready">Ready</li>
+  </ol>
 </section>
+
+<section class="sa-card">
+  <h2>Draft</h2>
+  <form id="sa-pub-form" class="row g-2">
+    <div class="col-md-8">
+      <label class="form-label small mb-0" for="sa-pub-text">Text / caption</label>
+      <textarea class="form-control form-control-sm" id="sa-pub-text" rows="4" placeholder="Today's USDT → AMD rates…" required></textarea>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label small mb-0" for="sa-pub-hashtags">Hashtags</label>
+      <input class="form-control form-control-sm mb-2" id="sa-pub-hashtags" placeholder="Exswaping USDT AMD" />
+      <label class="form-label small mb-0" for="sa-pub-link">Link</label>
+      <input class="form-control form-control-sm mb-2" id="sa-pub-link" placeholder="https://…" />
+      <label class="form-label small mb-0" for="sa-pub-images">Image URLs (comma / newline)</label>
+      <textarea class="form-control form-control-sm" id="sa-pub-images" rows="2" placeholder="https://cdn.example.com/a.jpg"></textarea>
+    </div>
+    <div class="col-12">
+      <div class="form-label small mb-1">Destinations</div>
+      <div class="d-flex flex-wrap gap-3">
+        <label class="small"><input type="checkbox" name="dest" value="facebook_page" checked /> Facebook Page</label>
+        <label class="small"><input type="checkbox" name="dest" value="instagram_feed" /> Instagram Feed</label>
+        <label class="small"><input type="checkbox" name="dest" value="instagram_carousel" /> Instagram Carousel</label>
+        <label class="small"><input type="checkbox" name="dest" value="instagram_story" /> Instagram Story</label>
+      </div>
+    </div>
+    <div class="col-12 d-flex gap-2 mt-2">
+      <button type="submit" class="btn btn-primary btn-sm" id="sa-pub-run">Validate &amp; dry-run</button>
+      <button type="button" class="btn btn-outline-light btn-sm" id="sa-pub-refresh-history">Refresh history</button>
+      <span class="sa-muted small align-self-center">Never publishes · No Graph POST</span>
+    </div>
+  </form>
+</section>
+
+<section class="sa-card">
+  <h2>Result</h2>
+  <div id="sa-pub-status" class="sa-muted mb-2">No dry-run yet.</div>
+  <div class="sa-grid mb-3" id="sa-pub-stats" hidden>
+    <div class="sa-stat"><div class="label">Status</div><div class="value" id="sa-stat-status">—</div></div>
+    <div class="sa-stat"><div class="label">Dry-run ID</div><div class="value" id="sa-stat-id">—</div></div>
+    <div class="sa-stat"><div class="label">Payload hash</div><div class="value" id="sa-stat-hash" style="font-size:0.75rem;word-break:break-all">—</div></div>
+    <div class="sa-stat"><div class="label">Provider POST</div><div class="value" id="sa-stat-posts">0</div></div>
+  </div>
+  <div id="sa-pub-validation" class="mb-3"></div>
+  <div id="sa-pub-warnings" class="mb-3"></div>
+  <div id="sa-pub-payloads"></div>
+</section>
+
+<section class="sa-card">
+  <h2>Dry-run history</h2>
+  <div id="sa-pub-history" class="sa-muted">Loading…</div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const statusEl = document.getElementById("sa-pub-status");
+  const payloadsEl = document.getElementById("sa-pub-payloads");
+  const validationEl = document.getElementById("sa-pub-validation");
+  const warningsEl = document.getElementById("sa-pub-warnings");
+  const historyEl = document.getElementById("sa-pub-history");
+  const statsEl = document.getElementById("sa-pub-stats");
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+  }
+
+  function setWorkflow(step) {
+    const order = ["draft", "destination", "preview", "validate", "payload", "ready"];
+    const idx = order.indexOf(step);
+    document.querySelectorAll("#sa-workflow li").forEach((li) => {
+      const i = order.indexOf(li.getAttribute("data-step"));
+      li.classList.toggle("active", i <= idx);
+      li.classList.toggle("current", i === idx);
+    });
+  }
+
+  function splitUrls(raw) {
+    return String(raw || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  function renderResult(data) {
+    statsEl.hidden = false;
+    document.getElementById("sa-stat-status").textContent = data.status || "—";
+    document.getElementById("sa-stat-id").textContent = data.dry_run_id || "—";
+    document.getElementById("sa-stat-hash").textContent = data.payload_hash || "—";
+    document.getElementById("sa-stat-posts").textContent = String(data.provider_http_posts || 0);
+    statusEl.innerHTML = "<strong>" + escapeHtml(data.message || "Dry-run complete") + "</strong>"
+      + " · published=" + (data.published === true ? "true" : "false")
+      + " · provider_called=" + (data.provider_called === true ? "true" : "false")
+      + " · META_PROVIDER_MUTATIONS=" + (data.meta_provider_mutations || 0);
+
+    const val = data.validation || {};
+    const destReports = val.destinations || [];
+    let vHtml = "<h3 class='h6'>Validation report</h3>";
+    if (val.errors && val.errors.length) {
+      vHtml += "<ul class='sa-list'>" + val.errors.map((e) => "<li class='text-warning'>" + escapeHtml(e.code + ": " + e.message) + "</li>").join("") + "</ul>";
+    }
+    vHtml += destReports.map((d) => {
+      const errs = (d.errors || []).map((e) => "<li class='text-warning'>" + escapeHtml(e.code + ": " + e.message) + "</li>").join("");
+      const warns = (d.warnings || []).map((e) => "<li class='sa-muted'>" + escapeHtml(e.code + ": " + e.message) + "</li>").join("");
+      return "<div class='sa-variant'><div class='meta'>" + escapeHtml(d.destination) + " · " + (d.ok ? "OK" : "FAILED") + "</div>"
+        + (errs || warns ? "<ul class='sa-list mb-0'>" + errs + warns + "</ul>" : "<div class='sa-muted small'>No issues</div>")
+        + "</div>";
+    }).join("");
+    validationEl.innerHTML = vHtml;
+
+    const warnings = data.warnings || [];
+    warningsEl.innerHTML = warnings.length
+      ? ("<h3 class='h6'>Warnings</h3><ul class='sa-list'>" + warnings.map((w) => "<li>" + escapeHtml(w.code + ": " + w.message) + "</li>").join("") + "</ul>")
+      : "";
+
+    const payloads = data.payloads || [];
+    if (!payloads.length) {
+      payloadsEl.innerHTML = "<div class='sa-empty'>No provider payloads (fix blocked render).</div>";
+      setWorkflow(val.ok ? "preview" : "validate");
+      return;
+    }
+    payloadsEl.innerHTML = "<h3 class='h6'>Provider payload summary</h3>" + payloads.map((p) => {
+      const title = escapeHtml((p.destination || "").replace(/_/g, " "));
+      const endpoint = escapeHtml(p.endpoint || ((p.steps && p.steps[0] && p.steps[0].endpoint) || "—"));
+      const body = escapeHtml(JSON.stringify(p, null, 2));
+      return "<div class='sa-variant'><div class='meta'>" + title + " · would_send=" + (p.would_send === true) + " · provider_called=" + (p.provider_called === true)
+        + "</div><div class='small sa-muted mb-1'>endpoint " + endpoint + "</div>"
+        + "<pre class='small text-light mb-0' style='white-space:pre-wrap;max-height:280px;overflow:auto'>" + body + "</pre></div>";
+    }).join("");
+    setWorkflow(data.ready_for_publishing ? "ready" : "payload");
+  }
+
+  async function loadHistory() {
+    const data = await SocialAgent.fetch("/publishing/history");
+    const items = data.items || [];
+    if (!items.length) {
+      historyEl.innerHTML = "<div class='sa-empty'>No dry-runs yet.</div>";
+      return;
+    }
+    historyEl.innerHTML = items.map((it) => (
+      "<div class='sa-variant d-flex justify-content-between gap-2 align-items-start'>"
+      + "<div><div class='meta'>#" + it.id + " · " + escapeHtml(it.status) + " · " + escapeHtml((it.destinations || []).join(", "))
+      + "</div><div class='small sa-muted'>hash " + escapeHtml(it.payload_hash) + "</div></div>"
+      + "<button type='button' class='btn btn-outline-light btn-sm' data-open='" + it.id + "'>Open</button>"
+      + "</div>"
+    )).join("");
+    historyEl.querySelectorAll("[data-open]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-open");
+        const prev = await SocialAgent.fetch("/publishing/preview/" + id);
+        renderResult(prev);
+      });
+    });
+  }
+
+  document.getElementById("sa-pub-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const destinations = Array.from(document.querySelectorAll('input[name="dest"]:checked')).map((el) => el.value);
+    setWorkflow(destinations.length ? "destination" : "draft");
+    const btn = document.getElementById("sa-pub-run");
+    btn.disabled = true;
+    statusEl.textContent = "Running dry-run…";
+    try {
+      const images = splitUrls(document.getElementById("sa-pub-images").value).map((url) => ({ url }));
+      const hashtags = document.getElementById("sa-pub-hashtags").value.trim().split(/\s+/).filter(Boolean);
+      const data = await SocialAgent.fetch("/publishing/dry-run", {
+        method: "POST",
+        body: JSON.stringify({
+          destinations,
+          content: {
+            text: document.getElementById("sa-pub-text").value,
+            hashtags,
+            images,
+            link: document.getElementById("sa-pub-link").value.trim() || null,
+            language: "EN",
+            brand_voice: "clear, trustworthy",
+          },
+        }),
+      });
+      setWorkflow("preview");
+      renderResult(data);
+      await loadHistory();
+    } catch (err) {
+      statusEl.innerHTML = "<span class='text-danger'>" + escapeHtml(err.message) + "</span>";
+      if (err.data) renderResult(err.data);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("sa-pub-refresh-history").addEventListener("click", () => loadHistory().catch(console.error));
+  setWorkflow("draft");
+  loadHistory().catch((e) => { historyEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>"; });
+});
+</script>
 {% endblock %}

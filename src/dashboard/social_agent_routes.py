@@ -28,7 +28,7 @@ NAV = [
     {"id": "overview", "label": "Overview", "path": "/social-agent"},
     {"id": "assistant", "label": "AI Assistant", "path": "/social-agent/assistant"},
     {"id": "content", "label": "Content Studio", "path": "/social-agent/content"},
-    {"id": "publishing", "label": "Publishing", "path": "/social-agent/publishing", "badge": "preview"},
+    {"id": "publishing", "label": "Publishing Preview", "path": "/social-agent/publishing", "badge": "dry_run"},
     {"id": "calendar", "label": "Calendar", "path": "/social-agent/calendar", "badge": "coming_later"},
     {"id": "media", "label": "Media Library", "path": "/social-agent/media", "badge": "coming_later"},
     {"id": "accounts", "label": "Social Accounts", "path": "/social-agent/accounts"},
@@ -286,19 +286,90 @@ def api_get_content(content_id: int):
         return jsonify(out), (200 if out.get("ok") else 404)
 
 
+@social_agent_api.route("/publishing/dry-run", methods=["POST"])
+def api_publishing_dry_run():
+    data = request.get_json(silent=True) or {}
+    destinations = list(data.get("destinations") or [])
+    content = data.get("content") if isinstance(data.get("content"), dict) else {}
+    content_id = data.get("content_id")
+    if content_id is not None:
+        try:
+            content_id = int(content_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "content_id_invalid"}), 400
+    with get_db_context() as db:
+        from src.social_agent.publishing.service import run_publishing_dry_run
+
+        if content_id is not None and not content:
+            out = services.publish_preview(
+                db,
+                actor=_actor(),
+                content_id=content_id,
+                destinations=destinations or ["facebook_page"],
+            )
+        else:
+            out = run_publishing_dry_run(
+                db,
+                actor=_actor(),
+                destinations=destinations,
+                content=content,
+                content_id=content_id,
+            )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/publishing/history", methods=["GET"])
+def api_publishing_history():
+    limit = request.args.get("limit", 50)
+    try:
+        limit_i = int(limit)
+    except (TypeError, ValueError):
+        limit_i = 50
+    with get_db_context() as db:
+        from src.social_agent.publishing.service import list_dry_run_history
+
+        return jsonify(list_dry_run_history(db, limit=limit_i))
+
+
+@social_agent_api.route("/publishing/preview/<int:dry_run_id>", methods=["GET"])
+def api_publishing_preview_get(dry_run_id: int):
+    with get_db_context() as db:
+        from src.social_agent.publishing.service import get_dry_run_preview
+
+        out = get_dry_run_preview(db, dry_run_id)
+        return jsonify(out), (200 if out.get("ok") else 404)
+
+
 @social_agent_api.route("/publishing/preview", methods=["POST"])
 def api_publish_preview():
+    """Legacy POST preview — delegates to canonical dry-run service."""
     data = request.get_json(silent=True) or {}
+    content_id = data.get("content_id")
+    destinations = list(data.get("destinations") or ["facebook_page", "instagram_feed"])
+    if content_id is None and isinstance(data.get("content"), dict):
+        with get_db_context() as db:
+            from src.social_agent.publishing.service import run_publishing_dry_run
+
+            out = run_publishing_dry_run(
+                db,
+                actor=_actor(),
+                destinations=destinations,
+                content=data.get("content"),
+            )
+            db.commit()
+            return jsonify(out)
     try:
-        content_id = int(data["content_id"])
+        content_id_i = int(content_id)
     except Exception:
         return jsonify({"ok": False, "error": "content_id_required"}), 400
     with get_db_context() as db:
         out = services.publish_preview(
             db,
             actor=_actor(),
-            content_id=content_id,
-            destinations=list(data.get("destinations") or ["telegram"]),
+            content_id=content_id_i,
+            destinations=destinations,
+            content=data.get("content") if isinstance(data.get("content"), dict) else None,
         )
         db.commit()
         return jsonify(out)

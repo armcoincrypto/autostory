@@ -103,8 +103,15 @@ def test_create_draft_and_preview(db_session):
     )
     assert preview["ok"] is True
     assert preview["dry_run"] is True
+    assert preview["published"] is False
     assert preview["provider_called"] is False
-    assert all(d["ready"] is False for d in preview["destinations"])
+    assert preview["meta_provider_mutations"] == 0
+    assert any(d.get("destination") == "telegram" for d in preview["destinations"])
+    # Facebook maps into Meta dry-run payload path.
+    assert preview.get("dry_run_id") or any(
+        d.get("destination") in {"facebook", "facebook_page"} or d.get("payload_preview")
+        for d in preview["destinations"]
+    )
 
 
 def test_execute_tool_blocks_live_publish(db_session):
@@ -154,6 +161,9 @@ def test_social_agent_routes_registered():
     assert "/api/v1/social-agent/chat" in paths
     assert "/api/v1/social-agent/content" in paths
     assert "/api/v1/social-agent/meta/oauth/start" in paths
+    assert "/api/v1/social-agent/publishing/dry-run" in paths
+    assert "/api/v1/social-agent/publishing/history" in paths
+    assert "/api/v1/social-agent/publishing/preview/<int:dry_run_id>" in paths
 
 
 def test_social_agent_api_requires_auth():
