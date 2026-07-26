@@ -1,7 +1,8 @@
-"""Meta Graph API adapter — read-only OAuth, discovery, and health.
+"""Meta Graph API adapter — OAuth, discovery, health, and gated Page publish.
 
 Graph API version verified from Meta docs (developers.facebook.com): v25.0.
-Publishing endpoints are intentionally absent from this module.
+Facebook Page publish requires a valid CanaryAuthorization object.
+Instagram publish methods are intentionally absent.
 """
 from __future__ import annotations
 
@@ -11,20 +12,25 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 from urllib.parse import urlencode
+
+if TYPE_CHECKING:
+    from src.social_agent.publishing.canary_auth import CanaryAuthorization
 
 GRAPH_API_VERSION = "v25.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 OAUTH_DIALOG = f"https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth"
 
 # Minimum scopes for read-only Page + Instagram Professional discovery.
-# Publishing scopes are intentionally excluded in this phase.
 READ_ONLY_SCOPES = (
     "pages_show_list",
     "pages_read_engagement",
     "instagram_basic",
 )
+
+# Additional scope required only for Facebook controlled-canary reconnect.
+FACEBOOK_CANARY_SCOPES = READ_ONLY_SCOPES + ("pages_manage_posts",)
 
 HttpCaller = Callable[[str, str, dict[str, str] | None, bytes | None, float], tuple[int, dict[str, Any]]]
 
@@ -93,22 +99,27 @@ class MetaProviderAdapter:
             "redirect_https": https_ok,
             "api_version": GRAPH_API_VERSION,
             "scopes": list(READ_ONLY_SCOPES),
+            "canary_scopes": list(FACEBOOK_CANARY_SCOPES),
             "app_mode": app_mode,
             "facebook_publishing_enabled": publishing_fb,
             "instagram_publishing_enabled": publishing_ig,
+            "publishing_execution_mode": (os.environ.get("META_PUBLISHING_EXECUTION_MODE") or "disabled").strip().lower(),
         }
 
-    def authorization_url(self, *, state: str) -> str:
+    def authorization_url(self, *, state: str, purpose: str = "connect") -> str:
         cfg = self.config()
         if not cfg["configured"]:
             raise RuntimeError("META_NOT_CONFIGURED")
+        scopes = FACEBOOK_CANARY_SCOPES if purpose in {"publish_canary", "facebook_canary"} else READ_ONLY_SCOPES
         params = {
             "client_id": cfg["app_id"],
             "redirect_uri": cfg["redirect_uri"],
             "state": state,
             "response_type": "code",
-            "scope": ",".join(READ_ONLY_SCOPES),
+            "scope": ",".join(scopes),
         }
+        if purpose in {"publish_canary", "facebook_canary", "reconnect"}:
+            params["auth_type"] = "rerequest"
         return f"{OAUTH_DIALOG}?{urlencode(params)}"
 
     def exchange_code(self, *, code: str) -> dict[str, Any]:
@@ -175,13 +186,22 @@ class MetaProviderAdapter:
     def list_pages(self, *, access_token: str) -> dict[str, Any]:
         """Discover Pages; paginate; never return page tokens to callers outside services."""
         pages: list[dict[str, Any]] = []
-        url = f"{GRAPH_BASE}/me/accounts?{urlencode({'fields': 'id,name,category,tasks,access_token,instagram_business_account{id,username}', 'limit': '50', 'access_token': access_token})}"
+        url = (
+            f"{GRAPH_BASE}/me/accounts?"
+            f"{urlencode({'fields': 'id,name,category,tasks,access_token,instagram_business_account{id,username}', 'limit': '50', 'access_token': access_token})}"
+        )
         guard = 0
         while url and guard < 20:
             guard += 1
             status, data = self.http("GET", url, None, None, 20.0)
             if status != 200:
-                return {"ok": False, "error": "pages_failed", "status": status, "category": _error_category(data), "pages": pages}
+                return {
+                    "ok": False,
+                    "error": "pages_failed",
+                    "status": status,
+                    "category": _error_category(data),
+                    "pages": pages,
+                }
             for row in data.get("data") or []:
                 ig = row.get("instagram_business_account") or {}
                 pages.append(
@@ -190,7 +210,7 @@ class MetaProviderAdapter:
                         "page_name": row.get("name") or "",
                         "category": row.get("category"),
                         "tasks": row.get("tasks") or [],
-                        "page_access_token": row.get("access_token"),  # service-only
+                        "page_access_token": row.get("access_token"),
                         "instagram_account_id": str(ig.get("id")) if ig.get("id") else None,
                         "instagram_username": ig.get("username"),
                     }
@@ -233,6 +253,134 @@ class MetaProviderAdapter:
                 return {"ok": False, "health": "PAGE_UNAVAILABLE", "reason": _error_category(data)}
         return {"ok": True, "health": "CONNECTED", "user_id": me.get("id")}
 
+    def list_user_permissions(self, *, access_token: str) -> dict[str, Any]:
+        qs = urlencode({"access_token": access_token})
+        status, data = self.http("GET", f"{GRAPH_BASE}/me/permissions?{qs}", None, None, 20.0)
+        if status != 200:
+            return {"ok": False, "error": "permissions_failed", "status": status, "category": _error_category(data)}
+        granted = [
+            str(row.get("permission"))
+            for row in (data.get("data") or [])
+            if row.get("status") == "granted" and row.get("permission")
+        ]
+        return {"ok": True, "granted": granted}
+
+    def publish_page_feed(
+        self,
+        *,
+        page_id: str,
+        page_access_token: str,
+        message: str,
+        authorization: "CanaryAuthorization | None",
+        facebook_gate_enabled: bool,
+        execution_mode: str,
+    ) -> dict[str, Any]:
+        """POST /{page-id}/feed — requires a valid canary authorization object."""
+        if authorization is None:
+            return {
+                "ok": False,
+                "error": "CANARY_AUTHORIZATION_REQUIRED",
+                "category": "NOT_AUTHORIZED",
+                "provider_called": False,
+                "http_posts": 0,
+            }
+        if not facebook_gate_enabled:
+            return {
+                "ok": False,
+                "error": "FACEBOOK_PUBLISHING_DISABLED",
+                "category": "NOT_AUTHORIZED",
+                "provider_called": False,
+                "http_posts": 0,
+            }
+        if execution_mode != "controlled-canary":
+            return {
+                "ok": False,
+                "error": "EXECUTION_MODE_DENIED",
+                "category": "NOT_AUTHORIZED",
+                "provider_called": False,
+                "http_posts": 0,
+                "message": "Only controlled-canary execution mode is allowed in this phase.",
+            }
+        if str(page_id) != str(authorization.page_id):
+            return {
+                "ok": False,
+                "error": "PAGE_MISMATCH",
+                "category": "NOT_AUTHORIZED",
+                "provider_called": False,
+                "http_posts": 0,
+            }
+        if authorization.destination != "facebook_page":
+            return {
+                "ok": False,
+                "error": "DESTINATION_DENIED",
+                "category": "NOT_AUTHORIZED",
+                "provider_called": False,
+                "http_posts": 0,
+            }
+        body = urlencode({"message": message, "access_token": page_access_token}).encode("utf-8")
+        url = f"{GRAPH_BASE}/{urllib.parse.quote(str(page_id))}/feed"
+        status, data = self.http(
+            "POST",
+            url,
+            {"Content-Type": "application/x-www-form-urlencoded"},
+            body,
+            30.0,
+        )
+        safe_data = {k: v for k, v in (data or {}).items() if "token" not in str(k).lower()}
+        if status != 200 or not safe_data.get("id"):
+            return {
+                "ok": False,
+                "error": "publish_failed",
+                "status": status,
+                "category": _error_category(data if isinstance(data, dict) else {}),
+                "provider_called": True,
+                "http_posts": 1,
+                "provider_request_id": (data.get("error") or {}).get("fbtrace_id") if isinstance(data, dict) else None,
+                "response": safe_data,
+            }
+        post_id = str(safe_data["id"])
+        return {
+            "ok": True,
+            "external_post_id": post_id,
+            "status": status,
+            "category": "SUCCEEDED",
+            "provider_called": True,
+            "http_posts": 1,
+            "provider_request_id": None,
+            "graph_api_version": GRAPH_API_VERSION,
+            "endpoint": f"/{page_id}/feed",
+            "public_url": f"https://www.facebook.com/{post_id}",
+            "response": {"id": post_id},
+        }
+
+    def delete_page_post(
+        self,
+        *,
+        post_id: str,
+        page_access_token: str,
+        authorization: "CanaryAuthorization | None",
+        explicit_delete_approval: str,
+    ) -> dict[str, Any]:
+        if authorization is None:
+            return {"ok": False, "error": "CANARY_AUTHORIZATION_REQUIRED", "provider_called": False}
+        if explicit_delete_approval != "CONFIRM_DELETE":
+            return {"ok": False, "error": "delete_not_approved", "provider_called": False}
+        qs = urlencode({"access_token": page_access_token})
+        status, data = self.http(
+            "DELETE",
+            f"{GRAPH_BASE}/{urllib.parse.quote(str(post_id))}?{qs}",
+            None,
+            None,
+            20.0,
+        )
+        return {
+            "ok": status == 200 and bool((data or {}).get("success")),
+            "status": status,
+            "provider_called": True,
+            "category": "DELETED" if status == 200 else _error_category(data if isinstance(data, dict) else {}),
+            "response": {k: v for k, v in (data or {}).items() if "token" not in str(k).lower()},
+        }
+
 
 def _error_category(data: dict[str, Any]) -> str:
     err = data.get("error") if isinstance(data, dict) else None
@@ -260,7 +408,7 @@ def capability_matrix(granted: list[str] | None = None) -> list[dict[str, Any]]:
         ("read_page_metadata", "pages_read_engagement", False, True, True),
         ("discover_instagram", "instagram_basic", False, True, True),
         ("connection_health", "pages_show_list", False, True, True),
-        ("future_facebook_publishing", "pages_manage_posts", True, False, False),
+        ("facebook_page_publishing", "pages_manage_posts", True, True, False),
         ("future_instagram_publishing", "instagram_content_publish", True, False, False),
         ("future_analytics", "instagram_manage_insights", True, False, False),
         ("future_comments", "instagram_manage_comments", True, False, False),

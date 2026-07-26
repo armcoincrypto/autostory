@@ -609,6 +609,63 @@ def execute_tool(
                     "title": arguments.get("title"),
                 },
             )
+    elif tool_name == "publishing.facebook_canary":
+        from src.social_agent.publishing import publish_service as canary_svc
+        from src.social_agent.publishing.execution import CANARY_FACEBOOK_PAGE_ID
+
+        action = str(arguments.get("action") or "prepare").strip().lower()
+        if action == "prepare":
+            result = canary_svc.prepare_facebook_canary_dry_run(db, actor=actor or "unknown")
+        elif dry_run and action in {"authorize", "execute"}:
+            result = {
+                "ok": True,
+                "dry_run": True,
+                "would_run": action,
+                "published": False,
+                "provider_http_posts": 0,
+                "message": "Dry-run only — canary authorize/execute require dry_run=false plus CONFIRM.",
+            }
+        elif action == "preflight":
+            result = canary_svc.preflight_facebook_canary(
+                db,
+                actor=actor or "unknown",
+                workspace_id="default",
+                dry_run_id=int(arguments["dry_run_id"]),
+                payload_hash=str(arguments["payload_hash"]),
+                page_id=str(arguments.get("page_id") or CANARY_FACEBOOK_PAGE_ID),
+            )
+        elif action == "authorize":
+            if confirmation_token != "CONFIRM" and arguments.get("explicit_approval") != "CONFIRM":
+                result = {
+                    "ok": False,
+                    "error": "confirmation_required",
+                    "confirmation": {"action": tool_name, "side_effect_class": "IMMEDIATE_EXTERNAL_MUTATION"},
+                }
+            else:
+                result = canary_svc.approve_and_mint_canary(
+                    db,
+                    actor=actor or "unknown",
+                    workspace_id="default",
+                    dry_run_id=int(arguments["dry_run_id"]),
+                    payload_hash=str(arguments["payload_hash"]),
+                    page_id=str(arguments.get("page_id") or CANARY_FACEBOOK_PAGE_ID),
+                    explicit_approval=str(arguments.get("explicit_approval") or confirmation_token or ""),
+                    idempotency_key=arguments.get("idempotency_key"),
+                )
+        elif action == "execute":
+            result = canary_svc.execute_facebook_canary(
+                db,
+                actor=actor or "unknown",
+                workspace_id="default",
+                authorization_id=int(arguments["authorization_id"]),
+                authorization_secret=str(arguments["authorization_secret"]),
+                dry_run_id=int(arguments["dry_run_id"]),
+                payload_hash=str(arguments["payload_hash"]),
+                page_id=str(arguments.get("page_id") or CANARY_FACEBOOK_PAGE_ID),
+                idempotency_key=str(arguments["idempotency_key"]),
+            )
+        else:
+            result = {"ok": False, "error": "unknown_canary_action", "action": action}
     elif tool_name == "media.list_assets":
         result = {"ok": True, "assets": [], "message": "Media library empty — upload not yet enabled in this release."}
     elif tool_name == "brand.search_knowledge":

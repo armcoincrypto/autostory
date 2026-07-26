@@ -532,6 +532,118 @@ def api_meta_disconnect():
         return jsonify(out), (200 if out.get("ok") else 400)
 
 
+@social_agent_api.route("/publishing/facebook-canary/prepare", methods=["POST"])
+def api_facebook_canary_prepare():
+    with get_db_context() as db:
+        from src.social_agent.publishing.publish_service import prepare_facebook_canary_dry_run
+
+        out = prepare_facebook_canary_dry_run(db, actor=_actor())
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/publishing/facebook-canary/preflight", methods=["POST"])
+def api_facebook_canary_preflight():
+    data = request.get_json(silent=True) or {}
+    try:
+        dry_run_id = int(data["dry_run_id"])
+        payload_hash = str(data["payload_hash"])
+    except Exception:
+        return jsonify({"ok": False, "error": "dry_run_id_and_payload_hash_required"}), 400
+    with get_db_context() as db:
+        from src.social_agent.publishing.execution import CANARY_FACEBOOK_PAGE_ID
+        from src.social_agent.publishing.publish_service import preflight_facebook_canary
+
+        out = preflight_facebook_canary(
+            db,
+            actor=_actor(),
+            workspace_id="default",
+            dry_run_id=dry_run_id,
+            payload_hash=payload_hash,
+            page_id=str(data.get("page_id") or CANARY_FACEBOOK_PAGE_ID),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/publishing/facebook-canary/authorize", methods=["POST"])
+def api_facebook_canary_authorize():
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    try:
+        dry_run_id = int(data["dry_run_id"])
+        payload_hash = str(data["payload_hash"])
+    except Exception:
+        return jsonify({"ok": False, "error": "dry_run_id_and_payload_hash_required"}), 400
+    with get_db_context() as db:
+        from src.social_agent.publishing.execution import CANARY_FACEBOOK_PAGE_ID
+        from src.social_agent.publishing.publish_service import approve_and_mint_canary
+
+        out = approve_and_mint_canary(
+            db,
+            actor=_actor(),
+            workspace_id="default",
+            dry_run_id=dry_run_id,
+            payload_hash=payload_hash,
+            page_id=str(data.get("page_id") or CANARY_FACEBOOK_PAGE_ID),
+            explicit_approval=data.get("explicit_approval"),
+            idempotency_key=data.get("idempotency_key"),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/publishing/facebook-canary/execute", methods=["POST"])
+def api_facebook_canary_execute():
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    required = ("authorization_id", "authorization_secret", "dry_run_id", "payload_hash", "idempotency_key")
+    if any(k not in data for k in required):
+        return jsonify({"ok": False, "error": "missing_required_fields", "required": list(required)}), 400
+    with get_db_context() as db:
+        from src.social_agent.publishing.execution import CANARY_FACEBOOK_PAGE_ID
+        from src.social_agent.publishing.publish_service import execute_facebook_canary
+
+        out = execute_facebook_canary(
+            db,
+            actor=_actor(),
+            workspace_id="default",
+            authorization_id=int(data["authorization_id"]),
+            authorization_secret=str(data["authorization_secret"]),
+            dry_run_id=int(data["dry_run_id"]),
+            payload_hash=str(data["payload_hash"]),
+            page_id=str(data.get("page_id") or CANARY_FACEBOOK_PAGE_ID),
+            idempotency_key=str(data["idempotency_key"]),
+        )
+        db.commit()
+        status = 200 if out.get("ok") else 400
+        return jsonify(out), status
+
+
+@social_agent_api.route("/connections/meta/publish-canary-oauth", methods=["POST"])
+def api_meta_publish_canary_oauth():
+    """Start OAuth rerequest including pages_manage_posts for the Facebook canary only."""
+    denied = _require_manage_accounts()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        from src.social_agent import meta_connection as meta_svc
+
+        out = meta_svc.start_meta_oauth(
+            db,
+            actor=_actor(),
+            purpose="publish_canary",
+            connection_id=data.get("connection_id") or 1,
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
 @social_agent_api.route("/connections/meta/publish", methods=["POST"])
 def api_meta_publish_blocked():
     from src.social_agent.meta_connection import assert_meta_publishing_disabled

@@ -112,6 +112,28 @@ def _tools() -> list[ToolSpec]:
             },
         ),
         ToolSpec(
+            name="publishing.facebook_canary",
+            description=(
+                "Controlled Facebook Page canary: dry-run → CONFIRM → single-use auth → one Graph POST. "
+                "Instagram and general live publishing remain unavailable."
+            ),
+            side_effect_class=SideEffectClass.IMMEDIATE_EXTERNAL_MUTATION,
+            required_permission="publishing.publish",
+            confirmation_required=True,
+            dry_run_support=True,
+            provider_dependency="meta",
+            available=True,
+            input_schema={
+                "action": "prepare|preflight|authorize|execute",
+                "explicit_approval": "CONFIRM?",
+                "authorization_id": "number?",
+                "authorization_secret": "string?",
+                "dry_run_id": "number?",
+                "payload_hash": "string?",
+                "idempotency_key": "string?",
+            },
+        ),
+        ToolSpec(
             name="publishing.publish",
             description="Publish approved content to connected destinations.",
             side_effect_class=SideEffectClass.IMMEDIATE_EXTERNAL_MUTATION,
@@ -119,7 +141,7 @@ def _tools() -> list[ToolSpec]:
             confirmation_required=True,
             dry_run_support=True,
             available=False,
-            unavailable_reason="Live publishing requires explicit canary authorization and provider connection.",
+            unavailable_reason="General live publishing is disabled. Use publishing.facebook_canary for the controlled canary only.",
         ),
         ToolSpec(
             name="publishing.schedule",

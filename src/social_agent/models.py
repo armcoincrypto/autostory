@@ -140,3 +140,53 @@ class SocialPublishDryRun(Base):
     provider_http_posts = Column(Integer, nullable=False, default=0)
     idempotency_key = Column(String(128), nullable=True, unique=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class SocialPublishCanaryAuthorization(Base):
+    """Short-lived single-use canary authorization — never a caller boolean."""
+
+    __tablename__ = "social_publish_canary_authorizations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    actor = Column(String(128), nullable=False)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    page_id = Column(String(128), nullable=False, index=True)
+    dry_run_id = Column(Integer, nullable=False, index=True)
+    payload_hash = Column(String(64), nullable=False, index=True)
+    idempotency_key = Column(String(128), nullable=False, unique=True, index=True)
+    destination = Column(String(64), nullable=False, default="facebook_page")
+    execution_mode = Column(String(64), nullable=False, default="controlled-canary")
+    secret_hash = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, default="ACTIVE", index=True)
+    explicit_approval = Column(String(32), nullable=False, default="")
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)
+    result_status = Column(String(64), nullable=True)
+    external_post_id = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class SocialPublishReceipt(Base):
+    """Reconciled provider publish receipt (canary / future live)."""
+
+    __tablename__ = "social_publish_receipts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    actor = Column(String(128), nullable=True)
+    provider = Column(String(64), nullable=False, default="meta")
+    destination = Column(String(64), nullable=False)
+    page_id = Column(String(128), nullable=False, index=True)
+    dry_run_id = Column(Integer, nullable=True, index=True)
+    authorization_id = Column(Integer, nullable=True, index=True)
+    payload_hash = Column(String(64), nullable=False, index=True)
+    idempotency_key = Column(String(128), nullable=False, unique=True, index=True)
+    external_post_id = Column(String(128), nullable=True, index=True)
+    provider_request_id = Column(String(128), nullable=True)
+    provider_response_category = Column(String(64), nullable=True)
+    http_status = Column(Integer, nullable=True)
+    execution_mode = Column(String(64), nullable=False)
+    status = Column(String(64), nullable=False, default="SUCCEEDED", index=True)
+    public_url = Column(String(512), nullable=True)
+    detail_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

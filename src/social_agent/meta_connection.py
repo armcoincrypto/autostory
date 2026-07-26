@@ -169,7 +169,7 @@ def start_meta_oauth(
         }
     if not SocialCredentialCrypto.configured():
         return {"ok": False, "error": "CREDENTIAL_KEY_MISSING", "message": "Install SOCIAL_CREDENTIAL_* keys before OAuth."}
-    if purpose == "reconnect" and connection_id is None:
+    if purpose in {"reconnect", "publish_canary", "facebook_canary"} and connection_id is None:
         return {"ok": False, "error": "connection_id_required"}
 
     redirect = cfg["redirect_uri"]
@@ -201,10 +201,20 @@ def start_meta_oauth(
         detail={"workspace_id": workspace_id, "purpose": purpose, "connection_id": connection_id},
     )
     try:
-        url = adapter.authorization_url(state=state)
+        url = adapter.authorization_url(state=state, purpose=purpose)
     except Exception:
         return {"ok": False, "error": "authorization_url_failed"}
-    return {"ok": True, "authorization_url": url, "expires_in": STATE_TTL_SECONDS}
+    return {
+        "ok": True,
+        "authorization_url": url,
+        "expires_in": STATE_TTL_SECONDS,
+        "purpose": purpose,
+        "scopes_requested": (
+            adapter.config().get("canary_scopes")
+            if purpose in {"publish_canary", "facebook_canary"}
+            else adapter.config().get("scopes")
+        ),
+    }
 
 
 def _consume_state(
@@ -341,9 +351,9 @@ def handle_meta_callback(
     safe_dests = _safe_destinations(pages)
     display = me.get("name") or f"Meta user {me['id']}"
 
-    # reconnect: update existing; connect: upsert workspace meta connection
+    # reconnect / canary: update existing; connect: upsert workspace meta connection
     target: SocialConnection | None = None
-    if oauth_row and oauth_row.purpose == "reconnect" and oauth_row.connection_id:
+    if oauth_row and oauth_row.purpose in {"reconnect", "publish_canary", "facebook_canary"} and oauth_row.connection_id:
         target = db.query(SocialConnection).filter(SocialConnection.id == int(oauth_row.connection_id)).first()
     if target is None:
         target = (
@@ -352,11 +362,13 @@ def handle_meta_callback(
             .order_by(SocialConnection.id.desc())
             .first()
         )
+    prev_page = target.selected_page_id if target else None
+    prev_ig = target.selected_instagram_id if target else None
+    prev_display = target.display_name if target else None
     if target is None:
         target = SocialConnection(provider="meta", workspace_id=workspace_id, created_by=actor)
         db.add(target)
 
-    target.display_name = display
     target.external_account_id = me["id"]
     target.status = "connected_pending_selection" if len(safe_dests) != 1 else "connected"
     target.health = "CONNECTED"
@@ -371,10 +383,21 @@ def handle_meta_callback(
         only = safe_dests[0]
         target.selected_page_id = only.get("page_id")
         target.selected_instagram_id = only.get("instagram_account_id")
+        target.display_name = only.get("page_name") or display
         if not only.get("instagram_account_id"):
             target.status = "connected_no_instagram"
         else:
             target.status = "connected"
+    elif prev_page and any(str(d.get("page_id")) == str(prev_page) for d in safe_dests):
+        # Preserve prior Page selection across canary/reconnect (e.g. Exswaping).
+        target.selected_page_id = prev_page
+        target.selected_instagram_id = prev_ig
+        match = next((d for d in safe_dests if str(d.get("page_id")) == str(prev_page)), None)
+        target.display_name = (match or {}).get("page_name") or prev_display or display
+        target.status = "connected"
+    else:
+        target.display_name = display
+
 
     db.flush()
     _audit(
@@ -403,13 +426,13 @@ def handle_meta_callback(
         decision="allow",
         detail={"connection_id": target.id, "count": len(safe_dests)},
     )
-    if oauth_row and oauth_row.purpose == "reconnect":
+    if oauth_row and oauth_row.purpose in {"reconnect", "publish_canary", "facebook_canary"}:
         _audit(
             db,
             actor=actor,
-            action="meta.reconnect_completed",
+            action="meta.reconnect_completed" if oauth_row.purpose == "reconnect" else "meta.canary_oauth_completed",
             decision="allow",
-            detail={"connection_id": target.id},
+            detail={"connection_id": target.id, "purpose": oauth_row.purpose, "pages_manage_posts": "pages_manage_posts" in granted},
         )
 
     return {
