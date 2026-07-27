@@ -2,7 +2,7 @@
 {% block sa_content %}
 <section class="sa-card">
   <h2>Brand Knowledge</h2>
-  <p class="sa-muted mb-3">Seed Exswaping marketing rules. Uploaded knowledge cannot override system authorization.</p>
+  <p class="sa-muted mb-3">Voice, tone, emoji rules, hashtags, CTAs, banned words, facts, URLs, social links, legal footer. AI Assistant loads this automatically.</p>
   <form id="sa-brand-search" class="row g-2 align-items-end mb-3">
     <div class="col-md-8">
       <label class="form-label small mb-0" for="sa-brand-q">Search</label>
@@ -12,22 +12,42 @@
       <button type="submit" class="btn btn-outline-light btn-sm">Search</button>
     </div>
   </form>
-  <div id="sa-brand-hits" class="sa-muted">Enter a query or leave blank to list seed rules.</div>
+  <div id="sa-brand-hits" class="sa-muted">Loading…</div>
+</section>
+<section class="sa-card">
+  <h2>Add / update entry</h2>
+  <form id="sa-brand-upsert" class="row g-2">
+    <div class="col-md-3"><input class="form-control form-control-sm" id="b-cat" placeholder="category" required /></div>
+    <div class="col-md-3"><input class="form-control form-control-sm" id="b-key" placeholder="key" required /></div>
+    <div class="col-md-3"><input class="form-control form-control-sm" id="b-title" placeholder="title" required /></div>
+    <div class="col-md-9"><textarea class="form-control form-control-sm" id="b-value" rows="2" placeholder="value" required></textarea></div>
+    <div class="col-md-3"><button class="btn btn-primary btn-sm" type="submit">Save</button></div>
+  </form>
 </section>
 {% endblock %}
 {% block sa_scripts %}
 <script>
 document.addEventListener("DOMContentLoaded", () => {
   const hits = document.getElementById("sa-brand-hits");
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+  }
+  function render(rows) {
+    hits.innerHTML = rows.length
+      ? rows.map((r) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(r.category || r.id) + " · " + escapeHtml(r.key || "") + "</div><strong>" + escapeHtml(r.title) + "</strong><div class='mt-1'>" + escapeHtml(r.text || r.value) + "</div></div>").join("")
+      : "<div class='sa-empty'>No matches.</div>";
+  }
   async function run(q) {
+    if (!q) {
+      const data = await SocialAgent.fetch("/brand");
+      render(data.items || []);
+      return;
+    }
     const data = await SocialAgent.fetch("/tools/execute", {
       method: "POST",
-      body: JSON.stringify({ tool: "brand.search_knowledge", dry_run: true, arguments: { query: q || "" } }),
+      body: JSON.stringify({ tool: "brand.search_knowledge", dry_run: true, arguments: { query: q } }),
     });
-    const rows = data.hits || [];
-    hits.innerHTML = rows.length
-      ? rows.map((r) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(r.id) + "</div><strong>" + escapeHtml(r.title) + "</strong><div class='mt-1'>" + escapeHtml(r.text) + "</div></div>").join("")
-      : "<div class='sa-empty'>No matches.</div>";
+    render(data.hits || []);
   }
   document.getElementById("sa-brand-search").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -35,10 +55,20 @@ document.addEventListener("DOMContentLoaded", () => {
       hits.innerHTML = "<div class='text-danger'>" + escapeHtml(err.message) + "</div>";
     });
   });
+  document.getElementById("sa-brand-upsert").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await SocialAgent.fetch("/brand", {
+      method: "POST",
+      body: JSON.stringify({
+        category: document.getElementById("b-cat").value,
+        key: document.getElementById("b-key").value,
+        title: document.getElementById("b-title").value,
+        value: document.getElementById("b-value").value,
+      }),
+    });
+    run("");
+  });
   run("").catch(console.error);
-  function escapeHtml(s) {
-    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
-  }
 });
 </script>
 {% endblock %}

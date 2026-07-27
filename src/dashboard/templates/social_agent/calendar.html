@@ -1,0 +1,92 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <div class="sa-toolbar">
+    <div>
+      <h2 class="mb-1">Content Calendar</h2>
+      <p class="sa-muted mb-0">Month / week / agenda queue. Timezone-aware. Conflict detection. Live publishing disabled.</p>
+    </div>
+    <div class="btn-group btn-group-sm" role="group" aria-label="Calendar views">
+      <button type="button" class="btn btn-outline-light" data-view="month">Month</button>
+      <button type="button" class="btn btn-outline-light" data-view="week">Week</button>
+      <button type="button" class="btn btn-outline-light" data-view="agenda">Agenda</button>
+    </div>
+  </div>
+  <form id="sa-cal-form" class="row g-2 align-items-end mt-3 mb-3">
+    <div class="col-md-2"><label class="form-label small mb-0">Content ID</label><input class="form-control form-control-sm" id="sa-cal-content" required /></div>
+    <div class="col-md-2"><label class="form-label small mb-0">Platform</label>
+      <select class="form-select form-select-sm" id="sa-cal-platform">
+        <option>facebook</option><option>instagram</option><option>telegram</option><option>x</option>
+        <option>linkedin</option><option>tiktok</option><option>youtube_community</option><option>discord</option>
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label small mb-0">Scheduled for (UTC)</label><input class="form-control form-control-sm" id="sa-cal-when" type="datetime-local" required /></div>
+    <div class="col-md-2"><label class="form-label small mb-0">Timezone</label><input class="form-control form-control-sm" id="sa-cal-tz" value="UTC" /></div>
+    <div class="col-md-3"><button class="btn btn-primary btn-sm" type="submit">Queue</button></div>
+  </form>
+  <div id="sa-cal-banner" class="sa-banner mb-3">Live publish: disabled · Scheduler mutations: locked</div>
+  <div class="sa-cal-columns">
+    <div>
+      <h3 class="h6">Entries</h3>
+      <div id="sa-cal-entries" class="sa-muted">Loading…</div>
+    </div>
+    <div>
+      <h3 class="h6">Scheduled queue</h3>
+      <div id="sa-cal-queue" class="sa-muted">Loading…</div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  let view = "month";
+  function esc(s){return String(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
+  function row(e){
+    return "<div class='sa-cal-item"+(e.conflict?" conflict":"")+"' draggable='true' data-id='"+e.id+"' data-when='"+(e.scheduled_for||"")+"'>" +
+      "<strong>"+esc(e.title)+"</strong> · "+esc(e.platform)+" · "+esc(e.scheduled_for) +
+      (e.conflict?" <span class='sa-status blocked'>conflict</span>":"") +
+      " <button type='button' class='btn btn-outline-light btn-sm' data-cancel='"+e.id+"'>Cancel</button></div>";
+  }
+  async function load(){
+    const data = await SocialAgent.fetch("/calendar?view="+encodeURIComponent(view));
+    document.getElementById("sa-cal-entries").innerHTML = (data.entries||[]).map(row).join("") || "<div class='sa-empty'>No entries in range.</div>";
+    document.getElementById("sa-cal-queue").innerHTML = (data.scheduled_queue||[]).map(row).join("") || "<div class='sa-empty'>Queue empty.</div>";
+    document.querySelectorAll("[data-cancel]").forEach(btn => btn.addEventListener("click", async () => {
+      await SocialAgent.fetch("/calendar/"+btn.getAttribute("data-cancel"), { method: "DELETE" });
+      load();
+    }));
+    document.querySelectorAll(".sa-cal-item").forEach(el => {
+      el.addEventListener("dragstart", (ev) => ev.dataTransfer.setData("text/plain", el.getAttribute("data-id")));
+    });
+  }
+  document.querySelectorAll("[data-view]").forEach(btn => btn.addEventListener("click", () => { view = btn.getAttribute("data-view"); load(); }));
+  document.getElementById("sa-cal-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const local = document.getElementById("sa-cal-when").value;
+    const iso = local ? new Date(local).toISOString() : "";
+    await SocialAgent.fetch("/calendar", {
+      method: "POST",
+      body: JSON.stringify({
+        content_id: Number(document.getElementById("sa-cal-content").value),
+        platform: document.getElementById("sa-cal-platform").value,
+        scheduled_for: iso,
+        timezone: document.getElementById("sa-cal-tz").value || "UTC",
+      }),
+    });
+    load();
+  });
+  // Drop onto queue to move +30m (simple DnD affordance without live publish).
+  document.getElementById("sa-cal-queue").addEventListener("dragover", (e) => e.preventDefault());
+  document.getElementById("sa-cal-queue").addEventListener("drop", async (e) => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    const when = new Date(Date.now() + 30*60*1000).toISOString();
+    await SocialAgent.fetch("/calendar/"+id, { method: "PATCH", body: JSON.stringify({ scheduled_for: when }) });
+    load();
+  });
+  load();
+});
+</script>
+{% endblock %}

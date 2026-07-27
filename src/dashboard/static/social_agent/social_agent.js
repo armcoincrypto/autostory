@@ -4,7 +4,7 @@
   async function saFetch(path, options) {
     const opts = options || {};
     const headers = new Headers(opts.headers || {});
-    if (!headers.has("Content-Type") && opts.body) {
+    if (!headers.has("Content-Type") && opts.body && !(opts.body instanceof FormData)) {
       headers.set("Content-Type", "application/json");
     }
     const res = await fetch(API + path, { ...opts, headers, credentials: "same-origin" });
@@ -42,6 +42,11 @@
       pill.classList.add("warn");
     }
   }
+
+  try {
+    const theme = localStorage.getItem("sa-theme");
+    if (theme === "light") document.documentElement.setAttribute("data-sa-theme", "light");
+  } catch (_) {}
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", refreshHealth);

@@ -1,27 +1,52 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
-<section class="sa-card">
-  <h2>Content Studio</h2>
-  <p class="sa-muted mb-3">One canonical content item with platform variants. Generated content is never auto-published.</p>
-  <form id="sa-draft-form" class="row g-2 align-items-end mb-3">
-    <div class="col-md-5">
-      <label class="form-label small mb-0" for="sa-brief">Brief</label>
-      <input class="form-control form-control-sm" id="sa-brief" placeholder="New USDT to AMD direction" required />
+<section class="sa-card sa-studio">
+  <div class="sa-toolbar">
+    <div>
+      <h2 class="mb-1">Content Studio</h2>
+      <p class="sa-muted mb-0">Professional editor · multi-platform preview · approval workflow. Never auto-publishes.</p>
     </div>
-    <div class="col-md-3">
-      <label class="form-label small mb-0" for="sa-langs">Languages</label>
-      <select class="form-select form-select-sm" id="sa-langs" multiple size="1">
-        <option value="EN" selected>EN</option>
-        <option value="RU">RU</option>
-        <option value="HY">HY</option>
-      </select>
-    </div>
-    <div class="col-md-4 d-flex gap-2">
-      <button type="submit" class="btn btn-primary btn-sm" id="sa-gen">Generate draft</button>
+    <div class="d-flex flex-wrap gap-2">
       <button type="button" class="btn btn-outline-light btn-sm" id="sa-refresh-drafts">Refresh</button>
+      <button type="button" class="btn btn-primary btn-sm" id="sa-gen">Generate variants</button>
     </div>
-  </form>
-  <div id="sa-draft-result" class="mb-3"></div>
+  </div>
+
+  <div class="sa-studio-grid mt-3">
+    <div class="sa-studio-editor">
+      <label class="form-label small mb-1" for="sa-brief">Source brief</label>
+      <textarea class="form-control sa-rich" id="sa-brief" rows="4" placeholder="One source brief for all platforms…"></textarea>
+      <div class="d-flex flex-wrap gap-2 mt-2 align-items-center">
+        <select class="form-select form-select-sm w-auto" id="sa-langs" multiple size="1" aria-label="Languages">
+          <option value="EN" selected>EN</option>
+          <option value="RU">RU</option>
+          <option value="HY">HY</option>
+        </select>
+        <span class="sa-muted small" id="sa-char-meter">0 chars</span>
+      </div>
+
+      <div class="sa-editor-panel mt-3" id="sa-active-editor" hidden>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h3 class="h6 mb-0" id="sa-active-title">Draft</h3>
+          <div class="d-flex gap-1" id="sa-status-actions"></div>
+        </div>
+        <label class="form-label small mb-1" for="sa-variant-body">Active variant</label>
+        <textarea class="form-control sa-rich" id="sa-variant-body" rows="8"></textarea>
+        <div class="d-flex gap-2 mt-2">
+          <button type="button" class="btn btn-sm btn-outline-info" id="sa-save-variant">Save variant</button>
+          <button type="button" class="btn btn-sm btn-outline-light" id="sa-dry-run">Meta dry-run</button>
+        </div>
+        <div class="sa-muted small mt-2" id="sa-audit-trail"></div>
+      </div>
+    </div>
+
+    <div class="sa-studio-preview">
+      <div class="sa-tabs" id="sa-platform-tabs" role="tablist" aria-label="Platform previews"></div>
+      <div class="sa-preview-frame" id="sa-preview-frame">
+        <div class="sa-empty">Select or generate a draft to preview Facebook, Instagram, Telegram, X, LinkedIn, TikTok, YouTube Community, and Discord.</div>
+      </div>
+    </div>
+  </div>
 </section>
 
 <section class="sa-card">
@@ -30,89 +55,5 @@
 </section>
 {% endblock %}
 {% block sa_scripts %}
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-  const listEl = document.getElementById("sa-draft-list");
-  const resultEl = document.getElementById("sa-draft-result");
-
-  async function loadDrafts() {
-    const data = await SocialAgent.fetch("/content");
-    const items = data.items || [];
-    if (!items.length) {
-      listEl.innerHTML = "<div class='sa-empty'>No drafts yet. Generate one above.</div>";
-      return;
-    }
-    listEl.innerHTML = items.map((it) => (
-      "<div class='sa-variant'>"
-      + "<div class='meta'>#" + it.id + " · " + escapeHtml(it.status) + "</div>"
-      + "<strong>" + escapeHtml(it.title || "Untitled") + "</strong>"
-      + "<div class='mt-2 d-flex gap-2'>"
-      + "<button type='button' class='btn btn-outline-light btn-sm' data-open='" + it.id + "'>Open</button>"
-      + "<button type='button' class='btn btn-outline-info btn-sm' data-preview='" + it.id + "'>Dry-run preview</button>"
-      + "</div></div>"
-    )).join("");
-    listEl.querySelectorAll("[data-open]").forEach((btn) => btn.addEventListener("click", () => openDraft(btn.getAttribute("data-open"))));
-    listEl.querySelectorAll("[data-preview]").forEach((btn) => btn.addEventListener("click", () => previewDraft(btn.getAttribute("data-preview"))));
-  }
-
-  async function openDraft(id) {
-    const data = await SocialAgent.fetch("/content/" + id);
-    if (!data.ok) {
-      resultEl.innerHTML = "<div class='text-danger'>Not found</div>";
-      return;
-    }
-    resultEl.innerHTML = "<h3 class='h6'>Draft #" + data.item.id + " — " + escapeHtml(data.item.title) + "</h3>"
-      + (data.variants || []).map((v) => (
-        "<div class='sa-variant'><div class='meta'>" + escapeHtml(v.platform) + " · " + escapeHtml(v.language)
-        + " · " + v.char_count + " chars</div><div>" + escapeHtml(v.body) + "</div></div>"
-      )).join("");
-  }
-
-  async function previewDraft(id) {
-    const data = await SocialAgent.fetch("/publishing/preview", {
-      method: "POST",
-      body: JSON.stringify({ content_id: Number(id), destinations: ["facebook_page", "instagram_feed"] }),
-    });
-    resultEl.innerHTML = "<h3 class='h6'>Dry-run preview</h3><pre class='small text-light mb-0' style='white-space:pre-wrap'>"
-      + escapeHtml(JSON.stringify(data, null, 2)) + "</pre>";
-  }
-
-  document.getElementById("sa-draft-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const brief = document.getElementById("sa-brief").value.trim();
-    const langs = Array.from(document.getElementById("sa-langs").selectedOptions).map((o) => o.value);
-    const btn = document.getElementById("sa-gen");
-    btn.disabled = true;
-    try {
-      const data = await SocialAgent.fetch("/tools/execute", {
-        method: "POST",
-        body: JSON.stringify({
-          tool: "content.generate_variants",
-          dry_run: false,
-          arguments: {
-            brief,
-            platforms: ["facebook", "instagram", "telegram", "x", "linkedin"],
-            languages: langs.length ? langs : ["EN"],
-            persist: true,
-          },
-        }),
-      });
-      resultEl.innerHTML = "<div class='sa-empty'>Created draft #" + (data.content_id || "?") + ". Nothing published.</div>";
-      await openDraft(data.content_id);
-      await loadDrafts();
-    } catch (err) {
-      resultEl.innerHTML = "<div class='text-danger'>" + escapeHtml(err.message) + "</div>";
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  document.getElementById("sa-refresh-drafts").addEventListener("click", () => loadDrafts().catch(console.error));
-  loadDrafts().catch((e) => { listEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>"; });
-
-  function escapeHtml(s) {
-    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
-  }
-});
-</script>
+<script src="{{ url_for('static', filename='social_agent/content_studio.js') }}" defer></script>
 {% endblock %}

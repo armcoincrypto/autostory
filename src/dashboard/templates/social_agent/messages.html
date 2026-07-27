@@ -1,0 +1,16 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Messages</h2>
+  <p class="sa-muted">Unified inbox architecture. Provider-independent conversation model. No provider writes.</p>
+  <div id="sa-messages" class="sa-empty mt-3">Loading…</div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const data = await SocialAgent.fetch("/messages");
+  document.getElementById("sa-messages").textContent = data.message || "No messages available.";
+});
+</script>
+{% endblock %}

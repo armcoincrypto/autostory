@@ -1,0 +1,42 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Automations</h2>
+  <p class="sa-muted">Visual workflow drafts (trigger → condition → action). Everything disabled. No live automation.</p>
+  <form id="sa-auto-form" class="row g-2 align-items-end mb-3">
+    <div class="col-md-6"><label class="form-label small mb-0">Workflow name</label><input class="form-control form-control-sm" id="sa-auto-name" required /></div>
+    <div class="col-md-6"><button class="btn btn-outline-light btn-sm" type="submit">Save disabled draft</button></div>
+  </form>
+  <div class="sa-workflow mb-3" aria-hidden="true">
+    <li class="current">Trigger</li><li>Condition</li><li>Action</li><li class="blocked">Execute (disabled)</li>
+  </div>
+  <div id="sa-auto-list" class="sa-muted">Loading…</div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  async function load(){
+    const data = await SocialAgent.fetch("/automations");
+    const defs = data.definitions || [];
+    document.getElementById("sa-auto-list").innerHTML = defs.length
+      ? defs.map(d => "<div class='sa-variant'><div class='meta'>#"+d.id+" · enabled="+d.enabled+"</div><strong>"+d.name+"</strong></div>").join("")
+      : "<div class='sa-empty'>"+(data.message||"No workflows yet.")+"</div>";
+  }
+  document.getElementById("sa-auto-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await SocialAgent.fetch("/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        name: document.getElementById("sa-auto-name").value,
+        definition: { triggers: ["manual"], conditions: [], actions: ["notify_only"] },
+        enabled: true, // ignored server-side — always disabled
+      }),
+    });
+    document.getElementById("sa-auto-name").value = "";
+    load();
+  });
+  load();
+});
+</script>
+{% endblock %}

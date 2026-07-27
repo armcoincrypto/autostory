@@ -1,0 +1,20 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Analytics</h2>
+  <p class="sa-muted">Architecture only. No fabricated metrics. Provider adapters return honest empty states.</p>
+  <div id="sa-analytics-cards" class="sa-grid mt-3"></div>
+  <div id="sa-analytics-msg" class="sa-empty mt-3">Loading…</div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const data = await SocialAgent.fetch("/analytics");
+  document.getElementById("sa-analytics-cards").innerHTML = (data.cards||[]).map(c => (
+    "<div class='sa-stat'><div class='label'>"+c.label+"</div><div class='value'>—</div><div class='sa-muted small'>No analytics available.</div></div>"
+  )).join("");
+  document.getElementById("sa-analytics-msg").textContent = data.message || "No analytics available.";
+});
+</script>
+{% endblock %}

@@ -32,6 +32,12 @@
 </section>
 
 <section class="sa-card">
+  <h2>Provider matrix</h2>
+  <p class="sa-muted mb-3">Honest status only — unavailable providers show <strong>NOT CONFIGURED</strong>. No fake data.</p>
+  <div id="sa-provider-matrix" class="sa-provider-grid">Loading…</div>
+</section>
+
+<section class="sa-card">
   <h2>Other connections</h2>
   <div id="sa-accounts" class="sa-muted">Loading…</div>
 </section>
@@ -39,6 +45,24 @@
 {% block sa_scripts %}
 <script>
 document.addEventListener("DOMContentLoaded", async () => {
+  // Provider matrix (additive; Meta card below remains canonical OAuth UX)
+  try {
+    const matrix = await SocialAgent.fetch("/accounts/providers");
+    const esc = (s) => String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+    document.getElementById("sa-provider-matrix").innerHTML = (matrix.providers || []).map((p) => (
+      "<article class='sa-provider-card'>" +
+      "<div class='d-flex justify-content-between gap-2'><strong>" + esc(p.label) + "</strong>" +
+      "<span class='sa-status" + (p.status === "CONNECTED" || p.status === "BACKEND_READY" ? " ready" : " missing") + "'>" + esc(p.status) + "</span></div>" +
+      "<div class='sa-muted small mt-1'>health: " + esc(p.health || "—") +
+      " · token expiry: " + esc(p.token_expiry || "—") + "</div>" +
+      "<div class='sa-muted small'>selected: " + esc((p.selected_destination && (p.selected_destination.page_id || p.selected_destination.instagram_id)) || "—") + "</div>" +
+      (p.message ? ("<div class='small mt-2'>" + esc(p.message) + "</div>") : "") +
+      "</article>"
+    )).join("");
+  } catch (e) {
+    document.getElementById("sa-provider-matrix").textContent = String(e.message || e);
+  }
+
   const accountsEl = document.getElementById("sa-accounts");
   const metaEl = document.getElementById("sa-meta");
   const tgEl = document.getElementById("sa-telegram");

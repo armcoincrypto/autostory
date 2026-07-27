@@ -1,0 +1,16 @@
+{% extends "social_agent/shell.html" %}
+{% block sa_content %}
+<section class="sa-card">
+  <h2>Comments</h2>
+  <p class="sa-muted">Provider-abstracted comment threads. No polling. No fake comments. Replies fail-closed.</p>
+  <div id="sa-comments" class="sa-empty mt-3">Loading…</div>
+</section>
+{% endblock %}
+{% block sa_scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const data = await SocialAgent.fetch("/comments");
+  document.getElementById("sa-comments").textContent = data.message || "No comments available.";
+});
+</script>
+{% endblock %}
