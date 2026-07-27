@@ -190,3 +190,120 @@ class SocialPublishReceipt(Base):
     public_url = Column(String(512), nullable=True)
     detail_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class SocialContentStatusEvent(Base):
+    """Immutable approval / lifecycle audit for content items."""
+
+    __tablename__ = "social_content_status_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    content_id = Column(Integer, nullable=False, index=True)
+    from_status = Column(String(64), nullable=True)
+    to_status = Column(String(64), nullable=False, index=True)
+    actor = Column(String(128), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class SocialMediaFolder(Base):
+    __tablename__ = "social_media_folders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    name = Column(String(255), nullable=False)
+    parent_id = Column(Integer, nullable=True, index=True)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SocialMediaAsset(Base):
+    """Local media library asset — no provider upload."""
+
+    __tablename__ = "social_media_assets"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "content_hash", name="uq_social_media_hash"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    folder_id = Column(Integer, nullable=True, index=True)
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    mime_type = Column(String(128), nullable=False, default="application/octet-stream")
+    kind = Column(String(32), nullable=False, default="image")  # image | video | other
+    byte_size = Column(Integer, nullable=False, default=0)
+    content_hash = Column(String(64), nullable=False, index=True)
+    storage_path = Column(String(512), nullable=False)
+    thumbnail_path = Column(String(512), nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    usage_count = Column(Integer, nullable=False, default=0)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+
+class SocialMediaUsage(Base):
+    __tablename__ = "social_media_usages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    asset_id = Column(Integer, nullable=False, index=True)
+    content_id = Column(Integer, nullable=True, index=True)
+    context = Column(String(128), nullable=False, default="attached")
+    actor = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SocialBrandKnowledge(Base):
+    __tablename__ = "social_brand_knowledge"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "category", "key", name="uq_social_brand_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    category = Column(String(64), nullable=False, index=True)
+    key = Column(String(128), nullable=False)
+    title = Column(String(255), nullable=False, default="")
+    value = Column(Text, nullable=False, default="")
+    updated_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class SocialCalendarEntry(Base):
+    """Scheduled queue entry — never triggers live publishing in this phase."""
+
+    __tablename__ = "social_calendar_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    content_id = Column(Integer, nullable=False, index=True)
+    platform = Column(String(64), nullable=False, index=True)
+    title = Column(String(255), nullable=False, default="")
+    scheduled_for = Column(DateTime, nullable=False, index=True)
+    timezone = Column(String(64), nullable=False, default="UTC")
+    status = Column(String(64), nullable=False, default="queued", index=True)
+    conflict = Column(Boolean, nullable=False, default=False)
+    notes = Column(Text, nullable=True)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class SocialAutomationDefinition(Base):
+    """Visual workflow definitions — always disabled until certified."""
+
+    __tablename__ = "social_automation_definitions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(64), nullable=False, default="default", index=True)
+    name = Column(String(255), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+    definition_json = Column(Text, nullable=False, default="{}")
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
