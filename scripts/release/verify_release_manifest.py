@@ -37,8 +37,14 @@ def main(release_path: str) -> None:
             # data may be symlink to shared; .git/.env/venv must not exist as real trees
             if p.is_dir() and not p.is_symlink() and p.name in {".git", "venv", ".venv"}:
                 fail(f"prohibited directory present: {p}")
-            if p.is_file() and p.name == ".env":
-                fail("prohibited .env present")
+            if p.name == ".env":
+                # External shared env symlink is required for production releases.
+                if p.is_symlink():
+                    target = p.resolve()
+                    if str(target) != "/opt/autostory/.env":
+                        fail(f"prohibited .env symlink target: {target}")
+                elif p.is_file():
+                    fail("prohibited .env present")
         if p.suffix in PROHIBITED_SUFFIXES and p.is_file() and not p.is_symlink():
             fail(f"prohibited session file: {p}")
     locks = manifest.get("mutation_lock_expected") or {}
