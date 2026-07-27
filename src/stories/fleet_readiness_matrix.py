@@ -37,9 +37,93 @@ EXCLUDED_ROLES = frozenset(
 
 DEFAULT_LATEST_PATH = Path("/opt/autostory/data/fleet-readiness/latest.json")
 
+# Shared freshness window for fleet matrix as operator "current auth" truth.
+# Execution gates remain separately locked; this only governs display consistency.
+FLEET_MATRIX_FRESH_TTL_HOURS = 24
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def matrix_freshness(
+    matrix: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+    ttl_hours: float = FLEET_MATRIX_FRESH_TTL_HOURS,
+) -> dict[str, Any]:
+    """Age / freshness labels for the canonical fleet readiness artifact."""
+    now = now or datetime.now(timezone.utc)
+    if not matrix:
+        return {
+            "present": False,
+            "fresh": False,
+            "label": "MISSING",
+            "kind": "absent",
+            "generated_at": None,
+            "source_audit_completed_at": None,
+            "age_seconds": None,
+            "ttl_hours": ttl_hours,
+            "canonical_source": str(DEFAULT_LATEST_PATH),
+        }
+    generated = _parse_iso(matrix.get("generated_at")) or _parse_iso(
+        matrix.get("source_audit_completed_at")
+    )
+    age_seconds = None if generated is None else max(0.0, (now - generated).total_seconds())
+    fresh = generated is not None and age_seconds is not None and age_seconds <= ttl_hours * 3600
+    embedded = matrix.get("freshness") if isinstance(matrix.get("freshness"), dict) else {}
+    kind = embedded.get("kind") or matrix.get("regeneration_method") or "cached_matrix"
+    if not fresh:
+        label = "STALE_MATRIX"
+    elif kind in {"live_probe", "fresh_live_telegram_probe_audit"} or str(kind).startswith("fresh"):
+        label = "FRESH_LIVE_PROBE"
+    else:
+        label = "FRESH_CACHED"
+    return {
+        "present": True,
+        "fresh": fresh,
+        "label": label,
+        "kind": kind,
+        "generated_at": matrix.get("generated_at"),
+        "source_audit_run_id": matrix.get("source_audit_run_id"),
+        "source_audit_completed_at": matrix.get("source_audit_completed_at"),
+        "age_seconds": age_seconds,
+        "ttl_hours": ttl_hours,
+        "canonical_source": str(DEFAULT_LATEST_PATH),
+        "regeneration_method": matrix.get("regeneration_method"),
+    }
+
+
+def account_rows_by_id(matrix: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    if not matrix:
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for row in matrix.get("accounts") or []:
+        try:
+            out[int(row["account_id"])] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 def classify_operational_role(account: Account, certified_ids: set[int]) -> str:

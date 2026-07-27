@@ -17,13 +17,44 @@ logger = structlog.get_logger(__name__)
 
 
 def _ensure_governance_template_context(ctx: dict) -> dict:
-    """Guarantee accounts_main.html governance keys exist (legacy-safe)."""
+    """Guarantee accounts_main.html keys exist (legacy-safe)."""
     ctx.setdefault("eligibility_preview", empty_eligibility_preview("stories"))
     ctx.setdefault("eligibility_scheduler", empty_eligibility_preview("scheduler"))
     ctx.setdefault("eligibility_discovery", empty_eligibility_preview("discovery"))
     ctx.setdefault("governance_roles_available", list(DEFAULT_GOVERNANCE_ROLES_AVAILABLE))
     ctx.setdefault("story_readiness_preview", empty_story_readiness_preview())
     ctx.setdefault("pinned_account_ids", [])
+    ctx.setdefault(
+        "operator_summary",
+        {
+            "total_accounts": ctx.get("total_accounts") or 0,
+            "authorized": 0,
+            "certified": 0,
+            "ready": 0,
+            "needs_session": 0,
+            "needs_attention": 0,
+            "disabled": 0,
+            "protected": 0,
+            "reserved": 0,
+            "unavailable": 0,
+            "blocked": 0,
+            "check_required": 0,
+            "default_filter": "all",
+        },
+    )
+    ctx.setdefault(
+        "freshness_compact",
+        {
+            "last_verified": None,
+            "valid_for_hours": 24,
+            "source_label": "Missing",
+            "fresh": False,
+            "label": "MISSING",
+        },
+    )
+    ctx.setdefault("default_filter", "all")
+    ctx.setdefault("automation_locked", True)
+    ctx.setdefault("canonical_source", "/opt/autostory/data/fleet-readiness/latest.json")
     for account in ctx.get("accounts") or []:
         if not isinstance(account, dict):
             continue
@@ -31,6 +62,16 @@ def _ensure_governance_template_context(ctx: dict) -> dict:
         account.setdefault("governance_blocked_reasons", [])
         account.setdefault("requires_manual_override", False)
         account.setdefault("pinned", False)
+        account.setdefault("display_status", "CHECK_REQUIRED")
+        account.setdefault("status_label", "Check required")
+        account.setdefault("status_detail", "Run authorization probe")
+        account.setdefault("authorization_label", "Unknown")
+        account.setdefault("role_label", "Unknown")
+        account.setdefault("required_action", "None")
+        account.setdefault("severity", "warning")
+        account.setdefault("filter_group", "all")
+        account.setdefault("canonical", {})
+        account.setdefault("modules", {"campaigns": {"label": "—"}})
     return ctx
 
 LEGACY_ACCOUNTS_ENDPOINT = "web.accounts_page"

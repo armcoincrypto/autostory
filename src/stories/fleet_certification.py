@@ -753,6 +753,18 @@ async def audit_fleet(
                 timeout_seconds=timeout_seconds,
                 probe_runner=probe_runner,
             )
+            # Timeouts are retried once in isolation before AUTH_STALE classification.
+            if probe and probe.get("probe_status") == "timeout":
+                commands.append(
+                    f"Retried account {int(account.id)} once after probe_timeout"
+                )
+                probe = await probe_account_isolated(
+                    account,
+                    inspection,
+                    timeout_seconds=timeout_seconds,
+                    probe_runner=probe_runner,
+                )
+                probe["timeout_retried"] = True
         row = inventory_row(
             account,
             inspection,
