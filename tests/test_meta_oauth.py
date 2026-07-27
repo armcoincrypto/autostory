@@ -269,3 +269,207 @@ def test_api_routes_meta(crypto_env, monkeypatch):
 
     # unauthenticated
     assert client.get("/api/v1/social-agent/connections/meta").status_code == 401
+
+
+class _EmptyAccountsHttp(_FakeMetaHttp):
+    """Simulate Meta granular era: /me/accounts=[] and debug_token scopes without target_ids."""
+
+    def __init__(self, *, page_ok: bool = True, page_id: str = "867560236439580"):
+        super().__init__()
+        self.page_ok = page_ok
+        self.page_id = page_id
+        self.post_calls = 0
+
+    def __call__(self, method, url, headers=None, body=None, timeout=20.0):
+        self.calls.append(url)
+        if method == "POST":
+            self.post_calls += 1
+        if "oauth/access_token" in url and "fb_exchange_token" in url:
+            return 200, {"access_token": "LONG_TOKEN_V2", "token_type": "bearer", "expires_in": 5184000}
+        if "oauth/access_token" in url:
+            return 200, {"access_token": "SHORT_TOKEN_V2", "token_type": "bearer", "expires_in": 3600}
+        if "debug_token" in url:
+            return 200, {
+                "data": {
+                    "is_valid": True,
+                    "type": "USER",
+                    "scopes": [
+                        "pages_show_list",
+                        "pages_read_engagement",
+                        "instagram_basic",
+                        "pages_manage_posts",
+                        "public_profile",
+                    ],
+                    # No target_ids — matches production failure mode.
+                    "granular_scopes": [
+                        {"scope": "pages_show_list"},
+                        {"scope": "pages_read_engagement"},
+                        {"scope": "pages_manage_posts"},
+                        {"scope": "instagram_basic"},
+                    ],
+                    "user_id": "99",
+                }
+            }
+        if url.startswith("https://graph.facebook.com/") and "/me?" in url and "accounts" not in url:
+            return 200, {"id": "99", "name": "Tester"}
+        if "/me/accounts" in url:
+            return 200, {"data": []}
+        if f"/{self.page_id}?" in url or url.rstrip("/").endswith(f"/{self.page_id}"):
+            if not self.page_ok:
+                return 400, {"error": {"message": "unsupported get request", "code": 100}}
+            return 200, {
+                "id": self.page_id,
+                "name": "Exswaping",
+                "category": "Exchange Program",
+                "access_token": "PAGE_TOKEN_PRESERVED",
+                "instagram_business_account": {"id": "17841478010207208", "username": "exswaping"},
+            }
+        return 500, {"error": {"message": "unexpected", "code": 1}}
+
+
+def _seed_connected_exswaping(db_session, crypto_env):
+    crypto = SocialCredentialCrypto.from_environment()
+    envelope = crypto.encrypt_json(
+        {
+            "user_access_token": "OLD_USER_TOKEN",
+            "page_access_tokens": {"867560236439580": "OLD_PAGE_TOKEN"},
+            "meta_user_id": "99",
+        }
+    )
+    row = SocialConnection(
+        provider="meta",
+        workspace_id="default",
+        status="connected",
+        health="CONNECTED",
+        display_name="Exswaping",
+        external_account_id="99",
+        selected_page_id="867560236439580",
+        selected_instagram_id="17841478010207208",
+        permissions_json=json.dumps(["pages_show_list", "pages_read_engagement", "instagram_basic"]),
+        destinations_json=json.dumps(
+            [
+                {
+                    "page_id": "867560236439580",
+                    "page_name": "Exswaping",
+                    "instagram_account_id": "17841478010207208",
+                    "instagram_username": "exswaping",
+                }
+            ]
+        ),
+        credentials_encrypted=envelope,
+        created_by="admin",
+    )
+    db_session.add(row)
+    db_session.flush()
+    return row
+
+
+def test_reconnect_preserved_page_when_accounts_and_granular_empty(crypto_env, db_session):
+    conn = _seed_connected_exswaping(db_session, crypto_env)
+    old_env = conn.credentials_encrypted
+    http = _EmptyAccountsHttp(page_ok=True)
+    adapter = MetaProviderAdapter(http=http)
+    started = start_meta_oauth(
+        db_session, actor="admin", purpose="reconnect", connection_id=conn.id, adapter=adapter
+    )
+    assert started["ok"]
+    assert "pages_manage_posts" in (started.get("scopes_requested") or [])
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    out = handle_meta_callback(db_session, actor="admin", state=state, code="AUTH", adapter=adapter)
+    assert out["ok"] is True
+    assert out["discovery_source"] == "preserved_selected_page"
+    assert out["pages_discovered"] == 1
+    assert out["connection"]["selected_page_id"] == "867560236439580"
+    assert out["connection"]["selected_instagram_id"] == "17841478010207208"
+    assert out["connection"]["status"] == "connected"
+    assert out["provider_mutations"] == 0
+    db_session.refresh(conn)
+    assert conn.credentials_encrypted != old_env
+    crypto = SocialCredentialCrypto.from_environment()
+    creds = crypto.decrypt_json(conn.credentials_encrypted)
+    assert creds["page_access_tokens"]["867560236439580"] == "PAGE_TOKEN_PRESERVED"
+    assert creds["user_access_token"] == "LONG_TOKEN_V2"
+    blob = json.dumps(out)
+    assert "PAGE_TOKEN" not in blob
+    assert "LONG_TOKEN" not in blob
+    assert http.post_calls == 0
+
+
+def test_reconnect_preserved_page_inaccessible_keeps_old_connection(crypto_env, db_session):
+    conn = _seed_connected_exswaping(db_session, crypto_env)
+    old_env = conn.credentials_encrypted
+    old_status = conn.status
+    http = _EmptyAccountsHttp(page_ok=False)
+    adapter = MetaProviderAdapter(http=http)
+    start_meta_oauth(db_session, actor="admin", purpose="reconnect", connection_id=conn.id, adapter=adapter)
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    out = handle_meta_callback(db_session, actor="admin", state=state, code="AUTH", adapter=adapter)
+    assert out["ok"] is False
+    assert out["error"] == "preserved_page_inaccessible"
+    assert out.get("credentials_overwritten") is False
+    db_session.refresh(conn)
+    assert conn.credentials_encrypted == old_env
+    assert conn.status == old_status
+    assert conn.selected_page_id == "867560236439580"
+
+
+def test_reconnect_workspace_mismatch_denied(crypto_env, db_session):
+    conn = _seed_connected_exswaping(db_session, crypto_env)
+    conn.workspace_id = "other-workspace"
+    db_session.flush()
+    old_env = conn.credentials_encrypted
+    http = _EmptyAccountsHttp(page_ok=True)
+    adapter = MetaProviderAdapter(http=http)
+    started = start_meta_oauth(
+        db_session, actor="admin", purpose="reconnect", connection_id=conn.id, adapter=adapter
+    )
+    assert started["ok"]
+    # Force oauth workspace default while connection is other-workspace
+    row = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first()
+    assert row.workspace_id == "default"
+    out = handle_meta_callback(
+        db_session, actor="admin", workspace_id="default", state=row.state, code="AUTH", adapter=adapter
+    )
+    assert out["ok"] is False
+    assert out["error"] == "workspace_mismatch"
+    db_session.refresh(conn)
+    assert conn.credentials_encrypted == old_env
+
+
+def test_connect_without_discovery_or_preserved_page_empty(crypto_env, db_session):
+    http = _EmptyAccountsHttp(page_ok=True)
+    adapter = MetaProviderAdapter(http=http)
+    start_meta_oauth(db_session, actor="admin", purpose="connect", adapter=adapter)
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    out = handle_meta_callback(db_session, actor="admin", state=state, code="AUTH", adapter=adapter)
+    assert out["ok"] is False
+    assert out["error"] == "pages_discovery_empty"
+    assert db_session.query(SocialConnection).count() == 0
+
+
+def test_preserved_instagram_comes_only_from_validated_page(crypto_env, db_session):
+    conn = _seed_connected_exswaping(db_session, crypto_env)
+    # Stale IG id that must not win over Page fields
+    conn.selected_instagram_id = "stale-ig"
+    db_session.flush()
+    http = _EmptyAccountsHttp(page_ok=True)
+    adapter = MetaProviderAdapter(http=http)
+    start_meta_oauth(db_session, actor="admin", purpose="reconnect", connection_id=conn.id, adapter=adapter)
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    out = handle_meta_callback(db_session, actor="admin", state=state, code="AUTH", adapter=adapter)
+    assert out["ok"]
+    assert out["connection"]["selected_instagram_id"] == "17841478010207208"
+    assert out["connection"]["selected_page_id"] == "867560236439580"
+
+
+def test_publishing_remains_disabled_after_preserved_reconnect(crypto_env, db_session):
+    conn = _seed_connected_exswaping(db_session, crypto_env)
+    http = _EmptyAccountsHttp(page_ok=True)
+    adapter = MetaProviderAdapter(http=http)
+    start_meta_oauth(db_session, actor="admin", purpose="reconnect", connection_id=conn.id, adapter=adapter)
+    state = db_session.query(SocialOAuthState).order_by(SocialOAuthState.id.desc()).first().state
+    handle_meta_callback(db_session, actor="admin", state=state, code="AUTH", adapter=adapter)
+    blocked = assert_meta_publishing_disabled()
+    assert blocked["ok"] is False
+    assert os.environ.get("META_FACEBOOK_PUBLISHING_ENABLED", "false").lower() in {"0", "false", "no", "off", ""}
+    assert os.environ.get("META_INSTAGRAM_PUBLISHING_ENABLED", "false").lower() in {"0", "false", "no", "off", ""}

@@ -247,6 +247,80 @@ def _consume_state(
     return row, None
 
 
+def _resolve_callback_target(
+    db: Session,
+    *,
+    oauth_row: SocialOAuthState | None,
+    workspace_id: str,
+) -> tuple[SocialConnection | None, str | None]:
+    """Resolve the server-bound connection for reconnect. Never trust browser Page IDs."""
+    target: SocialConnection | None = None
+    if oauth_row and oauth_row.purpose in {"reconnect", "publish_canary", "facebook_canary"} and oauth_row.connection_id:
+        target = db.query(SocialConnection).filter(SocialConnection.id == int(oauth_row.connection_id)).first()
+        if target is None:
+            return None, "connection_not_found"
+        if str(target.workspace_id) != str(workspace_id):
+            return None, "workspace_mismatch"
+        return target, None
+    target = (
+        db.query(SocialConnection)
+        .filter(SocialConnection.provider == "meta", SocialConnection.workspace_id == workspace_id)
+        .order_by(SocialConnection.id.desc())
+        .first()
+    )
+    return target, None
+
+
+def _enrich_page_instagram(adapter: MetaProviderAdapter, page: dict[str, Any]) -> dict[str, Any]:
+    """Attach Instagram only from the validated Page (fields first, then page token edge)."""
+    if page.get("instagram_account_id"):
+        return page
+    token = page.get("page_access_token")
+    page_id = page.get("page_id")
+    if not token or not page_id:
+        return page
+    ig = adapter.page_instagram(page_id=str(page_id), page_access_token=str(token))
+    if ig.get("ok") and ig.get("instagram"):
+        page["instagram_account_id"] = ig["instagram"]["instagram_account_id"]
+        page["instagram_username"] = ig["instagram"].get("username")
+    return page
+
+
+def _discover_pages_for_callback(
+    *,
+    adapter: MetaProviderAdapter,
+    access_token: str,
+    oauth_row: SocialOAuthState | None,
+    target: SocialConnection | None,
+) -> tuple[list[dict[str, Any]], str, str | None]:
+    """Discovery order: /me/accounts → granular target_ids → preserved selected_page_id (reconnect only)."""
+    pages_result = adapter.list_pages(access_token=access_token)
+    if not pages_result.get("ok"):
+        return [], pages_result.get("discovery_source") or "me_accounts", "pages_discovery_failed"
+    pages = list(pages_result.get("pages") or [])
+    discovery_source = str(pages_result.get("discovery_source") or "me_accounts")
+    if pages:
+        return pages, discovery_source, None
+
+    reconnect_like = bool(
+        oauth_row and oauth_row.purpose in {"reconnect", "publish_canary", "facebook_canary"}
+    )
+    preserved = str(target.selected_page_id).strip() if (reconnect_like and target and target.selected_page_id) else ""
+    if not preserved:
+        return [], discovery_source, "pages_discovery_empty"
+
+    fetched = adapter.get_page(page_id=preserved, access_token=access_token)
+    if not fetched.get("ok") or not fetched.get("page"):
+        return [], "preserved_selected_page", "preserved_page_inaccessible"
+    page = fetched["page"]
+    if str(page.get("page_id") or "") != preserved:
+        return [], "preserved_selected_page", "preserved_page_mismatch"
+    if not page.get("page_access_token"):
+        return [], "preserved_selected_page", "preserved_page_token_missing"
+    page = _enrich_page_instagram(adapter, page)
+    return [page], "preserved_selected_page", None
+
+
 def handle_meta_callback(
     db: Session,
     *,
@@ -314,35 +388,55 @@ def handle_meta_callback(
         if isinstance(scopes, list):
             granted = [str(s) for s in scopes]
 
-    pages_result = adapter.list_pages(access_token=token)
-    if not pages_result.get("ok"):
-        return {"ok": False, "error": "pages_discovery_failed", "category": pages_result.get("category")}
+    # Resolve target before discovery so reconnect can use preserved selected_page_id.
+    # Fail closed: never overwrite credentials until discovery/validation succeeds.
+    target, target_err = _resolve_callback_target(db, oauth_row=oauth_row, workspace_id=workspace_id)
+    if target_err:
+        _audit(
+            db,
+            actor=actor,
+            action="meta.callback_rejected",
+            decision="deny",
+            detail={"reason": target_err, "workspace_id": workspace_id},
+        )
+        return {"ok": False, "error": target_err}
 
-    pages = pages_result["pages"]
-    if not pages:
+    prior_credentials = target.credentials_encrypted if target else None
+    prior_destinations = target.destinations_json if target else None
+    prior_permissions = target.permissions_json if target else None
+    prior_status = target.status if target else None
+    prior_health = target.health if target else None
+
+    pages, discovery_source, discovery_err = _discover_pages_for_callback(
+        adapter=adapter,
+        access_token=token,
+        oauth_row=oauth_row,
+        target=target,
+    )
+    if discovery_err == "pages_discovery_failed":
+        return {"ok": False, "error": "pages_discovery_failed", "discovery_source": discovery_source}
+    if discovery_err:
         _audit(
             db,
             actor=actor,
             action="meta.callback_rejected",
             decision="deny",
             detail={
-                "reason": "pages_discovery_empty",
-                "discovery_source": pages_result.get("discovery_source"),
+                "reason": discovery_err,
+                "discovery_source": discovery_source,
+                "credentials_overwritten": False,
             },
         )
         return {
             "ok": False,
-            "error": "pages_discovery_empty",
-            "message": "No Pages discovered; refusing to overwrite stored credentials.",
-            "discovery_source": pages_result.get("discovery_source"),
+            "error": discovery_err,
+            "message": "Page discovery failed; refusing to overwrite stored credentials.",
+            "discovery_source": discovery_source,
+            "credentials_overwritten": False,
         }
-    # Enrich Instagram via page token when list omitted details
+
     for p in pages:
-        if p.get("page_access_token") and not p.get("instagram_account_id"):
-            ig = adapter.page_instagram(page_id=p["page_id"], page_access_token=p["page_access_token"])
-            if ig.get("ok") and ig.get("instagram"):
-                p["instagram_account_id"] = ig["instagram"]["instagram_account_id"]
-                p["instagram_username"] = ig["instagram"].get("username")
+        _enrich_page_instagram(adapter, p)
 
     try:
         crypto = SocialCredentialCrypto.from_environment()
@@ -350,6 +444,21 @@ def handle_meta_callback(
         return {"ok": False, "error": "CREDENTIAL_KEY_MISSING"}
 
     page_token_map = {p["page_id"]: p.get("page_access_token") for p in pages if p.get("page_id")}
+    if not page_token_map:
+        _audit(
+            db,
+            actor=actor,
+            action="meta.callback_rejected",
+            decision="deny",
+            detail={"reason": "page_token_missing", "discovery_source": discovery_source},
+        )
+        return {
+            "ok": False,
+            "error": "page_token_missing",
+            "credentials_overwritten": False,
+            "discovery_source": discovery_source,
+        }
+
     credential_payload = {
         "token_type": exchanged.get("token_type") or "bearer",
         "user_access_token": token,
@@ -371,17 +480,6 @@ def handle_meta_callback(
     safe_dests = _safe_destinations(pages)
     display = me.get("name") or f"Meta user {me['id']}"
 
-    # reconnect / canary: update existing; connect: upsert workspace meta connection
-    target: SocialConnection | None = None
-    if oauth_row and oauth_row.purpose in {"reconnect", "publish_canary", "facebook_canary"} and oauth_row.connection_id:
-        target = db.query(SocialConnection).filter(SocialConnection.id == int(oauth_row.connection_id)).first()
-    if target is None:
-        target = (
-            db.query(SocialConnection)
-            .filter(SocialConnection.provider == "meta", SocialConnection.workspace_id == workspace_id)
-            .order_by(SocialConnection.id.desc())
-            .first()
-        )
     prev_page = target.selected_page_id if target else None
     prev_ig = target.selected_instagram_id if target else None
     prev_display = target.display_name if target else None
@@ -389,6 +487,7 @@ def handle_meta_callback(
         target = SocialConnection(provider="meta", workspace_id=workspace_id, created_by=actor)
         db.add(target)
 
+    # Atomic replace only after full validation above.
     target.external_account_id = me["id"]
     target.status = "connected_pending_selection" if len(safe_dests) != 1 else "connected"
     target.health = "CONNECTED"
@@ -401,6 +500,7 @@ def handle_meta_callback(
 
     if len(safe_dests) == 1:
         only = safe_dests[0]
+        # Instagram derived only from the validated Page destination.
         target.selected_page_id = only.get("page_id")
         target.selected_instagram_id = only.get("instagram_account_id")
         target.display_name = only.get("page_name") or display
@@ -410,14 +510,27 @@ def handle_meta_callback(
             target.status = "connected"
     elif prev_page and any(str(d.get("page_id")) == str(prev_page) for d in safe_dests):
         # Preserve prior Page selection across canary/reconnect (e.g. Exswaping).
-        target.selected_page_id = prev_page
-        target.selected_instagram_id = prev_ig
+        # Never fall back to destinations[0] when multiple pages exist.
         match = next((d for d in safe_dests if str(d.get("page_id")) == str(prev_page)), None)
+        target.selected_page_id = prev_page
+        # Instagram must come from the matched validated Page, not an arbitrary destination.
+        target.selected_instagram_id = (match or {}).get("instagram_account_id") or None
+        if prev_ig and str((match or {}).get("instagram_account_id") or "") == str(prev_ig):
+            target.selected_instagram_id = prev_ig
         target.display_name = (match or {}).get("page_name") or prev_display or display
-        target.status = "connected"
+        target.status = "connected" if target.selected_instagram_id else "connected_no_instagram"
     else:
         target.display_name = display
+        # Leave selection unset when multiple pages and no preserved match.
 
+    # Sanity: if encrypt somehow empty, roll back connection credential fields.
+    if not target.credentials_encrypted:
+        target.credentials_encrypted = prior_credentials
+        target.destinations_json = prior_destinations
+        target.permissions_json = prior_permissions
+        target.status = prior_status or target.status
+        target.health = prior_health or target.health
+        return {"ok": False, "error": "encrypt_failed", "credentials_overwritten": False}
 
     db.flush()
     _audit(
@@ -430,6 +543,7 @@ def handle_meta_callback(
             "pages_discovered": len(safe_dests),
             "instagram_accounts_discovered": sum(1 for d in safe_dests if d.get("instagram_account_id")),
             "granted_permission_count": len(granted),
+            "discovery_source": discovery_source,
         },
     )
     _audit(
@@ -444,7 +558,11 @@ def handle_meta_callback(
         actor=actor,
         action="meta.pages_discovered",
         decision="allow",
-        detail={"connection_id": target.id, "count": len(safe_dests)},
+        detail={
+            "connection_id": target.id,
+            "count": len(safe_dests),
+            "discovery_source": discovery_source,
+        },
     )
     if oauth_row and oauth_row.purpose in {"reconnect", "publish_canary", "facebook_canary"}:
         _audit(
@@ -452,7 +570,12 @@ def handle_meta_callback(
             actor=actor,
             action="meta.reconnect_completed" if oauth_row.purpose == "reconnect" else "meta.canary_oauth_completed",
             decision="allow",
-            detail={"connection_id": target.id, "purpose": oauth_row.purpose, "pages_manage_posts": "pages_manage_posts" in granted},
+            detail={
+                "connection_id": target.id,
+                "purpose": oauth_row.purpose,
+                "pages_manage_posts": "pages_manage_posts" in granted,
+                "discovery_source": discovery_source,
+            },
         )
 
     return {
@@ -460,7 +583,10 @@ def handle_meta_callback(
         "connection": _public_connection(target),
         "pages_discovered": len(safe_dests),
         "instagram_accounts_discovered": sum(1 for d in safe_dests if d.get("instagram_account_id")),
-        "needs_page_selection": len(safe_dests) > 1,
+        "needs_page_selection": len(safe_dests) > 1 and not (
+            prev_page and any(str(d.get("page_id")) == str(prev_page) for d in safe_dests)
+        ),
+        "discovery_source": discovery_source,
         "provider_mutations": 0,
     }
 

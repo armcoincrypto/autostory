@@ -77,6 +77,31 @@ def _fake_decrypt(_envelope):
     }
 
 
+def _patch_preflight_adapter(monkeypatch):
+    monkeypatch.setattr(
+        MetaProviderAdapter,
+        "list_user_permissions",
+        lambda self, **k: {
+            "ok": True,
+            "granted": ["pages_manage_posts", "pages_show_list", "pages_read_engagement", "public_profile"],
+        },
+    )
+    monkeypatch.setattr(MetaProviderAdapter, "health_probe", lambda self, **k: {"ok": True, "health": "CONNECTED"})
+    monkeypatch.setattr(
+        MetaProviderAdapter,
+        "debug_token",
+        lambda self, **k: {
+            "ok": True,
+            "data": {
+                "is_valid": True,
+                "type": "PAGE",
+                "profile_id": CANARY_FACEBOOK_PAGE_ID,
+                "scopes": ["pages_manage_posts", "pages_show_list", "pages_read_engagement", "public_profile"],
+            },
+        },
+    )
+
+
 class RecordingAdapter(MetaProviderAdapter):
     def __init__(self):
         super().__init__()
@@ -87,6 +112,20 @@ class RecordingAdapter(MetaProviderAdapter):
 
     def health_probe(self, *, access_token: str, page_id: str | None = None):
         return {"ok": True, "health": "CONNECTED", "user_id": page_id or "x"}
+
+    def debug_token(self, *, input_token: str):
+        scopes = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "public_profile"]
+        if input_token == "page-token":
+            return {
+                "ok": True,
+                "data": {
+                    "is_valid": True,
+                    "type": "PAGE",
+                    "profile_id": CANARY_FACEBOOK_PAGE_ID,
+                    "scopes": scopes,
+                },
+            }
+        return {"ok": True, "data": {"is_valid": True, "type": "USER", "scopes": scopes}}
 
     def publish_page_feed(self, **kwargs):
         self.calls.append(kwargs)
@@ -173,12 +212,7 @@ def test_wrong_payload_hash_denies(db_session, gates_disabled, monkeypatch):
     monkeypatch.setattr(canary, "_decrypt_credentials", lambda row: _fake_decrypt(""))
     _seed_connection(db_session)
     dry = canary.prepare_facebook_canary_dry_run(db_session, actor="op")
-    monkeypatch.setattr(
-        MetaProviderAdapter,
-        "list_user_permissions",
-        lambda self, **k: {"ok": True, "granted": ["pages_manage_posts"]},
-    )
-    monkeypatch.setattr(MetaProviderAdapter, "health_probe", lambda self, **k: {"ok": True, "health": "CONNECTED"})
+    _patch_preflight_adapter(monkeypatch)
     pre = canary.preflight_facebook_canary(
         db_session,
         actor="op",
@@ -271,12 +305,7 @@ def test_exact_valid_canary_authorizes_one_call_only(db_session, gates_disabled,
     monkeypatch.setattr(canary, "_decrypt_credentials", lambda row: _fake_decrypt(""))
     _seed_connection(db_session)
     adapter = RecordingAdapter()
-    monkeypatch.setattr(
-        MetaProviderAdapter,
-        "list_user_permissions",
-        lambda self, **k: {"ok": True, "granted": ["pages_manage_posts", "pages_show_list", "pages_read_engagement"]},
-    )
-    monkeypatch.setattr(MetaProviderAdapter, "health_probe", lambda self, **k: {"ok": True, "health": "CONNECTED"})
+    _patch_preflight_adapter(monkeypatch)
 
     dry = canary.prepare_facebook_canary_dry_run(db_session, actor="op")
     assert dry["provider_http_posts"] == 0

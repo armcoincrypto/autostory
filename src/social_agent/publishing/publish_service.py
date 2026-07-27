@@ -193,13 +193,27 @@ def preflight_facebook_canary(
     add("page_token_present", bool(page_token))
     user_token = creds.get("user_access_token") or creds.get("access_token")
     add("user_token_present", bool(user_token))
+    add(
+        "selected_instagram_exswaping",
+        str(conn.selected_instagram_id or "") == "17841478010207208",
+        selected_instagram_id=conn.selected_instagram_id,
+    )
 
     adapter = MetaProviderAdapter()
     if page_token:
         health = adapter.health_probe(access_token=page_token, page_id=str(page_id))
         add("token_health", bool(health.get("ok")), health=health.get("health"), reason=health.get("reason"))
+        page_dbg = adapter.debug_token(input_token=page_token)
+        page_scopes = list((page_dbg.get("data") or {}).get("scopes") or []) if page_dbg.get("ok") else []
+        add(
+            "page_token_pages_manage_posts",
+            CANARY_REQUIRED_PERMISSION in page_scopes,
+            page_token_type=(page_dbg.get("data") or {}).get("type"),
+            page_profile_id=(page_dbg.get("data") or {}).get("profile_id"),
+        )
     else:
         add("token_health", False)
+        add("page_token_pages_manage_posts", False)
 
     granted: list[str] = []
     if user_token:
