@@ -2,8 +2,9 @@
 {% block sa_content %}
 <section class="sa-card">
   <h2>Publishing Preview</h2>
+  <div class="sa-gate-banner" role="note">Dry-run only. Live Meta / Instagram publishing stays disabled.</div>
   <p class="sa-muted mb-2">
-    Dry-run only. Payloads are built exactly as they would be sent to Meta Graph — nothing is posted.
+    Payloads are built exactly as they would be sent to Meta Graph — nothing is posted.
     Live publishing stays disabled (<code>META_*_PUBLISHING_ENABLED=false</code>).
   </p>
   <ol class="sa-workflow mb-3" id="sa-workflow">
@@ -144,26 +145,35 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function loadHistory() {
-    const data = await SocialAgent.fetch("/publishing/history");
-    const items = data.items || [];
-    if (!items.length) {
-      historyEl.innerHTML = "<div class='sa-empty'>No dry-runs yet.</div>";
-      return;
-    }
-    historyEl.innerHTML = items.map((it) => (
-      "<div class='sa-variant d-flex justify-content-between gap-2 align-items-start'>"
-      + "<div><div class='meta'>#" + it.id + " · " + escapeHtml(it.status) + " · " + escapeHtml((it.destinations || []).join(", "))
-      + "</div><div class='small sa-muted'>hash " + escapeHtml(it.payload_hash) + "</div></div>"
-      + "<button type='button' class='btn btn-outline-light btn-sm' data-open='" + it.id + "'>Open</button>"
-      + "</div>"
-    )).join("");
-    historyEl.querySelectorAll("[data-open]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const id = btn.getAttribute("data-open");
-        const prev = await SocialAgent.fetch("/publishing/preview/" + id);
-        renderResult(prev);
+    historyEl.innerHTML = SocialAgent.ui.loadingHtml("Loading history…");
+    try {
+      const data = await SocialAgent.fetch("/publishing/history");
+      const items = data.items || [];
+      if (!items.length) {
+        historyEl.innerHTML = SocialAgent.ui.emptyHtml("No dry-runs yet", "Validate a draft above to build a Meta payload preview.");
+        return;
+      }
+      historyEl.innerHTML = items.map((it) => (
+        "<div class='sa-variant d-flex justify-content-between gap-2 align-items-start'>"
+        + "<div><div class='meta'>#" + it.id + " · " + escapeHtml(it.status) + " · " + escapeHtml((it.destinations || []).join(", "))
+        + "</div><div class='small sa-muted'>hash " + escapeHtml(it.payload_hash) + "</div></div>"
+        + "<button type='button' class='btn btn-outline-light btn-sm' data-open='" + it.id + "'>Open</button>"
+        + "</div>"
+      )).join("");
+      historyEl.querySelectorAll("[data-open]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const prev = await SocialAgent.fetch("/publishing/preview/" + btn.getAttribute("data-open"));
+            renderResult(prev);
+            SocialAgent.ui.toast("Opened dry-run #" + btn.getAttribute("data-open"), "ok");
+          } catch (e) {
+            SocialAgent.ui.toast(e.message, "error");
+          }
+        });
       });
-    });
+    } catch (e) {
+      historyEl.innerHTML = SocialAgent.ui.errorHtml(e.message);
+    }
   }
 
   document.getElementById("sa-pub-form").addEventListener("submit", async (e) => {
@@ -171,7 +181,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const destinations = Array.from(document.querySelectorAll('input[name="dest"]:checked')).map((el) => el.value);
     setWorkflow(destinations.length ? "destination" : "draft");
     const btn = document.getElementById("sa-pub-run");
-    btn.disabled = true;
+    SocialAgent.ui.setBusy(btn, true);
     statusEl.textContent = "Running dry-run…";
     try {
       const images = splitUrls(document.getElementById("sa-pub-images").value).map((url) => ({ url }));
@@ -192,18 +202,20 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       setWorkflow("preview");
       renderResult(data);
+      SocialAgent.ui.toast("Dry-run complete · provider_called=" + String(data.provider_called), "ok");
       await loadHistory();
     } catch (err) {
-      statusEl.innerHTML = "<span class='text-danger'>" + escapeHtml(err.message) + "</span>";
+      statusEl.innerHTML = SocialAgent.ui.errorHtml(err.message);
       if (err.data) renderResult(err.data);
+      SocialAgent.ui.toast(err.message, "error");
     } finally {
-      btn.disabled = false;
+      SocialAgent.ui.setBusy(btn, false);
     }
   });
 
-  document.getElementById("sa-pub-refresh-history").addEventListener("click", () => loadHistory().catch(console.error));
+  document.getElementById("sa-pub-refresh-history").addEventListener("click", () => loadHistory());
   setWorkflow("draft");
-  loadHistory().catch((e) => { historyEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>"; });
+  loadHistory();
 });
 </script>
 {% endblock %}

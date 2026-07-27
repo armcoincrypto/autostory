@@ -46,10 +46,12 @@
 <script>
 document.addEventListener("DOMContentLoaded", async () => {
   // Provider matrix (additive; Meta card below remains canonical OAuth UX)
+  const matrixEl = document.getElementById("sa-provider-matrix");
+  matrixEl.innerHTML = SocialAgent.ui.loadingHtml();
   try {
     const matrix = await SocialAgent.fetch("/accounts/providers");
-    const esc = (s) => String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
-    document.getElementById("sa-provider-matrix").innerHTML = (matrix.providers || []).map((p) => (
+    const esc = SocialAgent.escapeHtml;
+    matrixEl.innerHTML = (matrix.providers || []).map((p) => (
       "<article class='sa-provider-card'>" +
       "<div class='d-flex justify-content-between gap-2'><strong>" + esc(p.label) + "</strong>" +
       "<span class='sa-status" + (p.status === "CONNECTED" || p.status === "BACKEND_READY" ? " ready" : " missing") + "'>" + esc(p.status) + "</span></div>" +
@@ -58,9 +60,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       "<div class='sa-muted small'>selected: " + esc((p.selected_destination && (p.selected_destination.page_id || p.selected_destination.instagram_id)) || "—") + "</div>" +
       (p.message ? ("<div class='small mt-2'>" + esc(p.message) + "</div>") : "") +
       "</article>"
-    )).join("");
+    )).join("") || SocialAgent.ui.emptyHtml("No providers listed");
   } catch (e) {
-    document.getElementById("sa-provider-matrix").textContent = String(e.message || e);
+    matrixEl.innerHTML = SocialAgent.ui.errorHtml(e.message);
   }
 
   const accountsEl = document.getElementById("sa-accounts");
@@ -247,7 +249,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const rows = list.connections || [];
     accountsEl.innerHTML = rows.length
       ? rows.map((c) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(c.provider) + " · " + escapeHtml(c.status) + " · " + escapeHtml(c.health) + "</div><strong>" + escapeHtml(c.display_name || "(unnamed)") + "</strong></div>").join("")
-      : "<div class='sa-empty'>No other connected accounts yet.</div>";
+      : SocialAgent.ui.emptyHtml("No other connected accounts yet");
   }
 
   connectBtn.addEventListener("click", async () => {
@@ -302,7 +304,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await refresh();
   } catch (e) {
-    accountsEl.innerHTML = "<div class='text-danger'>" + escapeHtml(e.message) + "</div>";
+    accountsEl.innerHTML = SocialAgent.ui.errorHtml(e.message);
     setPill("Error", "blocked");
   }
 });

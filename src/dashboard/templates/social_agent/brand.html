@@ -1,21 +1,31 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
 <section class="sa-card">
-  <h2>Brand Knowledge</h2>
-  <p class="sa-muted mb-3">Voice, tone, emoji rules, hashtags, CTAs, banned words, facts, URLs, social links, legal footer. AI Assistant loads this automatically.</p>
+  <div class="sa-toolbar">
+    <div>
+      <h2 class="mb-1">Brand Knowledge</h2>
+      <p class="sa-muted mb-0">Voice, tone, emoji, hashtags, CTAs, banned words, facts, URLs, social links, legal footer.</p>
+    </div>
+  </div>
+  <p class="sa-muted small">AI Copilot loads this automatically. Knowledge cannot override publish authorization.</p>
   <form id="sa-brand-search" class="row g-2 align-items-end mb-3">
     <div class="col-md-8">
       <label class="form-label small mb-0" for="sa-brand-q">Search</label>
       <input class="form-control form-control-sm" id="sa-brand-q" placeholder="AML, CTA, tone…" />
     </div>
-    <div class="col-md-4">
+    <div class="col-md-4 d-flex gap-2">
       <button type="submit" class="btn btn-outline-light btn-sm">Search</button>
+      <button type="button" class="btn btn-outline-light btn-sm" id="sa-brand-reload">Reload</button>
     </div>
   </form>
-  <div id="sa-brand-hits" class="sa-muted">Loading…</div>
+  <div id="sa-brand-hits">Loading…</div>
 </section>
 <section class="sa-card">
-  <h2>Add / update entry</h2>
+  <h2>Inline edit</h2>
+  <div id="sa-brand-editor" class="sa-brand-editor">Loading…</div>
+</section>
+<section class="sa-card">
+  <h2>Add entry</h2>
   <form id="sa-brand-upsert" class="row g-2">
     <div class="col-md-3"><input class="form-control form-control-sm" id="b-cat" placeholder="category" required /></div>
     <div class="col-md-3"><input class="form-control form-control-sm" id="b-key" placeholder="key" required /></div>
@@ -29,46 +39,99 @@
 <script>
 document.addEventListener("DOMContentLoaded", () => {
   const hits = document.getElementById("sa-brand-hits");
-  function escapeHtml(s) {
-    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
-  }
-  function render(rows) {
+  const editor = document.getElementById("sa-brand-editor");
+  let allItems = [];
+
+  function renderHits(rows) {
     hits.innerHTML = rows.length
-      ? rows.map((r) => "<div class='sa-variant'><div class='meta'>" + escapeHtml(r.category || r.id) + " · " + escapeHtml(r.key || "") + "</div><strong>" + escapeHtml(r.title) + "</strong><div class='mt-1'>" + escapeHtml(r.text || r.value) + "</div></div>").join("")
-      : "<div class='sa-empty'>No matches.</div>";
+      ? rows.map((r) => "<div class='sa-variant'><div class='meta'>" + SocialAgent.escapeHtml(r.category || "") + " · " + SocialAgent.escapeHtml(r.key || "") + "</div><strong>" + SocialAgent.escapeHtml(r.title) + "</strong><div class='mt-1'>" + SocialAgent.escapeHtml(r.text || r.value) + "</div></div>").join("")
+      : SocialAgent.ui.emptyHtml("No matches");
   }
-  async function run(q) {
-    if (!q) {
+
+  function renderEditor(rows) {
+    editor.innerHTML = rows.map((r) => (
+      "<article class='sa-brand-card' data-id='"+r.id+"'>" +
+      "<div class='sa-muted small mb-1'>"+SocialAgent.escapeHtml(r.category)+" / "+SocialAgent.escapeHtml(r.key)+"</div>" +
+      "<input class='form-control form-control-sm mb-2' data-field='title' value='"+SocialAgent.escapeHtml(r.title)+"' aria-label='Title' />" +
+      "<textarea data-field='value' aria-label='Value'>"+SocialAgent.escapeHtml(r.value)+"</textarea>" +
+      "<button type='button' class='btn btn-outline-info btn-sm mt-2' data-save>Save</button>" +
+      "</article>"
+    )).join("") || SocialAgent.ui.emptyHtml("No brand entries");
+    editor.querySelectorAll("[data-save]").forEach((btn) => btn.addEventListener("click", async () => {
+      const card = btn.closest(".sa-brand-card");
+      const item = allItems.find((x) => String(x.id) === String(card.getAttribute("data-id")));
+      if (!item) return;
+      try {
+        await SocialAgent.fetch("/brand", {
+          method: "POST",
+          body: JSON.stringify({
+            category: item.category,
+            key: item.key,
+            title: card.querySelector("[data-field=title]").value,
+            value: card.querySelector("[data-field=value]").value,
+          }),
+        });
+        SocialAgent.ui.toast("Brand entry saved", "ok");
+        loadAll();
+      } catch (e) {
+        SocialAgent.ui.toast(e.message, "error");
+      }
+    }));
+  }
+
+  async function loadAll() {
+    hits.innerHTML = SocialAgent.ui.loadingHtml();
+    editor.innerHTML = SocialAgent.ui.loadingHtml();
+    try {
       const data = await SocialAgent.fetch("/brand");
-      render(data.items || []);
-      return;
+      allItems = data.items || [];
+      renderHits(allItems);
+      renderEditor(allItems);
+    } catch (e) {
+      hits.innerHTML = SocialAgent.ui.errorHtml(e.message);
+      editor.innerHTML = "";
     }
-    const data = await SocialAgent.fetch("/tools/execute", {
-      method: "POST",
-      body: JSON.stringify({ tool: "brand.search_knowledge", dry_run: true, arguments: { query: q } }),
-    });
-    render(data.hits || []);
   }
+
+  async function search(q) {
+    if (!q) return loadAll();
+    hits.innerHTML = SocialAgent.ui.loadingHtml("Searching…");
+    try {
+      const data = await SocialAgent.fetch("/tools/execute", {
+        method: "POST",
+        body: JSON.stringify({ tool: "brand.search_knowledge", dry_run: true, arguments: { query: q } }),
+      });
+      renderHits(data.hits || []);
+    } catch (e) {
+      hits.innerHTML = SocialAgent.ui.errorHtml(e.message);
+    }
+  }
+
   document.getElementById("sa-brand-search").addEventListener("submit", (e) => {
     e.preventDefault();
-    run(document.getElementById("sa-brand-q").value).catch((err) => {
-      hits.innerHTML = "<div class='text-danger'>" + escapeHtml(err.message) + "</div>";
-    });
+    search(document.getElementById("sa-brand-q").value);
   });
+  document.getElementById("sa-brand-reload").addEventListener("click", loadAll);
   document.getElementById("sa-brand-upsert").addEventListener("submit", async (e) => {
     e.preventDefault();
-    await SocialAgent.fetch("/brand", {
-      method: "POST",
-      body: JSON.stringify({
-        category: document.getElementById("b-cat").value,
-        key: document.getElementById("b-key").value,
-        title: document.getElementById("b-title").value,
-        value: document.getElementById("b-value").value,
-      }),
-    });
-    run("");
+    try {
+      await SocialAgent.fetch("/brand", {
+        method: "POST",
+        body: JSON.stringify({
+          category: document.getElementById("b-cat").value,
+          key: document.getElementById("b-key").value,
+          title: document.getElementById("b-title").value,
+          value: document.getElementById("b-value").value,
+        }),
+      });
+      SocialAgent.ui.toast("Entry added", "ok");
+      e.target.reset();
+      loadAll();
+    } catch (err) {
+      SocialAgent.ui.toast(err.message, "error");
+    }
   });
-  run("").catch(console.error);
+  loadAll();
 });
 </script>
 {% endblock %}

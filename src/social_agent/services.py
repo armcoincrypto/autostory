@@ -371,6 +371,125 @@ def list_drafts(db: Session, *, limit: int = 50) -> dict[str, Any]:
     }
 
 
+def global_search(db: Session, *, query: str, limit: int = 20) -> dict[str, Any]:
+    """Read-only workspace search across drafts, brand, media, calendar, and tools."""
+    q = (query or "").strip().lower()
+    limit = max(1, min(int(limit or 20), 50))
+    results: list[dict[str, Any]] = []
+    if not q:
+        return {"ok": True, "query": "", "results": [], "message": "Enter a search query."}
+
+    # Drafts / content
+    for row in db.query(SocialContentItem).order_by(SocialContentItem.id.desc()).limit(200).all():
+        blob = f"{row.id} {row.title or ''} {row.brief or ''} {row.status or ''}".lower()
+        if q in blob:
+            results.append(
+                {
+                    "type": "content",
+                    "id": row.id,
+                    "title": row.title or f"Draft #{row.id}",
+                    "subtitle": normalize_status(row.status),
+                    "href": f"/social-agent/content?open={row.id}",
+                }
+            )
+        if len(results) >= limit:
+            break
+
+    # Brand knowledge (reuse store)
+    from src.social_agent import brand_store as brand
+
+    for hit in (brand.search_knowledge(db, query=q).get("hits") or [])[: max(0, limit - len(results))]:
+        results.append(
+            {
+                "type": "brand",
+                "id": hit.get("id"),
+                "title": hit.get("title") or hit.get("key"),
+                "subtitle": hit.get("category"),
+                "href": "/social-agent/brand",
+            }
+        )
+
+    # Media filenames
+    from src.social_agent.models import SocialMediaAsset
+
+    if len(results) < limit:
+        for asset in (
+            db.query(SocialMediaAsset)
+            .filter(SocialMediaAsset.deleted_at.is_(None))
+            .order_by(SocialMediaAsset.id.desc())
+            .limit(100)
+            .all()
+        ):
+            blob = f"{asset.original_filename} {asset.filename} {asset.mime_type} {asset.kind}".lower()
+            if q in blob:
+                results.append(
+                    {
+                        "type": "media",
+                        "id": asset.id,
+                        "title": asset.original_filename,
+                        "subtitle": asset.kind,
+                        "href": "/social-agent/media",
+                    }
+                )
+            if len(results) >= limit:
+                break
+
+    # Calendar titles
+    from src.social_agent.models import SocialCalendarEntry
+
+    if len(results) < limit:
+        for entry in db.query(SocialCalendarEntry).order_by(SocialCalendarEntry.id.desc()).limit(100).all():
+            blob = f"{entry.title} {entry.platform} {entry.status}".lower()
+            if q in blob:
+                results.append(
+                    {
+                        "type": "calendar",
+                        "id": entry.id,
+                        "title": entry.title,
+                        "subtitle": f"{entry.platform} · {entry.status}",
+                        "href": "/social-agent/calendar",
+                    }
+                )
+            if len(results) >= limit:
+                break
+
+    # Tools / navigation labels
+    nav_hits = [
+        ("overview", "Overview", "/social-agent"),
+        ("assistant", "AI Assistant", "/social-agent/assistant"),
+        ("content", "Content Studio", "/social-agent/content"),
+        ("publishing", "Publishing Preview", "/social-agent/publishing"),
+        ("calendar", "Calendar", "/social-agent/calendar"),
+        ("media", "Media Library", "/social-agent/media"),
+        ("accounts", "Social Accounts", "/social-agent/accounts"),
+        ("analytics", "Analytics", "/social-agent/analytics"),
+        ("brand", "Brand Knowledge", "/social-agent/brand"),
+        ("settings", "Settings", "/social-agent/settings"),
+    ]
+    for key, title, href in nav_hits:
+        if len(results) >= limit:
+            break
+        if q in key or q in title.lower():
+            results.append({"type": "page", "id": key, "title": title, "subtitle": "Navigate", "href": href})
+
+    for tool in list_tools():
+        if len(results) >= limit:
+            break
+        name = tool.get("name") or ""
+        if q in name.lower() or q in (tool.get("description") or "").lower():
+            results.append(
+                {
+                    "type": "tool",
+                    "id": name,
+                    "title": name,
+                    "subtitle": "available" if tool.get("available") else "unavailable",
+                    "href": "/social-agent/settings",
+                }
+            )
+
+    return {"ok": True, "query": query, "results": results[:limit], "provider_called": False}
+
+
 def get_draft(db: Session, content_id: int) -> dict[str, Any]:
     item = db.query(SocialContentItem).filter(SocialContentItem.id == int(content_id)).first()
     if not item:

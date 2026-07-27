@@ -1,21 +1,28 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
 <section class="sa-card">
-  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
-    <h2 class="mb-0">AI Assistant</h2>
+  <div class="sa-toolbar mb-2">
+    <div>
+      <h2 class="mb-1">AI Copilot</h2>
+      <p class="sa-muted mb-0">Same canonical tools as the UI. Never publishes automatically.</p>
+    </div>
     <button type="button" class="btn btn-outline-light btn-sm" id="sa-new-chat">New chat</button>
   </div>
-  <p class="sa-muted mb-3">
-    Natural-language commands call the same canonical services as the UI.
-    Live publishing is blocked until an authorized canary; drafts and dry-runs work now.
-  </p>
+  <div class="sa-gate-banner" role="note">Live Meta / Instagram / Telegram publish stays locked. Dry-runs and drafts only.</div>
+  <div class="sa-chip-row mb-3" id="sa-copilot-suggestions" aria-label="Suggested prompts">
+    <button type="button" class="sa-suggestion" data-prompt="Create a multi-platform draft about USDT to AMD">Generate campaign</button>
+    <button type="button" class="sa-suggestion" data-prompt="Rewrite this for LinkedIn: Clear rates, no hype.">Rewrite</button>
+    <button type="button" class="sa-suggestion" data-prompt="Suggest hashtags for Exswaping rates post">Hashtags</button>
+    <button type="button" class="sa-suggestion" data-prompt="Check compliance: guaranteed returns this week">Compliance</button>
+    <button type="button" class="sa-suggestion" data-prompt="Generate a content calendar for weekly Exswaping updates">Calendar plan</button>
+    <button type="button" class="sa-suggestion" data-prompt="Publish dry-run to Facebook">Dry-run preview</button>
+  </div>
   <div class="sa-chat" id="sa-chat" aria-live="polite"></div>
   <form class="sa-composer" id="sa-chat-form">
     <label class="visually-hidden" for="sa-chat-input">Message</label>
-    <textarea id="sa-chat-input" placeholder="Create a Telegram post about USDT to AMD…" required></textarea>
+    <textarea id="sa-chat-input" placeholder="Ask the copilot to draft, rewrite, check compliance…" required></textarea>
     <button type="submit" class="btn btn-primary align-self-end" id="sa-chat-send">Send</button>
   </form>
-  <p class="sa-muted small mt-2 mb-0">Tip: ask about Meta / Telegram connections, or generate platform variants.</p>
 </section>
 {% endblock %}
 {% block sa_scripts %}
@@ -25,6 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const chat = document.getElementById("sa-chat");
   const form = document.getElementById("sa-chat-form");
   const input = document.getElementById("sa-chat-input");
+  const sendBtn = document.getElementById("sa-chat-send");
 
   function bubble(role, text) {
     const el = document.createElement("div");
@@ -34,39 +42,68 @@ document.addEventListener("DOMContentLoaded", () => {
     chat.scrollTop = chat.scrollHeight;
   }
 
-  document.getElementById("sa-new-chat").addEventListener("click", () => {
-    conversationId = null;
-    chat.innerHTML = "";
-    bubble("assistant", "New conversation ready. What should we draft?");
-  });
-
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const message = input.value.trim();
+  async function send(message) {
     if (!message) return;
     bubble("user", message);
     input.value = "";
-    const sendBtn = document.getElementById("sa-chat-send");
-    sendBtn.disabled = true;
+    SocialAgent.ui.setBusy(sendBtn, true);
+    const pending = document.createElement("div");
+    pending.className = "sa-bubble tool";
+    pending.textContent = "Thinking…";
+    chat.appendChild(pending);
     try {
       const data = await SocialAgent.fetch("/chat", {
         method: "POST",
         body: JSON.stringify({ conversation_id: conversationId, message }),
       });
+      pending.remove();
       conversationId = data.conversation_id;
       bubble("assistant", data.reply || "(empty reply)");
       (data.tool_calls || []).forEach((tc) => {
-        bubble("tool", "Tool: " + (tc.tool || "?") + " → " + JSON.stringify(tc.result && (tc.result.ok !== undefined ? { ok: tc.result.ok, content_id: tc.result.content_id, error: tc.result.error } : tc.result)).slice(0, 400));
+        const summary = {
+          ok: tc.result && tc.result.ok,
+          content_id: tc.result && tc.result.content_id,
+          error: tc.result && tc.result.error,
+          auto_publish: tc.result && tc.result.auto_publish,
+        };
+        bubble("tool", "Tool: " + (tc.tool || "?") + " → " + JSON.stringify(summary).slice(0, 400));
       });
     } catch (err) {
+      pending.remove();
       bubble("assistant", "Error: " + err.message);
+      SocialAgent.ui.toast(err.message, "error");
     } finally {
-      sendBtn.disabled = false;
+      SocialAgent.ui.setBusy(sendBtn, false);
       input.focus();
+    }
+  }
+
+  document.getElementById("sa-new-chat").addEventListener("click", () => {
+    conversationId = null;
+    chat.innerHTML = "";
+    bubble("assistant", "New conversation ready. I can draft, rewrite, check compliance, and dry-run — never auto-publish.");
+  });
+
+  document.querySelectorAll("[data-prompt]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      input.value = btn.getAttribute("data-prompt");
+      input.focus();
+    })
+  );
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    send(input.value.trim());
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
     }
   });
 
-  bubble("assistant", "I'm the Social Agent assistant. Drafts and connection checks are available. Live publish stays locked.");
+  bubble("assistant", "I'm the Social Agent copilot. Brand knowledge loads automatically. Live publish stays locked.");
 });
 </script>
 {% endblock %}

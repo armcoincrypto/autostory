@@ -29,6 +29,7 @@
 <script>
 document.addEventListener("DOMContentLoaded", async () => {
   const el = document.getElementById("sa-settings");
+  el.innerHTML = SocialAgent.ui.loadingHtml();
   try {
     const [health, integ, tools] = await Promise.all([
       SocialAgent.fetch("/health"),
@@ -48,9 +49,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       ["Telegram", (tg && tg.status) || "—"],
       ["Exswaping", (ex && ex.status) || "—"],
     ];
-    el.innerHTML = "<ul class='sa-list'>" + rows.map((r) => "<li><strong>" + r[0] + "</strong>: " + String(r[1]) + "</li>").join("") + "</ul>";
+    el.innerHTML = "<ul class='sa-list'>" + rows.map((r) =>
+      "<li><strong>" + SocialAgent.escapeHtml(r[0]) + "</strong>: " + SocialAgent.escapeHtml(String(r[1])) + "</li>"
+    ).join("") + "</ul>";
   } catch (e) {
-    el.innerHTML = "<div class='text-danger'>" + String(e.message || e) + "</div>";
+    el.innerHTML = SocialAgent.ui.errorHtml(e.message);
   }
 });
 </script>

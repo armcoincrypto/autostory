@@ -7,20 +7,22 @@
       <p class="sa-muted mb-0">Local assets with hash deduplication. No provider upload.</p>
     </div>
   </div>
+  <div class="sa-gate-banner" role="note">CDN abstraction is local-only. Provider media upload is not enabled.</div>
   <div class="sa-media-layout mt-3">
     <aside class="sa-media-side">
       <h3 class="h6">Folders</h3>
       <form id="sa-folder-form" class="d-flex gap-2 mb-2">
-        <input class="form-control form-control-sm" id="sa-folder-name" placeholder="New folder" required />
+        <input class="form-control form-control-sm" id="sa-folder-name" placeholder="New folder" required aria-label="Folder name" />
         <button class="btn btn-sm btn-outline-light" type="submit">Add</button>
       </form>
       <div id="sa-folder-list" class="sa-muted small">Loading…</div>
     </aside>
     <div>
-      <form id="sa-upload-form" class="sa-dropzone mb-3" aria-label="Upload media">
+      <div class="sa-media-meta" id="sa-media-stats" aria-live="polite"></div>
+      <form id="sa-upload-form" class="sa-dropzone mb-3" aria-label="Upload media" tabindex="0">
         <input type="file" id="sa-file" accept="image/*,video/mp4,video/webm,video/quicktime" hidden />
-        <p class="mb-1"><strong>Drag & drop</strong> or click to upload</p>
-        <p class="sa-muted small mb-0">Images &amp; video · max 50&nbsp;MiB · SHA-256 dedupe · CDN abstraction: local</p>
+        <p class="mb-1"><strong>Drag & drop</strong> or click / press Enter to upload</p>
+        <p class="sa-muted small mb-0">Images &amp; video · max 50&nbsp;MiB · SHA-256 dedupe</p>
       </form>
       <div id="sa-asset-grid" class="sa-asset-grid">Loading…</div>
     </div>
@@ -35,67 +37,96 @@ document.addEventListener("DOMContentLoaded", () => {
   const folders = document.getElementById("sa-folder-list");
   const drop = document.getElementById("sa-upload-form");
   const fileInput = document.getElementById("sa-file");
-
-  function esc(s){return String(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
+  const stats = document.getElementById("sa-media-stats");
 
   async function loadFolders() {
-    const data = await SocialAgent.fetch("/media/folders");
-    const items = data.folders || [];
-    folders.innerHTML = "<button type='button' class='sa-chip"+(folderId==null?" active":"")+"' data-folder=''>All</button>" +
-      items.map(f => "<button type='button' class='sa-chip"+(String(folderId)===String(f.id)?" active":"")+"' data-folder='"+f.id+"'>"+esc(f.name)+"</button>").join("");
-    folders.querySelectorAll("[data-folder]").forEach(btn => btn.addEventListener("click", () => {
-      const v = btn.getAttribute("data-folder");
-      folderId = v === "" ? null : Number(v);
-      loadFolders(); loadAssets();
-    }));
+    folders.innerHTML = SocialAgent.ui.loadingHtml();
+    try {
+      const data = await SocialAgent.fetch("/media/folders");
+      const items = data.folders || [];
+      folders.innerHTML = "<button type='button' class='sa-chip"+(folderId==null?" active":"")+"' data-folder=''>All</button>" +
+        items.map(f => "<button type='button' class='sa-chip"+(String(folderId)===String(f.id)?" active":"")+"' data-folder='"+f.id+"'>"+SocialAgent.escapeHtml(f.name)+"</button>").join("");
+      folders.querySelectorAll("[data-folder]").forEach(btn => btn.addEventListener("click", () => {
+        const v = btn.getAttribute("data-folder");
+        folderId = v === "" ? null : Number(v);
+        loadFolders(); loadAssets();
+      }));
+    } catch (e) {
+      folders.innerHTML = SocialAgent.ui.errorHtml(e.message);
+    }
   }
 
   async function loadAssets() {
-    const q = folderId == null ? "" : ("?folder_id=" + folderId);
-    const data = await SocialAgent.fetch("/media/assets" + q);
-    const assets = data.assets || [];
-    if (!assets.length) { grid.innerHTML = "<div class='sa-empty'>No assets yet.</div>"; return; }
-    grid.innerHTML = assets.map(a => (
-      "<article class='sa-asset-card'>" +
-      "<div class='sa-asset-thumb' aria-hidden='true'>"+esc(a.kind)+"</div>" +
-      "<div><strong>"+esc(a.original_filename)+"</strong>" +
-      "<div class='sa-muted small'>"+esc(a.mime_type)+" · "+a.byte_size+" B · uses "+a.usage_count+"</div>" +
-      "<div class='sa-muted small'>hash "+esc((a.content_hash||"").slice(0,12))+"…</div>" +
-      "<button type='button' class='btn btn-outline-danger btn-sm mt-2' data-del='"+a.id+"'>Safe delete</button>" +
-      "</div></article>"
-    )).join("");
-    grid.querySelectorAll("[data-del]").forEach(btn => btn.addEventListener("click", async () => {
-      await SocialAgent.fetch("/media/assets/" + btn.getAttribute("data-del"), { method: "DELETE" });
-      loadAssets();
-    }));
+    grid.innerHTML = SocialAgent.ui.loadingHtml("Loading assets…");
+    try {
+      const q = folderId == null ? "" : ("?folder_id=" + folderId);
+      const data = await SocialAgent.fetch("/media/assets" + q);
+      const assets = data.assets || [];
+      stats.innerHTML = "<span class='sa-pill'>"+assets.length+" asset(s)</span><span class='sa-pill'>provider upload: off</span>";
+      if (!assets.length) {
+        grid.innerHTML = SocialAgent.ui.emptyHtml("No assets yet", "Drop an image or video to get started.");
+        return;
+      }
+      grid.innerHTML = assets.map(a => (
+        "<article class='sa-asset-card'>" +
+        "<div class='sa-asset-thumb' aria-hidden='true'>"+SocialAgent.escapeHtml(a.kind)+"</div>" +
+        "<div><strong>"+SocialAgent.escapeHtml(a.original_filename)+"</strong>" +
+        "<div class='sa-muted small'>"+SocialAgent.escapeHtml(a.mime_type)+" · "+a.byte_size+" B · uses "+a.usage_count+"</div>" +
+        "<div class='sa-muted small'>hash "+SocialAgent.escapeHtml((a.content_hash||"").slice(0,12))+"…</div>" +
+        "<button type='button' class='btn btn-outline-danger btn-sm mt-2' data-del='"+a.id+"'>Safe delete</button>" +
+        "</div></article>"
+      )).join("");
+      grid.querySelectorAll("[data-del]").forEach(btn => btn.addEventListener("click", async () => {
+        try {
+          await SocialAgent.fetch("/media/assets/" + btn.getAttribute("data-del"), { method: "DELETE" });
+          SocialAgent.ui.toast("Asset deleted", "ok");
+          loadAssets();
+        } catch (e) {
+          SocialAgent.ui.toast(e.message, "error");
+        }
+      }));
+    } catch (e) {
+      grid.innerHTML = SocialAgent.ui.errorHtml(e.message);
+    }
   }
 
   async function uploadFile(file) {
     const fd = new FormData();
     fd.append("file", file);
     if (folderId != null) fd.append("folder_id", String(folderId));
-    const res = await fetch(SocialAgent.api + "/media/assets", { method: "POST", body: fd, credentials: "same-origin" });
-    const data = await res.json();
-    if (!res.ok || !data.ok) throw new Error((data && data.error) || "upload_failed");
-    await loadAssets();
+    try {
+      const res = await fetch(SocialAgent.api + "/media/assets", { method: "POST", body: fd, credentials: "same-origin" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error((data && data.error) || "upload_failed");
+      SocialAgent.ui.toast(data.deduplicated ? "Deduplicated existing asset" : "Uploaded", "ok");
+      await loadAssets();
+    } catch (err) {
+      SocialAgent.ui.toast(err.message, "error");
+    }
   }
 
   drop.addEventListener("click", () => fileInput.click());
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
   drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
   drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
   drop.addEventListener("drop", (e) => {
     e.preventDefault(); drop.classList.remove("drag");
     const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) uploadFile(f).catch(err => alert(err.message));
+    if (f) uploadFile(f);
   });
   fileInput.addEventListener("change", () => {
-    if (fileInput.files[0]) uploadFile(fileInput.files[0]).catch(err => alert(err.message));
+    if (fileInput.files[0]) uploadFile(fileInput.files[0]);
   });
   document.getElementById("sa-folder-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    await SocialAgent.fetch("/media/folders", { method: "POST", body: JSON.stringify({ name: document.getElementById("sa-folder-name").value }) });
-    document.getElementById("sa-folder-name").value = "";
-    loadFolders();
+    try {
+      await SocialAgent.fetch("/media/folders", { method: "POST", body: JSON.stringify({ name: document.getElementById("sa-folder-name").value }) });
+      document.getElementById("sa-folder-name").value = "";
+      SocialAgent.ui.toast("Folder created", "ok");
+      loadFolders();
+    } catch (err) {
+      SocialAgent.ui.toast(err.message, "error");
+    }
   });
   loadFolders(); loadAssets();
 });

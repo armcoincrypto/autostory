@@ -1,10 +1,11 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
+<div class="sa-gate-banner" role="note">Content Studio never auto-publishes. Meta dry-run only; Instagram live publish remains disabled.</div>
 <section class="sa-card sa-studio">
   <div class="sa-toolbar">
     <div>
       <h2 class="mb-1">Content Studio</h2>
-      <p class="sa-muted mb-0">Professional editor · multi-platform preview · approval workflow. Never auto-publishes.</p>
+      <p class="sa-muted mb-0">Professional editor · multi-platform preview · approval workflow.</p>
     </div>
     <div class="d-flex flex-wrap gap-2">
       <button type="button" class="btn btn-outline-light btn-sm" id="sa-refresh-drafts">Refresh</button>
@@ -26,13 +27,13 @@
       </div>
 
       <div class="sa-editor-panel mt-3" id="sa-active-editor" hidden>
-        <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
           <h3 class="h6 mb-0" id="sa-active-title">Draft</h3>
-          <div class="d-flex gap-1" id="sa-status-actions"></div>
+          <div class="d-flex gap-1 flex-wrap" id="sa-status-actions"></div>
         </div>
         <label class="form-label small mb-1" for="sa-variant-body">Active variant</label>
         <textarea class="form-control sa-rich" id="sa-variant-body" rows="8"></textarea>
-        <div class="d-flex gap-2 mt-2">
+        <div class="d-flex gap-2 mt-2 flex-wrap">
           <button type="button" class="btn btn-sm btn-outline-info" id="sa-save-variant">Save variant</button>
           <button type="button" class="btn btn-sm btn-outline-light" id="sa-dry-run">Meta dry-run</button>
         </div>

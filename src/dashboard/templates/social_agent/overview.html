@@ -1,24 +1,31 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
+<div class="sa-gate-banner" role="note">
+  Publishing, scheduler, AI auto-loop, and automations remain fail-closed. Metrics are never fabricated.
+</div>
 <section class="sa-card" aria-labelledby="sa-overview-heading">
-  <h2 id="sa-overview-heading">Overview</h2>
-  <p class="sa-muted mb-3">Live workspace status. Metrics are empty until providers are connected — no fabricated analytics.</p>
-  <div class="sa-grid" id="sa-overview-stats">
+  <div class="sa-toolbar">
+    <div>
+      <h2 id="sa-overview-heading" class="mb-1">Overview</h2>
+      <p class="sa-muted mb-0">Live workspace status from canonical services.</p>
+    </div>
+  </div>
+  <div class="sa-grid mt-3" id="sa-overview-stats">
     <div class="sa-stat"><div class="label">Connections</div><div class="value" data-k="connections">—</div></div>
     <div class="sa-stat"><div class="label">Drafts</div><div class="value" data-k="drafts">—</div></div>
-    <div class="sa-stat"><div class="label">Scheduled</div><div class="value" data-k="scheduled">0</div></div>
-    <div class="sa-stat"><div class="label">Failures</div><div class="value" data-k="failures">0</div></div>
+    <div class="sa-stat"><div class="label">Scheduled queue</div><div class="value" data-k="scheduled">—</div></div>
+    <div class="sa-stat"><div class="label">Failures</div><div class="value" data-k="failures">—</div></div>
   </div>
 </section>
 
 <section class="sa-card" aria-labelledby="sa-alerts-heading">
   <h2 id="sa-alerts-heading">Operator alerts</h2>
-  <ul class="sa-list" id="sa-alerts"><li class="sa-muted">Loading…</li></ul>
+  <div id="sa-alerts" class="sa-muted">Loading…</div>
 </section>
 
 <section class="sa-card" aria-labelledby="sa-onboard-heading">
   <h2 id="sa-onboard-heading">Onboarding</h2>
-  <ul class="sa-list" id="sa-onboarding"><li class="sa-muted">Loading…</li></ul>
+  <div id="sa-onboarding" class="sa-muted">Loading…</div>
 </section>
 
 <div class="row g-3">
@@ -31,7 +38,7 @@
   <div class="col-lg-6">
     <section class="sa-card" aria-labelledby="sa-ai-heading">
       <h2 id="sa-ai-heading">Recent AI activity</h2>
-      <ul class="sa-list" id="sa-ai-activity"><li class="sa-muted">Loading…</li></ul>
+      <div id="sa-ai-activity" class="sa-muted">Loading…</div>
     </section>
   </div>
 </div>
@@ -39,6 +46,14 @@
 {% block sa_scripts %}
 <script>
 document.addEventListener("DOMContentLoaded", async () => {
+  const alerts = document.getElementById("sa-alerts");
+  const onboard = document.getElementById("sa-onboarding");
+  const integEl = document.getElementById("sa-integrations");
+  const ai = document.getElementById("sa-ai-activity");
+  alerts.innerHTML = SocialAgent.ui.loadingHtml();
+  onboard.innerHTML = SocialAgent.ui.loadingHtml();
+  integEl.innerHTML = SocialAgent.ui.loadingHtml();
+  ai.innerHTML = SocialAgent.ui.loadingHtml();
   try {
     const data = await SocialAgent.fetch("/overview");
     const set = (k, v) => {
@@ -50,20 +65,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     set("scheduled", (data.scheduled_posts || []).length);
     set("failures", (data.publishing_failures || []).length);
 
-    const metaSum = data.meta_connection_summary || {};
-    const alerts = document.getElementById("sa-alerts");
-    const alertItems = (data.alerts || []).slice();
-    if (metaSum.summary && !alertItems.includes(metaSum.summary)) {
-      // Prefer backend alerts; summary already included when Meta is connected.
-    }
+    const alertItems = data.alerts || [];
     alerts.innerHTML = alertItems.length
-      ? alertItems.map((a) => "<li>" + escapeHtml(a) + "</li>").join("")
-      : "<li class='sa-muted'>No alerts.</li>";
+      ? "<ul class='sa-list'>" + alertItems.map((a) => "<li>" + SocialAgent.escapeHtml(a) + "</li>").join("") + "</ul>"
+      : SocialAgent.ui.emptyHtml("No alerts", "Workspace looks quiet.");
 
-    const onboard = document.getElementById("sa-onboarding");
-    onboard.innerHTML = (data.onboarding || []).map((a) => "<li>" + escapeHtml(a) + "</li>").join("");
+    const steps = data.onboarding || [];
+    onboard.innerHTML = steps.length
+      ? "<ul class='sa-checklist'>" + steps.map((a) => "<li>" + SocialAgent.escapeHtml(a) + "</li>").join("") + "</ul>"
+      : SocialAgent.ui.emptyHtml("Onboarding complete");
 
-    const integEl = document.getElementById("sa-integrations");
     const integ = data.integrations || {};
     integEl.innerHTML = Object.keys(integ).map((key) => {
       const row = integ[key] || {};
@@ -72,21 +83,20 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? (status === "NOT_STARTED" ? "blocked" : "missing")
         : "ready";
       return "<div class='d-flex justify-content-between align-items-center py-1 border-bottom border-secondary border-opacity-25'>"
-        + "<span>" + escapeHtml(key) + "</span>"
-        + "<span class='sa-status " + cls + "'>" + escapeHtml(status) + "</span></div>";
-    }).join("");
+        + "<span>" + SocialAgent.escapeHtml(key) + "</span>"
+        + "<span class='sa-status " + cls + "'>" + SocialAgent.escapeHtml(status) + "</span></div>";
+    }).join("") || SocialAgent.ui.emptyHtml("No integrations");
 
-    const ai = document.getElementById("sa-ai-activity");
     const msgs = data.recent_ai_activity || [];
     ai.innerHTML = msgs.length
-      ? msgs.map((m) => "<li><strong>" + escapeHtml(m.role) + "</strong> — " + escapeHtml(m.preview || "") + "</li>").join("")
-      : "<li class='sa-muted'>No assistant activity yet. Open AI Assistant to start.</li>";
+      ? "<ul class='sa-list'>" + msgs.map((m) => "<li><strong>" + SocialAgent.escapeHtml(m.role) + "</strong> — " + SocialAgent.escapeHtml(m.preview || "") + "</li>").join("") + "</ul>"
+      : SocialAgent.ui.emptyHtml("No assistant activity yet", "Open AI Assistant to start.");
   } catch (e) {
-    document.getElementById("sa-alerts").innerHTML = "<li class='text-danger'>" + escapeHtml(e.message) + "</li>";
+    alerts.innerHTML = SocialAgent.ui.errorHtml(e.message);
+    onboard.innerHTML = "";
+    integEl.innerHTML = "";
+    ai.innerHTML = "";
   }
 });
-function escapeHtml(s) {
-  return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
-}
 </script>
 {% endblock %}

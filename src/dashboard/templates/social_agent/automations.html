@@ -1,40 +1,69 @@
 {% extends "social_agent/shell.html" %}
 {% block sa_content %}
 <section class="sa-card">
-  <h2>Automations</h2>
-  <p class="sa-muted">Visual workflow drafts (trigger → condition → action). Everything disabled. No live automation.</p>
-  <form id="sa-auto-form" class="row g-2 align-items-end mb-3">
-    <div class="col-md-6"><label class="form-label small mb-0">Workflow name</label><input class="form-control form-control-sm" id="sa-auto-name" required /></div>
-    <div class="col-md-6"><button class="btn btn-outline-light btn-sm" type="submit">Save disabled draft</button></div>
-  </form>
-  <div class="sa-workflow mb-3" aria-hidden="true">
-    <li class="current">Trigger</li><li>Condition</li><li>Action</li><li class="blocked">Execute (disabled)</li>
+  <div class="sa-toolbar">
+    <div>
+      <h2 class="mb-1">Automations</h2>
+      <p class="sa-muted mb-0">Visual workflow drafts. Everything disabled. No live automation.</p>
+    </div>
   </div>
-  <div id="sa-auto-list" class="sa-muted">Loading…</div>
+  <div class="sa-gate-banner" role="note">Execute step is permanently blocked in this release.</div>
+  <form id="sa-auto-form" class="row g-2 align-items-end mb-3">
+    <div class="col-md-6"><label class="form-label small mb-0" for="sa-auto-name">Workflow name</label><input class="form-control form-control-sm" id="sa-auto-name" required /></div>
+    <div class="col-md-6"><button class="btn btn-outline-light btn-sm" type="submit" id="sa-auto-submit">Save disabled draft</button></div>
+  </form>
+  <ol class="sa-workflow mb-3" aria-label="Workflow stages">
+    <li class="current">Trigger</li>
+    <li>Condition</li>
+    <li>Action</li>
+    <li class="blocked">Execute (disabled)</li>
+  </ol>
+  <div id="sa-auto-list">Loading…</div>
 </section>
 {% endblock %}
 {% block sa_scripts %}
 <script>
 document.addEventListener("DOMContentLoaded", () => {
-  async function load(){
-    const data = await SocialAgent.fetch("/automations");
-    const defs = data.definitions || [];
-    document.getElementById("sa-auto-list").innerHTML = defs.length
-      ? defs.map(d => "<div class='sa-variant'><div class='meta'>#"+d.id+" · enabled="+d.enabled+"</div><strong>"+d.name+"</strong></div>").join("")
-      : "<div class='sa-empty'>"+(data.message||"No workflows yet.")+"</div>";
+  const list = document.getElementById("sa-auto-list");
+
+  async function load() {
+    list.innerHTML = SocialAgent.ui.loadingHtml();
+    try {
+      const data = await SocialAgent.fetch("/automations");
+      const defs = data.definitions || [];
+      list.innerHTML = defs.length
+        ? defs.map((d) => (
+            "<div class='sa-variant'><div class='meta'>#" + d.id +
+            " · enabled=" + d.enabled + "</div><strong>" + SocialAgent.escapeHtml(d.name) +
+            "</strong></div>"
+          )).join("")
+        : SocialAgent.ui.emptyHtml("No workflows yet", data.message || "Save a disabled draft to sketch a flow.");
+    } catch (e) {
+      list.innerHTML = SocialAgent.ui.errorHtml(e.message);
+    }
   }
+
   document.getElementById("sa-auto-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    await SocialAgent.fetch("/automations", {
-      method: "POST",
-      body: JSON.stringify({
-        name: document.getElementById("sa-auto-name").value,
-        definition: { triggers: ["manual"], conditions: [], actions: ["notify_only"] },
-        enabled: true, // ignored server-side — always disabled
-      }),
-    });
-    document.getElementById("sa-auto-name").value = "";
-    load();
+    const btn = document.getElementById("sa-auto-submit");
+    SocialAgent.ui.setBusy(btn, true);
+    try {
+      await SocialAgent.fetch("/automations", {
+        method: "POST",
+        body: JSON.stringify({
+          name: document.getElementById("sa-auto-name").value,
+          definition: { triggers: ["manual"], conditions: [], actions: ["notify_only"] },
+          enabled: true, // ignored server-side — always disabled
+        }),
+      });
+      document.getElementById("sa-auto-name").value = "";
+      SocialAgent.ui.toast("Draft saved (still disabled)", "ok");
+      await load();
+    } catch (err) {
+      SocialAgent.ui.toast(err.message, "error");
+    } finally {
+      SocialAgent.ui.setBusy(btn, false);
+    }
   });
   load();
 });

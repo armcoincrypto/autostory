@@ -339,6 +339,17 @@ def api_platforms():
     return jsonify({"ok": True, "platforms": platform_catalog()})
 
 
+@social_agent_api.route("/search", methods=["GET"])
+def api_search():
+    q = str(request.args.get("q") or request.args.get("query") or "").strip()
+    try:
+        limit = int(request.args.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    with get_db_context() as db:
+        return jsonify(services.global_search(db, query=q, limit=limit))
+
+
 @social_agent_api.route("/media/assets", methods=["GET"])
 def api_media_list():
     from src.social_agent import media_library as media
