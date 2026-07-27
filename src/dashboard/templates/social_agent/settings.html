@@ -7,14 +7,6 @@
 </section>
 
 <section class="sa-card">
-  <h2>Exswaping content integration</h2>
-  <div class="sa-empty">
-    <span class="sa-status missing">NOT_CONFIGURED</span>
-    <p class="mb-0 mt-2">Approved public-content API required. Rate and reserve tools remain blocked.</p>
-  </div>
-</section>
-
-<section class="sa-card">
   <h2>Permissions (this session)</h2>
   <p class="sa-muted small">Dashboard admins receive the full Social Agent permission set in this release. Granular RBAC maps later without changing service call sites.</p>
   <ul class="sa-list">
@@ -38,7 +30,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     ]);
     const meta = integ.integrations && integ.integrations.meta;
     const tg = integ.integrations && integ.integrations.telegram;
-    const ex = integ.integrations && integ.integrations.exswaping;
     const ai = integ.integrations && integ.integrations.ai;
     const rows = [
       ["Health", health.status || (health.ok ? "ok" : "error")],
@@ -47,7 +38,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       ["AI provider", (ai && ai.status) || "—"],
       ["Meta", (meta && meta.status) || "—"],
       ["Telegram", (tg && tg.status) || "—"],
-      ["Exswaping", (ex && ex.status) || "—"],
     ];
     el.innerHTML = "<ul class='sa-list'>" + rows.map((r) =>
       "<li><strong>" + SocialAgent.escapeHtml(r[0]) + "</strong>: " + SocialAgent.escapeHtml(String(r[1])) + "</li>"

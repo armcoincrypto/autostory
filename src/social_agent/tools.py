@@ -254,7 +254,7 @@ def _tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="brand.search_knowledge",
-            description="Search Exswaping brand knowledge.",
+            description="Search brand knowledge.",
             side_effect_class=SideEffectClass.READ_ONLY,
             required_permission="brand.manage",
             confirmation_required=False,
@@ -276,17 +276,6 @@ def _tools() -> list[ToolSpec]:
             confirmation_required=False,
             dry_run_support=True,
             input_schema={"category": "string", "key": "string", "title": "string", "value": "string"},
-        ),
-        ToolSpec(
-            name="exswaping.get_public_content",
-            description="Fetch official Exswaping public content.",
-            side_effect_class=SideEffectClass.READ_ONLY,
-            required_permission="social_agent.view",
-            confirmation_required=False,
-            dry_run_support=True,
-            available=False,
-            unavailable_reason="Not configured — approved public-content API required.",
-            provider_dependency="exswaping",
         ),
     ]
 

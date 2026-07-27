@@ -30,13 +30,14 @@ def test_meta_summary_connected_healthy():
 def test_alerts_credentials_missing():
     integ = {
         "meta": {"status": "CREDENTIALS_MISSING"},
-        "exswaping": {"status": "NOT_CONFIGURED"},
         "telegram": {"story_mutations_enabled": False},
     }
     alerts = _build_alerts(integ, [])
     assert any("Meta credentials not configured" in a for a in alerts)
+    assert not any("public-content" in a.lower() for a in alerts)
     steps = _onboarding(integ, [])
     assert any("Install Meta App ID" in s for s in steps)
+    assert not any("Exswaping content access" in s for s in steps)
 
 
 def test_accounts_template_has_onboarding_copy():

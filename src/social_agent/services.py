@@ -142,8 +142,6 @@ def _build_alerts(integ: dict[str, Any], connections: list[SocialConnection]) ->
             alerts.append("Instagram account is no longer linked to the selected Facebook Page.")
     if not connections and integ["meta"]["status"] != "CREDENTIALS_MISSING":
         alerts.append("No social connections yet.")
-    if integ["exswaping"]["status"] == "NOT_CONFIGURED":
-        alerts.append("Exswaping public-content API not configured.")
     if not integ["telegram"].get("story_mutations_enabled"):
         alerts.append("Telegram Story mutations fail-closed (expected).")
     return alerts
@@ -159,7 +157,6 @@ def _onboarding(integ: dict[str, Any], connections: list[SocialConnection]) -> l
     else:
         steps.append(meta_sum["summary"] + ".")
     steps.append("Telegram status is available via AutoStory adapter; live Story publish stays locked.")
-    steps.append("Add Exswaping content access once the official public-content API exists.")
     return steps
 
 def create_conversation(db: Session, *, actor: str | None, title: str | None = None) -> dict[str, Any]:
@@ -1131,7 +1128,7 @@ def chat_turn(
             "Connection status:\n"
             f"- Meta: {integ.get('meta', {}).get('status')}\n"
             f"- Telegram: {integ.get('telegram', {}).get('status')} ({integ.get('telegram', {}).get('message')})\n"
-            f"- Exswaping: {integ.get('exswaping', {}).get('status')}"
+            f"- AI: {integ.get('ai', {}).get('status')}"
         )
     else:
         from src.social_agent.copilot import copilot_capabilities

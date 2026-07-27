@@ -956,7 +956,6 @@ def debug_safe():
             "META_FACEBOOK_PUBLISHING_ENABLED": False,
             "META_INSTAGRAM_PUBLISHING_ENABLED": False,
             "TELEGRAM_CONFIGURED": True,
-            "EXSWAPING_API_CONFIGURED": False,
             "STORAGE_CONFIGURED": True,
         }
     )

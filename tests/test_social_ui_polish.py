@@ -145,3 +145,6 @@ def test_fail_closed_copy_present_on_mutation_surfaces():
     assert "disabled" in autos.lower()
     analytics = (TEMPLATES / "analytics.html").read_text(encoding="utf-8")
     assert "No fabricated" in analytics or "fabricated" in analytics.lower()
+    settings = (TEMPLATES / "settings.html").read_text(encoding="utf-8")
+    assert "Exswaping content integration" not in settings
+    assert "exswaping" not in settings.lower()

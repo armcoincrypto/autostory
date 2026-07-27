@@ -10,7 +10,7 @@ from src.social_agent.permissions import ALL_PERMISSIONS, actor_permissions, req
 from src.social_agent.registry import get_agent, list_platform_agents
 from src.social_agent.tools import get_tool, list_tools
 from src.social_agent import services
-from src.social_agent.integrations import integration_matrix, meta_status, exswaping_status
+from src.social_agent.integrations import integration_matrix, meta_status
 import src.social_agent.models  # noqa: F401 — register metadata
 
 
@@ -46,7 +46,8 @@ def test_tool_registry_marks_live_publish_unavailable():
     assert pub.available is False
     assert pub.confirmation_required is True
     tools = {t["name"]: t for t in list_tools()}
-    assert tools["exswaping.get_public_content"]["available"] is False
+    assert "publishing.publish" in tools
+    assert "exswaping.get_public_content" not in tools
 
 
 def test_permissions_admin_has_full_set():
@@ -59,9 +60,10 @@ def test_permissions_admin_has_full_set():
     assert not ok and err
 
 
-def test_exswaping_blocked_honestly():
-    st = exswaping_status()
-    assert st["status"] == "NOT_CONFIGURED"
+def test_exswaping_integration_removed():
+    m = integration_matrix()
+    assert "exswaping" not in m
+    assert get_tool("exswaping.get_public_content") is None
 
 
 def test_meta_credentials_missing_by_default(monkeypatch):
@@ -145,8 +147,9 @@ def test_chat_turn_creates_draft(db_session):
 
 def test_integration_matrix_keys():
     m = integration_matrix()
-    for key in ("meta", "telegram", "x", "linkedin", "discord", "youtube", "tiktok", "exswaping", "ai"):
+    for key in ("meta", "telegram", "x", "linkedin", "discord", "youtube", "tiktok", "ai"):
         assert key in m
+    assert "exswaping" not in m
 
 
 def test_social_agent_routes_registered():

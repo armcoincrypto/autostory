@@ -60,15 +60,6 @@ def telegram_adapter_status() -> dict[str, Any]:
     }
 
 
-def exswaping_status() -> dict[str, Any]:
-    return {
-        "provider": "exswaping",
-        "status": "NOT_CONFIGURED",
-        "message": "Not configured — approved public-content API required.",
-        "blocked_tools": ["exswaping.get_public_content"],
-    }
-
-
 def ai_provider_status() -> dict[str, Any]:
     provider = (os.environ.get("AI_AGENT_PROVIDER") or os.environ.get("SOCIAL_AGENT_AI_PROVIDER") or "").strip()
     configured = bool(provider) and provider.lower() not in {"", "none", "off"}
@@ -118,6 +109,5 @@ def integration_matrix() -> dict[str, Any]:
             "configured": False,
             "message": "NOT CONFIGURED",
         },
-        "exswaping": exswaping_status(),
         "ai": ai_provider_status(),
     }
