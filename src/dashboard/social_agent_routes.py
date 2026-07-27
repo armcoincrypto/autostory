@@ -29,14 +29,14 @@ NAV = [
     {"id": "assistant", "label": "AI Assistant", "path": "/social-agent/assistant"},
     {"id": "content", "label": "Content Studio", "path": "/social-agent/content"},
     {"id": "publishing", "label": "Publishing Preview", "path": "/social-agent/publishing", "badge": "dry_run"},
-    {"id": "calendar", "label": "Calendar", "path": "/social-agent/calendar", "badge": "coming_later"},
-    {"id": "media", "label": "Media Library", "path": "/social-agent/media", "badge": "coming_later"},
+    {"id": "calendar", "label": "Calendar", "path": "/social-agent/calendar"},
+    {"id": "media", "label": "Media Library", "path": "/social-agent/media"},
     {"id": "accounts", "label": "Social Accounts", "path": "/social-agent/accounts"},
-    {"id": "analytics", "label": "Analytics", "path": "/social-agent/analytics", "badge": "coming_later"},
-    {"id": "comments", "label": "Comments", "path": "/social-agent/comments", "badge": "coming_later"},
-    {"id": "messages", "label": "Messages", "path": "/social-agent/messages", "badge": "coming_later"},
+    {"id": "analytics", "label": "Analytics", "path": "/social-agent/analytics", "badge": "architecture"},
+    {"id": "comments", "label": "Comments", "path": "/social-agent/comments", "badge": "architecture"},
+    {"id": "messages", "label": "Messages", "path": "/social-agent/messages", "badge": "architecture"},
     {"id": "brand", "label": "Brand Knowledge", "path": "/social-agent/brand"},
-    {"id": "automations", "label": "Automations", "path": "/social-agent/automations", "badge": "coming_later"},
+    {"id": "automations", "label": "Automations", "path": "/social-agent/automations", "badge": "disabled"},
     {"id": "settings", "label": "Settings", "path": "/social-agent/settings"},
 ]
 
@@ -115,12 +115,12 @@ def publishing_page():
 
 @social_agent_bp.route("/social-agent/calendar", methods=["GET"])
 def calendar_page():
-    return _page("social_agent/placeholder.html", "calendar", title="Calendar", reason="Coming later — scheduling certification required.")
+    return _page("social_agent/calendar.html", "calendar")
 
 
 @social_agent_bp.route("/social-agent/media", methods=["GET"])
 def media_page():
-    return _page("social_agent/placeholder.html", "media", title="Media Library", reason="Coming later — upload pipeline not enabled in first release.")
+    return _page("social_agent/media.html", "media")
 
 
 @social_agent_bp.route("/social-agent/accounts", methods=["GET"])
@@ -130,17 +130,17 @@ def accounts_page():
 
 @social_agent_bp.route("/social-agent/analytics", methods=["GET"])
 def analytics_page():
-    return _page("social_agent/placeholder.html", "analytics", title="Analytics", reason="Provider analytics not configured.")
+    return _page("social_agent/analytics.html", "analytics")
 
 
 @social_agent_bp.route("/social-agent/comments", methods=["GET"])
 def comments_page():
-    return _page("social_agent/placeholder.html", "comments", title="Comments", reason="Coming later — provider support required.")
+    return _page("social_agent/comments.html", "comments")
 
 
 @social_agent_bp.route("/social-agent/messages", methods=["GET"])
 def messages_page():
-    return _page("social_agent/placeholder.html", "messages", title="Messages", reason="Coming later — provider support required.")
+    return _page("social_agent/messages.html", "messages")
 
 
 @social_agent_bp.route("/social-agent/brand", methods=["GET"])
@@ -150,12 +150,7 @@ def brand_page():
 
 @social_agent_bp.route("/social-agent/automations", methods=["GET"])
 def automations_page():
-    return _page(
-        "social_agent/placeholder.html",
-        "automations",
-        title="Automations",
-        reason="Suggestion-only in later phases — autonomous publishing disabled.",
-    )
+    return _page("social_agent/automations.html", "automations")
 
 
 @social_agent_bp.route("/social-agent/settings", methods=["GET"])
@@ -284,6 +279,271 @@ def api_get_content(content_id: int):
     with get_db_context() as db:
         out = services.get_draft(db, content_id)
         return jsonify(out), (200 if out.get("ok") else 404)
+
+
+@social_agent_api.route("/content/<int:content_id>/variants/<int:variant_id>", methods=["PATCH"])
+def api_patch_variant(content_id: int, variant_id: int):
+    data = request.get_json(silent=True) or {}
+    from src.social_agent import content_workflow as cw
+
+    with get_db_context() as db:
+        out = cw.update_variant(
+            db,
+            actor=_actor(),
+            content_id=content_id,
+            variant_id=variant_id,
+            body=str(data.get("body") or ""),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/content/<int:content_id>/status", methods=["POST"])
+def api_content_status(content_id: int):
+    data = request.get_json(silent=True) or {}
+    from src.social_agent import content_workflow as cw
+
+    with get_db_context() as db:
+        out = cw.transition_status(
+            db,
+            actor=_actor(),
+            content_id=content_id,
+            to_status=str(data.get("status") or ""),
+            note=data.get("note"),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/content/<int:content_id>/status-events", methods=["GET"])
+def api_content_status_events(content_id: int):
+    from src.social_agent import content_workflow as cw
+
+    with get_db_context() as db:
+        return jsonify(cw.list_status_events(db, content_id))
+
+
+@social_agent_api.route("/content/<int:content_id>/studio-preview", methods=["GET"])
+def api_studio_preview(content_id: int):
+    from src.social_agent import content_workflow as cw
+
+    with get_db_context() as db:
+        out = cw.studio_previews(db, content_id=content_id)
+        return jsonify(out), (200 if out.get("ok") else 404)
+
+
+@social_agent_api.route("/platforms", methods=["GET"])
+def api_platforms():
+    from src.social_agent.platforms import platform_catalog
+
+    return jsonify({"ok": True, "platforms": platform_catalog()})
+
+
+@social_agent_api.route("/media/assets", methods=["GET"])
+def api_media_list():
+    from src.social_agent import media_library as media
+
+    folder_id = request.args.get("folder_id")
+    with get_db_context() as db:
+        return jsonify(
+            media.list_assets(
+                db,
+                folder_id=int(folder_id) if folder_id not in (None, "") else None,
+            )
+        )
+
+
+@social_agent_api.route("/media/assets", methods=["POST"])
+def api_media_upload():
+    from src.social_agent import media_library as media
+
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "file_required"}), 400
+    f = request.files["file"]
+    folder_id = request.form.get("folder_id")
+    with get_db_context() as db:
+        out = media.upload_asset(
+            db,
+            actor=_actor(),
+            filename=f.filename or "upload.bin",
+            stream=f.stream,
+            mime_type=f.mimetype,
+            folder_id=int(folder_id) if folder_id not in (None, "") else None,
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/media/assets/<int:asset_id>", methods=["DELETE"])
+def api_media_delete(asset_id: int):
+    from src.social_agent import media_library as media
+
+    with get_db_context() as db:
+        out = media.soft_delete_asset(db, actor=_actor(), asset_id=asset_id)
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/media/folders", methods=["GET"])
+def api_media_folders():
+    from src.social_agent import media_library as media
+
+    with get_db_context() as db:
+        return jsonify(media.list_folders(db))
+
+
+@social_agent_api.route("/media/folders", methods=["POST"])
+def api_media_create_folder():
+    from src.social_agent import media_library as media
+
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        out = media.create_folder(
+            db,
+            actor=_actor(),
+            name=str(data.get("name") or ""),
+            parent_id=int(data["parent_id"]) if data.get("parent_id") is not None else None,
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/calendar", methods=["GET"])
+def api_calendar():
+    from src.social_agent import calendar_service as cal
+
+    with get_db_context() as db:
+        return jsonify(
+            cal.list_entries(
+                db,
+                view=str(request.args.get("view") or "month"),
+                anchor=request.args.get("anchor"),
+            )
+        )
+
+
+@social_agent_api.route("/calendar", methods=["POST"])
+def api_calendar_create():
+    from src.social_agent import calendar_service as cal
+
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        out = cal.create_entry(
+            db,
+            actor=_actor(),
+            content_id=int(data.get("content_id") or 0),
+            platform=str(data.get("platform") or "facebook"),
+            scheduled_for=str(data.get("scheduled_for") or ""),
+            timezone_name=str(data.get("timezone") or "UTC"),
+            notes=data.get("notes"),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/calendar/<int:entry_id>", methods=["PATCH"])
+def api_calendar_move(entry_id: int):
+    from src.social_agent import calendar_service as cal
+
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        out = cal.move_entry(
+            db,
+            actor=_actor(),
+            entry_id=entry_id,
+            scheduled_for=str(data.get("scheduled_for") or ""),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/calendar/<int:entry_id>", methods=["DELETE"])
+def api_calendar_cancel(entry_id: int):
+    from src.social_agent import calendar_service as cal
+
+    with get_db_context() as db:
+        out = cal.cancel_entry(db, entry_id=entry_id)
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/brand", methods=["GET"])
+def api_brand_list():
+    from src.social_agent import brand_store as brand
+
+    with get_db_context() as db:
+        return jsonify(brand.list_knowledge(db))
+
+
+@social_agent_api.route("/brand", methods=["POST"])
+def api_brand_upsert():
+    from src.social_agent import brand_store as brand
+
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        out = brand.upsert_knowledge(
+            db,
+            actor=_actor(),
+            category=str(data.get("category") or ""),
+            key=str(data.get("key") or ""),
+            title=str(data.get("title") or ""),
+            value=str(data.get("value") or ""),
+        )
+        db.commit()
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@social_agent_api.route("/accounts/providers", methods=["GET"])
+def api_accounts_providers():
+    from src.social_agent import surfaces
+
+    with get_db_context() as db:
+        return jsonify(surfaces.accounts_provider_matrix(db))
+
+
+@social_agent_api.route("/analytics", methods=["GET"])
+def api_analytics():
+    from src.social_agent import surfaces
+
+    return jsonify(surfaces.analytics_architecture())
+
+
+@social_agent_api.route("/comments", methods=["GET"])
+def api_comments():
+    from src.social_agent import surfaces
+
+    return jsonify(surfaces.comments_architecture())
+
+
+@social_agent_api.route("/messages", methods=["GET"])
+def api_messages():
+    from src.social_agent import surfaces
+
+    return jsonify(surfaces.messages_architecture())
+
+
+@social_agent_api.route("/automations", methods=["GET"])
+def api_automations():
+    from src.social_agent import surfaces
+
+    with get_db_context() as db:
+        return jsonify(surfaces.automations_architecture(db))
+
+
+@social_agent_api.route("/automations", methods=["POST"])
+def api_automations_save():
+    from src.social_agent import surfaces
+
+    data = request.get_json(silent=True) or {}
+    with get_db_context() as db:
+        out = surfaces.save_automation_draft(
+            db,
+            actor=_actor(),
+            name=str(data.get("name") or ""),
+            definition=data.get("definition") if isinstance(data.get("definition"), dict) else None,
+        )
+        db.commit()
+        return jsonify(out)
 
 
 @social_agent_api.route("/publishing/dry-run", methods=["POST"])

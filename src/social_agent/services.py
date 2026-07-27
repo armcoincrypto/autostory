@@ -19,17 +19,14 @@ from src.social_agent.models import (
     SocialContentVariant,
 )
 from src.social_agent.permissions import require_permission
+from src.social_agent.platforms import (
+    DEFAULT_VARIANT_PLATFORMS,
+    PLATFORM_LIMITS,
+    normalize_status,
+)
 from src.social_agent.tools import get_tool, list_tools
 
 logger = structlog.get_logger(__name__)
-
-PLATFORM_LIMITS = {
-    "facebook": 63206,
-    "instagram": 2200,
-    "telegram": 4096,
-    "x": 280,
-    "linkedin": 3000,
-}
 
 
 def _audit(
@@ -58,7 +55,7 @@ def overview(db: Session) -> dict[str, Any]:
     connections = db.query(SocialConnection).order_by(SocialConnection.id.desc()).limit(20).all()
     drafts = (
         db.query(SocialContentItem)
-        .filter(SocialContentItem.status.in_(["DRAFT", "READY_FOR_REVIEW"]))
+        .filter(SocialContentItem.status.in_(["DRAFT", "READY_FOR_REVIEW", "NEEDS_REVIEW", "APPROVED"]))
         .order_by(SocialContentItem.id.desc())
         .limit(10)
         .all()
@@ -66,6 +63,9 @@ def overview(db: Session) -> dict[str, Any]:
     recent_msgs = db.query(SocialAgentMessage).order_by(SocialAgentMessage.id.desc()).limit(5).all()
     integ = integration_matrix()
     meta_sum = _meta_connection_summary(connections)
+    from src.social_agent.calendar_service import list_entries as calendar_list
+
+    cal = calendar_list(db, view="agenda")
     return {
         "ok": True,
         "connections": [
@@ -80,18 +80,19 @@ def overview(db: Session) -> dict[str, Any]:
         ],
         "meta_connection_summary": meta_sum,
         "drafts_awaiting_review": [
-            {"id": d.id, "title": d.title, "status": d.status} for d in drafts
+            {"id": d.id, "title": d.title, "status": normalize_status(d.status)} for d in drafts
         ],
-        "scheduled_posts": [],
+        "scheduled_posts": cal.get("scheduled_queue") or [],
         "publishing_failures": [],
         "recent_successful_posts": [],
-        "upcoming_calendar": [],
+        "upcoming_calendar": cal.get("entries") or [],
         "recent_ai_activity": [
             {"id": m.id, "role": m.role, "preview": (m.content or "")[:120]} for m in recent_msgs
         ],
         "integrations": integ,
         "alerts": _build_alerts(integ, connections),
         "onboarding": _onboarding(integ, connections),
+        "live_publish_enabled": False,
     }
 
 
@@ -299,17 +300,31 @@ def create_draft(
 def generate_variants_local(brief: str, platforms: list[str], languages: list[str]) -> dict[str, Any]:
     """Deterministic local generator used when AI provider is unset."""
     brief = (brief or "").strip()
+    plats = [p.strip().lower() for p in (platforms or list(DEFAULT_VARIANT_PLATFORMS)) if p]
+    if not plats:
+        plats = list(DEFAULT_VARIANT_PLATFORMS)
     out = []
-    for platform in platforms:
+    for platform in plats:
         for lang in languages:
             prefix = {
                 "EN": "",
                 "RU": "[RU] ",
                 "HY": "[HY] ",
             }.get(lang.upper(), f"[{lang}] ")
-            body = f"{prefix}{brief}".strip()
-            if platform == "x" and len(body) > 280:
-                body = body[:277] + "..."
+            # Light platform-aware shaping without a second renderer stack.
+            if platform == "tiktok":
+                body = f"{prefix}{brief}\n\n#Exswaping".strip()
+            elif platform == "youtube_community":
+                body = f"{prefix}Community note: {brief}".strip()
+            elif platform == "discord":
+                body = f"{prefix}**Exswaping** — {brief}".strip()
+            elif platform == "linkedin":
+                body = f"{prefix}{brief}\n\n— Exswaping".strip()
+            else:
+                body = f"{prefix}{brief}".strip()
+            limit = PLATFORM_LIMITS.get(platform, 5000)
+            if len(body) > limit:
+                body = body[: max(0, limit - 3)].rstrip() + "..."
             out.append(
                 {
                     "platform": platform,
@@ -371,7 +386,7 @@ def get_draft(db: Session, content_id: int) -> dict[str, Any]:
         "item": {
             "id": item.id,
             "title": item.title,
-            "status": item.status,
+            "status": normalize_status(item.status),
             "brief": item.brief,
         },
         "variants": [
@@ -550,7 +565,7 @@ def execute_tool(
                 languages=list(arguments.get("languages") or ["EN"]),
             )
     elif tool_name == "content.generate_variants":
-        platforms = list(arguments.get("platforms") or ["facebook", "instagram", "telegram", "x", "linkedin"])
+        platforms = list(arguments.get("platforms") or list(DEFAULT_VARIANT_PLATFORMS))
         languages = list(arguments.get("languages") or ["EN"])
         generated = generate_variants_local(str(arguments.get("brief") or ""), platforms, languages)
         if dry_run or arguments.get("persist") is not True:
@@ -579,6 +594,98 @@ def execute_tool(
                 )
             db.flush()
             result = {"ok": True, "content_id": created["content_id"], "variants": generated["variants"], "ai_used": False}
+    elif tool_name in {"content.translate", "content.rewrite"}:
+        from src.social_agent import copilot as copilot_svc
+
+        mode = "improve" if tool_name == "content.rewrite" else "grammar"
+        if tool_name == "content.translate":
+            # Local stub: language tag only until AI provider translation is certified.
+            lang = str(arguments.get("language") or arguments.get("target_language") or "EN").upper()
+            src = str(arguments.get("text") or arguments.get("body") or "")
+            result = {
+                "ok": True,
+                "text": f"[{lang}] {src}".strip(),
+                "language": lang,
+                "ai_used": False,
+                "provider_called": False,
+                "message": "Local translate stub — AI provider translation not certified.",
+            }
+        else:
+            result = copilot_svc.rewrite_content(
+                str(arguments.get("text") or arguments.get("body") or ""),
+                mode=str(arguments.get("mode") or mode),
+            )
+    elif tool_name == "content.transition_status":
+        from src.social_agent import content_workflow as cw
+
+        result = cw.transition_status(
+            db,
+            actor=actor,
+            content_id=int(arguments["content_id"]),
+            to_status=str(arguments.get("status") or arguments.get("to_status") or ""),
+            note=arguments.get("note"),
+        )
+    elif tool_name == "content.studio_preview":
+        from src.social_agent import content_workflow as cw
+
+        result = cw.studio_previews(db, content_id=int(arguments["content_id"]))
+    elif tool_name == "copilot.assist":
+        from src.social_agent import copilot as copilot_svc
+
+        result = copilot_svc.assist(
+            db,
+            intent=str(arguments.get("intent") or "help"),
+            text=str(arguments.get("text") or arguments.get("brief") or ""),
+            platform=str(arguments.get("platform") or "facebook"),
+        )
+    elif tool_name == "calendar.list":
+        from src.social_agent import calendar_service as cal
+
+        result = cal.list_entries(
+            db,
+            view=str(arguments.get("view") or "month"),
+            anchor=arguments.get("anchor"),
+        )
+    elif tool_name == "calendar.queue":
+        from src.social_agent import calendar_service as cal
+
+        if dry_run:
+            result = {
+                "ok": True,
+                "dry_run": True,
+                "would_queue": {
+                    "content_id": arguments.get("content_id"),
+                    "platform": arguments.get("platform"),
+                    "scheduled_for": arguments.get("scheduled_for"),
+                },
+                "live_publish_enabled": False,
+            }
+        else:
+            result = cal.create_entry(
+                db,
+                actor=actor,
+                content_id=int(arguments["content_id"]),
+                platform=str(arguments.get("platform") or "facebook"),
+                scheduled_for=str(arguments.get("scheduled_for") or ""),
+                timezone_name=str(arguments.get("timezone") or "UTC"),
+                notes=arguments.get("notes"),
+            )
+    elif tool_name == "analytics.get_summary":
+        from src.social_agent import surfaces
+
+        result = surfaces.analytics_architecture(db)
+    elif tool_name == "comments.list":
+        from src.social_agent import surfaces
+
+        result = surfaces.comments_architecture()
+    elif tool_name == "messages.list":
+        from src.social_agent import surfaces
+
+        result = surfaces.messages_architecture()
+    elif tool_name == "automations.list":
+        from src.social_agent import surfaces
+
+        result = surfaces.automations_architecture(db)
     elif tool_name in {"publishing.preview", "publishing.dry_run"}:
         from src.social_agent.publishing.service import run_publishing_dry_run
 
@@ -667,16 +774,47 @@ def execute_tool(
         else:
             result = {"ok": False, "error": "unknown_canary_action", "action": action}
     elif tool_name == "media.list_assets":
-        result = {"ok": True, "assets": [], "message": "Media library empty — upload not yet enabled in this release."}
+        from src.social_agent import media_library as media
+
+        result = media.list_assets(
+            db,
+            folder_id=int(arguments["folder_id"]) if arguments.get("folder_id") is not None else None,
+            limit=int(arguments.get("limit") or 100),
+        )
+    elif tool_name == "media.create_folder":
+        from src.social_agent import media_library as media
+
+        if dry_run:
+            result = {"ok": True, "dry_run": True, "would_create_folder": arguments.get("name")}
+        else:
+            result = media.create_folder(
+                db,
+                actor=actor,
+                name=str(arguments.get("name") or ""),
+                parent_id=int(arguments["parent_id"]) if arguments.get("parent_id") is not None else None,
+            )
     elif tool_name == "brand.search_knowledge":
-        q = str(arguments.get("query") or "").lower()
-        rules = [
-            {"id": "tone", "title": "Exswaping tone", "text": "Clear, trustworthy, no guaranteed returns."},
-            {"id": "aml", "title": "AML guidance", "text": "Do not promise bypass of KYC/AML."},
-            {"id": "cta", "title": "Approved CTA", "text": "Use official Exswaping destination links only."},
-        ]
-        hits = [r for r in rules if not q or q in r["title"].lower() or q in r["text"].lower()]
-        result = {"ok": True, "hits": hits, "source": "bundled_seed_rules"}
+        from src.social_agent import brand_store as brand
+
+        result = brand.search_knowledge(db, query=str(arguments.get("query") or ""))
+    elif tool_name == "brand.list_knowledge":
+        from src.social_agent import brand_store as brand
+
+        result = brand.list_knowledge(db)
+    elif tool_name == "brand.upsert":
+        from src.social_agent import brand_store as brand
+
+        if dry_run:
+            result = {"ok": True, "dry_run": True, "would_upsert": arguments}
+        else:
+            result = brand.upsert_knowledge(
+                db,
+                actor=actor,
+                category=str(arguments.get("category") or ""),
+                key=str(arguments.get("key") or ""),
+                title=str(arguments.get("title") or ""),
+                value=str(arguments.get("value") or ""),
+            )
     else:
         result = {"ok": False, "error": "handler_missing", "tool": tool_name}
 
@@ -817,7 +955,7 @@ def chat_turn(
                 f"provider_called={dry.get('provider_called')} · META_PROVIDER_MUTATIONS={dry.get('meta_provider_mutations', 0)}"
             )
     elif wants_draft:
-        platforms = ["facebook", "instagram", "telegram", "x", "linkedin"]
+        platforms = list(DEFAULT_VARIANT_PLATFORMS)
         languages = ["EN"]
         if "armenian" in lower or "հայերեն" in lower or " hy" in lower:
             languages.append("HY")
@@ -839,6 +977,26 @@ def chat_turn(
             )
         else:
             reply_parts.append(f"Could not create draft: {result.get('error') or result.get('message')}")
+    elif any(k in lower for k in ("hashtag", "rewrite", "compliance", "grammar", "image prompt", "calendar plan", "engagement")):
+        from src.social_agent import copilot as copilot_svc
+
+        intent = "hashtags"
+        if "rewrite" in lower or "improve" in lower:
+            intent = "rewrite"
+        elif "compliance" in lower or "banned" in lower:
+            intent = "compliance"
+        elif "grammar" in lower:
+            intent = "grammar"
+        elif "image" in lower:
+            intent = "image_prompt"
+        elif "calendar" in lower:
+            intent = "calendar"
+        elif "engagement" in lower or "predict" in lower:
+            intent = "engagement"
+        assist = copilot_svc.assist(db, intent=intent, text=text)
+        tool_calls.append({"tool": "copilot.assist", "result": assist})
+        reply_parts.append(json.dumps({k: assist.get(k) for k in assist if k != "brand_categories"}, indent=2)[:2500])
+        reply_parts.append("Auto-publish remains disabled.")
     elif any(k in lower for k in ("connection", "account health", "meta status", "telegram status", "connected")):
         result = execute_tool(
             db,
@@ -857,13 +1015,23 @@ def chat_turn(
             f"- Exswaping: {integ.get('exswaping', {}).get('status')}"
         )
     else:
+        from src.social_agent.copilot import copilot_capabilities
+        from src.social_agent.brand_store import brand_context_for_ai
+
+        brand = brand_context_for_ai(db)
         reply_parts.append(
-            "I'm the Social Agent assistant. I can create drafts, generate platform variants, "
-            "check connection status, and prepare dry-run publish previews. "
-            "Live Meta publishing is disabled — publish commands return draft + validation + payload preview only. "
-            "Try: “Publish today's rates to Facebook” or “Create a Telegram post about USDT to AMD”."
+            "I'm the Social Agent copilot. I can generate campaigns/variants, rewrite copy, "
+            "suggest hashtags, draft image prompts, check compliance, outline calendars, "
+            "and prepare dry-run publish previews. I never publish automatically."
         )
-        reply_parts.append(f"Available tools: {', '.join(t['name'] for t in list_tools()[:8])}…")
+        reply_parts.append("Capabilities: " + ", ".join(copilot_capabilities()))
+        reply_parts.append(
+            "Brand categories loaded: " + ", ".join(sorted((brand.get("brand") or {}).keys()) or ["(seed pending)"])
+        )
+        reply_parts.append(
+            'Try: “Create a multi-platform draft about USDT to AMD”, “Rewrite this for LinkedIn”, '
+            '“Suggest hashtags”, or “Publish dry-run to Facebook”.'
+        )
 
     reply = "\n\n".join(reply_parts)
     append_message(

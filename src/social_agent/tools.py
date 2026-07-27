@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 
 class SideEffectClass(str, Enum):
@@ -69,7 +69,7 @@ def _tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="content.translate",
-            description="Translate draft text (requires AI provider when configured).",
+            description="Translate draft text (local stub until AI translation certified).",
             side_effect_class=SideEffectClass.DRAFT_CREATION,
             required_permission="content.edit",
             confirmation_required=False,
@@ -84,6 +84,33 @@ def _tools() -> list[ToolSpec]:
             confirmation_required=False,
             dry_run_support=True,
             provider_dependency="ai",
+        ),
+        ToolSpec(
+            name="content.transition_status",
+            description="Move content through Draft → Needs Review → Approved/Rejected/Archived.",
+            side_effect_class=SideEffectClass.DRAFT_CREATION,
+            required_permission="content.approve",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={"content_id": "number", "status": "string", "note": "string?"},
+        ),
+        ToolSpec(
+            name="content.studio_preview",
+            description="Render multi-platform Content Studio previews via canonical renderers.",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="content.edit",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={"content_id": "number"},
+        ),
+        ToolSpec(
+            name="copilot.assist",
+            description="Social copilot helpers (rewrite, hashtags, compliance, calendar). Never publishes.",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="social_agent.chat",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={"intent": "string", "text": "string?", "platform": "string?"},
         ),
         ToolSpec(
             name="publishing.dry_run",
@@ -145,13 +172,35 @@ def _tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="publishing.schedule",
-            description="Schedule approved content.",
+            description="Schedule approved content for live publishing.",
             side_effect_class=SideEffectClass.SCHEDULED_MUTATION,
             required_permission="publishing.schedule",
             confirmation_required=True,
             dry_run_support=True,
             available=False,
-            unavailable_reason="Scheduler mutations remain locked until Social Agent scheduling certification.",
+            unavailable_reason="Live scheduler mutations remain locked. Use calendar.queue for preview queue only.",
+        ),
+        ToolSpec(
+            name="calendar.list",
+            description="List calendar entries and scheduled queue (no live publish).",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="publishing.schedule",
+            confirmation_required=False,
+            dry_run_support=True,
+        ),
+        ToolSpec(
+            name="calendar.queue",
+            description="Queue content on the calendar. Does not enable live publishing.",
+            side_effect_class=SideEffectClass.SCHEDULED_MUTATION,
+            required_permission="publishing.schedule",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={
+                "content_id": "number",
+                "platform": "string",
+                "scheduled_for": "string",
+                "timezone": "string?",
+            },
         ),
         ToolSpec(
             name="media.list_assets",
@@ -162,14 +211,46 @@ def _tools() -> list[ToolSpec]:
             dry_run_support=True,
         ),
         ToolSpec(
+            name="media.create_folder",
+            description="Create a media library folder.",
+            side_effect_class=SideEffectClass.DRAFT_CREATION,
+            required_permission="media.manage",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={"name": "string", "parent_id": "number?"},
+        ),
+        ToolSpec(
             name="analytics.get_summary",
-            description="Get analytics summary.",
+            description="Analytics architecture summary. Returns no fabricated metrics.",
             side_effect_class=SideEffectClass.READ_ONLY,
             required_permission="analytics.view",
             confirmation_required=False,
             dry_run_support=True,
-            available=False,
-            unavailable_reason="Provider analytics not configured.",
+            available=True,
+        ),
+        ToolSpec(
+            name="comments.list",
+            description="Comments architecture — no polling, no fake comments.",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="comments.reply",
+            confirmation_required=False,
+            dry_run_support=True,
+        ),
+        ToolSpec(
+            name="messages.list",
+            description="Messages inbox architecture — no provider writes.",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="messages.reply",
+            confirmation_required=False,
+            dry_run_support=True,
+        ),
+        ToolSpec(
+            name="automations.list",
+            description="List automation workflow drafts (always disabled).",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="automations.manage",
+            confirmation_required=False,
+            dry_run_support=True,
         ),
         ToolSpec(
             name="brand.search_knowledge",
@@ -178,6 +259,23 @@ def _tools() -> list[ToolSpec]:
             required_permission="brand.manage",
             confirmation_required=False,
             dry_run_support=True,
+        ),
+        ToolSpec(
+            name="brand.list_knowledge",
+            description="List all brand knowledge entries.",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            required_permission="brand.manage",
+            confirmation_required=False,
+            dry_run_support=True,
+        ),
+        ToolSpec(
+            name="brand.upsert",
+            description="Create or update a brand knowledge entry.",
+            side_effect_class=SideEffectClass.DRAFT_CREATION,
+            required_permission="brand.manage",
+            confirmation_required=False,
+            dry_run_support=True,
+            input_schema={"category": "string", "key": "string", "title": "string", "value": "string"},
         ),
         ToolSpec(
             name="exswaping.get_public_content",

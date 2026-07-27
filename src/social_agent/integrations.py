@@ -88,11 +88,36 @@ def integration_matrix() -> dict[str, Any]:
     return {
         "meta": meta_status(),
         "telegram": telegram_adapter_status(),
-        "x": {"provider": "x", "status": "NOT_STARTED"},
-        "linkedin": {"provider": "linkedin", "status": "NOT_STARTED"},
-        "discord": {"provider": "discord", "status": "NOT_STARTED"},
-        "youtube": {"provider": "youtube", "status": "NOT_STARTED"},
-        "tiktok": {"provider": "tiktok", "status": "NOT_STARTED"},
+        "x": {
+            "provider": "x",
+            "status": "NOT_CONFIGURED",
+            "configured": False,
+            "message": "NOT CONFIGURED",
+        },
+        "linkedin": {
+            "provider": "linkedin",
+            "status": "NOT_CONFIGURED",
+            "configured": False,
+            "message": "NOT CONFIGURED",
+        },
+        "discord": {
+            "provider": "discord",
+            "status": "NOT_CONFIGURED",
+            "configured": False,
+            "message": "NOT CONFIGURED",
+        },
+        "youtube": {
+            "provider": "youtube",
+            "status": "NOT_CONFIGURED",
+            "configured": False,
+            "message": "NOT CONFIGURED",
+        },
+        "tiktok": {
+            "provider": "tiktok",
+            "status": "NOT_CONFIGURED",
+            "configured": False,
+            "message": "NOT CONFIGURED",
+        },
         "exswaping": exswaping_status(),
         "ai": ai_provider_status(),
     }
