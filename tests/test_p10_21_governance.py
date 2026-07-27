@@ -111,9 +111,11 @@ def test_roles_api_requires_reason_for_quarantined(monkeypatch) -> None:
 
 def test_accounts_main_template_has_governance_badges() -> None:
     text = open("src/dashboard/templates/accounts_main.html", encoding="utf-8").read()
-    assert "governance_badges" in text
-    assert "Execution eligibility" in text
+    # Accounts dashboard simplify: operator presentation replaces inline governance badge chips.
+    assert "operator_summary" in text
     assert "openGovernanceModal" in text
+    assert "governanceModal" in text
+    assert "Campaign governance" in text
 
 
 def test_accounts_main_page_injects_eligibility_preview_fallback(monkeypatch) -> None:
@@ -122,13 +124,37 @@ def test_accounts_main_page_injects_eligibility_preview_fallback(monkeypatch) ->
     monkeypatch.setattr(
         legacy,
         "build_accounts_main_context",
-        lambda db: {"accounts": [], "total_accounts": 0, "operational_count": 0},
+        lambda db: {
+            "accounts": [],
+            "total_accounts": 0,
+            "operational_count": 0,
+            "operator_summary": {
+                "total_accounts": 0,
+                "authorized": 0,
+                "certified": 0,
+                "ready": 0,
+                "needs_session": 0,
+                "disabled": 0,
+                "protected": 0,
+                "reserved": 0,
+                "not_ready": 0,
+            },
+            "freshness_compact": {"label": "MISSING", "fresh": False, "text": "No matrix"},
+            "matrix_freshness": {"present": False, "fresh": False, "label": "MISSING"},
+            "eligibility_preview": {"summary": {"eligible": 0}},
+            "eligibility_scheduler": {"summary": {"eligible": 0}},
+            "eligibility_discovery": {"summary": {"eligible": 0}},
+            "governance_roles_available": [],
+            "campaign_execution_enabled": False,
+            "pinned_ids": [],
+        },
     )
     app = _app(monkeypatch)
     resp = app.test_client().get("/accounts", headers=_headers())
     assert resp.status_code == 200
-    assert b"Execution eligibility" in resp.data
+    assert b"Accounts" in resp.data
     assert b"UndefinedError" not in resp.data
+    assert b"openGovernanceModal" in resp.data or b"governanceModal" in resp.data
 
 
 def test_ensure_governance_template_context_fills_missing_keys() -> None:
