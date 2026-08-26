@@ -30,6 +30,7 @@ def _reset_boundary(monkeypatch):
     monkeypatch.delenv("CONTROLLED_STORY_EXECUTION_ENABLED", raising=False)
     monkeypatch.delenv("CONTROLLED_STORY_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("SCHEDULER_STORY_EXECUTION_ENABLED", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
     yield
     clear_mutation_token_state_for_tests()
 
@@ -92,6 +93,7 @@ def test_phase06_canary_pattern_blocked_without_global_switch(monkeypatch) -> No
 
 
 def test_account_allowlist_default_deny(monkeypatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "controlled-canary")
     monkeypatch.delenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", raising=False)
@@ -111,6 +113,7 @@ def test_execution_mode_unknown_disables(monkeypatch) -> None:
 
 
 def test_provider_boundary_rejects_missing_forged_expired_reused(monkeypatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "controlled-canary")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")
@@ -166,6 +169,7 @@ def test_provider_boundary_rejects_missing_forged_expired_reused(monkeypatch) ->
 
 
 def test_queued_after_disable_rejects(monkeypatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "controlled-canary")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")
@@ -222,6 +226,7 @@ def test_invoke_send_story_increments_counter_only_when_authorized(monkeypatch) 
     assert client.calls == 0
     assert get_provider_call_count() == 0
 
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "controlled-canary")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")
@@ -257,6 +262,7 @@ def test_invoke_send_story_increments_counter_only_when_authorized(monkeypatch) 
 
 
 def test_dry_run_decision_never_issues_provider_token(monkeypatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "dry-run")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")
@@ -274,6 +280,7 @@ def test_dry_run_decision_never_issues_provider_token(monkeypatch) -> None:
 
 
 def test_scheduler_and_automation_triggers_denied(monkeypatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "live")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")
@@ -295,6 +302,7 @@ def test_scheduler_and_automation_triggers_denied(monkeypatch) -> None:
 def test_guard_requires_purpose_when_global_enabled(monkeypatch) -> None:
     from src.core.execution_guard import ACTION_STORY_PUBLISH, can_execute_action
 
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "controlled-canary")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")

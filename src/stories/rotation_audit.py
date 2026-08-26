@@ -195,22 +195,102 @@ def story_auth_is_fresh(account: Account, *, now: datetime | None = None) -> boo
     return _story_auth_is_fresh(account, now=now)
 
 
+MULTI_ACCOUNT_CONFIRMATION_TOKEN = "I_CONFIRM_STORY_PUBLISH"
+
+
+def mutation_allowlist_account_ids() -> set[int]:
+    """Configured mutation allowlist (legacy canary fallback when env empty).
+
+    For UI "live unlocked" labeling use ``effective_live_mutation_allowlist_account_ids``.
+    """
+    from src.stories.mutation_boundary import parse_story_mutation_allowlist
+
+    allowlist = parse_story_mutation_allowlist()
+    if allowlist:
+        return allowlist
+    # Legacy single-canary fallback when allowlist env is unset.
+    return {int(controlled_live_account_id())}
+
+
+def effective_live_mutation_allowlist_account_ids() -> set[int]:
+    """Accounts that are truly live-unlocked right now (flags + allowlist).
+
+    Returns empty when mutations or controlled execution are off, so the UI does
+    not show a false "live unlocked" from the legacy canary fallback alone.
+    """
+    from src.stories.mutation_boundary import (
+        parse_story_mutation_allowlist,
+        story_mutations_enabled,
+    )
+    from src.stories.scheduler_integration import controlled_story_execution_enabled
+
+    if not story_mutations_enabled() or not controlled_story_execution_enabled():
+        return set()
+    allowlist = parse_story_mutation_allowlist()
+    if allowlist:
+        return allowlist
+    # Flags on + empty allowlist → legacy single controlled account only.
+    return {int(controlled_live_account_id())}
+
+
+def live_confirmation_token_for_accounts(account_ids: list[int]) -> str:
+    ids = sorted({int(x) for x in account_ids})
+    if len(ids) == 1:
+        return f"LIVE_STORY_ACCOUNT_{ids[0]}"
+    return MULTI_ACCOUNT_CONFIRMATION_TOKEN
+
+
 def live_gate_allowed(payload: dict[str, Any] | None, precheck: dict[str, Any]) -> tuple[bool, list[str]]:
     payload = payload or {}
     blockers: list[str] = []
-    account_ids = precheck.get("eligible_accounts") or []
-    if account_ids != [controlled_live_account_id()]:
-        blockers.append("live_gate_requires_account_140_only")
+    account_ids = [int(x) for x in (precheck.get("eligible_accounts") or [])]
+    allowlist = mutation_allowlist_account_ids()
+    if not account_ids:
+        blockers.append("no_story_ready_accounts")
+    else:
+        from src.stories.autostory_hardening import account_in_active_wave_authorization
+
+        denied = [
+            aid
+            for aid in account_ids
+            if aid not in allowlist and not account_in_active_wave_authorization(aid)
+        ]
+        if denied:
+            blockers.append("live_gate_accounts_not_on_allowlist")
     if payload.get("explicit_operator_approval") is not True:
         blockers.append("explicit_operator_approval_required")
     confirmation = str(payload.get("confirmation_token") or "").strip()
-    if confirmation != f"LIVE_STORY_ACCOUNT_{controlled_live_account_id()}":
-        blockers.append("confirmation_token_required")
+    expected_multi = MULTI_ACCOUNT_CONFIRMATION_TOKEN
+    expected_singles = {f"LIVE_STORY_ACCOUNT_{aid}" for aid in account_ids} if account_ids else set()
+    if confirmation != expected_multi and confirmation not in expected_singles:
+        # Single-account legacy token still accepted when exactly one eligible account.
+        if not (len(account_ids) == 1 and confirmation == f"LIVE_STORY_ACCOUNT_{account_ids[0]}"):
+            blockers.append("confirmation_token_required")
     if precheck.get("live_blockers"):
         blockers.extend(precheck.get("live_blockers") or [])
     if precheck.get("live_only_blockers"):
         blockers.extend(precheck.get("live_only_blockers") or [])
     return len(blockers) == 0, blockers
+
+
+def allocate_mentions_without_replacement(
+    candidates: list[dict[str, Any]],
+    *,
+    account_ids: list[int],
+    mentions_per_story: int,
+) -> list[list[dict[str, Any]]]:
+    """Split a flat candidate list into per-account mention sets (no reuse)."""
+    mps = max(0, int(mentions_per_story or 0))
+    ids = [int(x) for x in account_ids]
+    if mps <= 0 or not ids:
+        return [[] for _ in ids]
+    cursor = 0
+    allocated: list[list[dict[str, Any]]] = []
+    for _aid in ids:
+        chunk = candidates[cursor : cursor + mps]
+        allocated.append(list(chunk))
+        cursor += mps
+    return allocated
 
 
 def _mention_query(db: Session, *, source_chat_id: int | None, prefer_never_mentioned: bool = True):
@@ -249,8 +329,9 @@ def select_mention_candidates(
     if strategy == "oldest":
         rows = q.order_by(DiscoveredUser.discovered_at.asc()).limit(count).all()
     else:
-        # Pull a bounded candidate pool and sample in Python to keep SQLite simple.
-        pool = q.order_by(DiscoveredUser.discovered_at.asc()).limit(max(count * 20, 100)).all()
+        # Bound pool large enough for multi-account without-replacement allocation.
+        pool_limit = max(count * 5, count, 100)
+        pool = q.order_by(DiscoveredUser.discovered_at.asc()).limit(pool_limit).all()
         rows = random.sample(pool, min(count, len(pool))) if pool else []
     seen: set[int] = set()
     out: list[dict[str, Any]] = []
@@ -544,6 +625,9 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         live_blockers.append("no_story_ready_accounts")
     if mentions_per_story > 0 and mentions["available"] <= 0:
         live_blockers.append("no_mention_candidates")
+    mention_total_needed = max(0, mentions_per_story) * max(0, len(ready_accounts))
+    if mentions_per_story > 0 and ready_accounts and mentions["available"] < mention_total_needed:
+        live_blockers.append("insufficient_mention_candidates")
     if missing_requested:
         live_blockers.append("requested_account_not_found")
     if any(r["is_stale_running"] for r in runs):
@@ -556,10 +640,13 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         for r in rows
         if r["live_only_blockers"]
     }
+    mention_total_needed = max(0, mentions_per_story) * max(1, len(ready_accounts) or 1)
+    if mentions_per_story <= 0:
+        mention_total_needed = 0
     selected_mentions = select_mention_candidates(
         db,
         source_chat_id=source_chat_id,
-        count=mentions_per_story,
+        count=mention_total_needed,
         strategy=mention_strategy,
     )
     from src.stories.mention_plan import (
@@ -571,24 +658,32 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
     # If the operator locked an approved Dry Run plan, never reselect.
     approved_plan = extract_approved_mention_plan(payload)
     if approved_plan is not None:
-        selected_mentions = normalize_mention_plan(approved_plan)[: max(0, mentions_per_story)]
+        selected_mentions = normalize_mention_plan(approved_plan)[:mention_total_needed]
     mention_plan_eval = evaluate_mention_plan_local(
         selected_mentions,
-        mentions_requested=mentions_per_story,
+        mentions_requested=mention_total_needed if mentions_per_story > 0 else 0,
     )
     if mentions_per_story > 0:
         for b in mention_plan_eval.get("live_blockers") or []:
             if b not in live_blockers:
                 live_blockers.append(b)
     live_only_blockers = sorted(set(live_only_blocker_counts.elements()))
+    eligible_ids = [r["account_id"] for r in ready_accounts]
+    per_account_mentions = allocate_mentions_without_replacement(
+        selected_mentions,
+        account_ids=eligible_ids,
+        mentions_per_story=mentions_per_story,
+    )
     live_publish_allowed, live_gate_blockers = live_gate_allowed(
         payload,
         {
-            "eligible_accounts": [r["account_id"] for r in ready_accounts],
+            "eligible_accounts": eligible_ids,
             "live_blockers": live_blockers,
             "live_only_blockers": live_only_blockers,
         },
     )
+    allowlist_ids = sorted(effective_live_mutation_allowlist_account_ids())
+    configured_allowlist_ids = sorted(mutation_allowlist_account_ids())
     return {
         "ok": not live_blockers,
         "dry_run": True,
@@ -597,6 +692,10 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         "requires_operator_approval": True,
         "live_gate_blockers": live_gate_blockers,
         "controlled_live_account_id": controlled_live_account_id(),
+        "mutation_allowlist_account_ids": allowlist_ids,
+        "configured_mutation_allowlist_account_ids": configured_allowlist_ids,
+        "live_mutations_enabled": bool(allowlist_ids),
+        "confirmation_token_expected": live_confirmation_token_for_accounts(eligible_ids),
         "live_blockers": live_blockers,
         "live_only_blockers": live_only_blockers,
         "account_blockers": account_blockers,
@@ -636,6 +735,10 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
         "media": media,
         "mentions": mentions,
         "selected_mention_candidates": selected_mentions,
+        "per_account_mentions": [
+            {"account_id": aid, "mentions": chunk}
+            for aid, chunk in zip(eligible_ids, per_account_mentions)
+        ],
         "mention_plan": mention_plan_eval,
         "runs": runs,
         "run_counts": dict(run_counts),
@@ -651,6 +754,11 @@ def build_story_dry_run_plan(db: Session, payload: dict[str, Any] | None = None)
     selected_ids = eligible_ids[:max_stories] if max_stories > 0 else eligible_ids
     mentions_per_story = int((payload or {}).get("mentions_per_story") or 0)
     mention_candidates = list(precheck.get("selected_mention_candidates") or [])
+    allocated = allocate_mentions_without_replacement(
+        mention_candidates,
+        account_ids=selected_ids,
+        mentions_per_story=mentions_per_story,
+    )
     execution_order = []
     for idx, account_id in enumerate(selected_ids, start=1):
         execution_order.append(
@@ -659,7 +767,7 @@ def build_story_dry_run_plan(db: Session, payload: dict[str, Any] | None = None)
                 "account_id": account_id,
                 "media_path": precheck["media"].get("path"),
                 "caption": (payload or {}).get("caption"),
-                "mentions": mention_candidates[:mentions_per_story],
+                "mentions": allocated[idx - 1] if idx - 1 < len(allocated) else [],
                 "cooldown_minutes_after_success": precheck["settings"]["per_account_cooldown_minutes"],
                 "would_publish": False,
             }
@@ -673,7 +781,13 @@ def build_story_dry_run_plan(db: Session, payload: dict[str, Any] | None = None)
         "caption": (payload or {}).get("caption"),
         "mention_strategy": precheck["settings"]["mention_strategy"],
         "selected_mention_candidates": mention_candidates,
+        "per_account_mentions": [
+            {"account_id": aid, "mentions": chunk}
+            for aid, chunk in zip(selected_ids, allocated)
+        ],
         "mention_plan": precheck.get("mention_plan"),
+        "mutation_allowlist_account_ids": precheck.get("mutation_allowlist_account_ids") or [],
+        "confirmation_token_expected": live_confirmation_token_for_accounts(selected_ids),
         "story_count": len(execution_order),
         "execution_order": execution_order,
         "cooldown": {

@@ -141,8 +141,23 @@ def _env_truthy(name: str, *, default: str = "false") -> bool:
     return False
 
 
+def current_environment_name() -> str:
+    return (os.environ.get("ENVIRONMENT") or "").strip().lower()
+
+
+def is_production_environment() -> bool:
+    """True only for explicit production. Missing/dev/test → False."""
+    return current_environment_name() in {"production", "prod"}
+
+
 def story_mutations_enabled() -> bool:
-    """Global kill switch. Missing or malformed → False."""
+    """Global kill switch. Non-production, missing, or malformed → False.
+
+    Local Mac / pytest cannot publish even if STORY_MUTATIONS_ENABLED=true.
+    Production still requires the flag to be an explicit truthy value.
+    """
+    if not is_production_environment():
+        return False
     return _env_truthy(STORY_MUTATIONS_FLAG, default="false")
 
 
@@ -164,16 +179,57 @@ def parse_story_execution_mode() -> StoryExecutionMode:
     return aliases.get(raw, StoryExecutionMode.DISABLED)
 
 
+def parse_story_mutation_allowlist() -> set[int]:
+    """Parse ``STORY_ACCOUNT_MUTATION_ALLOWLIST`` as integer account ids (empty = deny)."""
+    raw = (os.environ.get(STORY_ACCOUNT_ALLOWLIST_FLAG) or "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if token.isdigit() or (token.startswith("-") and token[1:].isdigit()):
+            out.add(int(token))
+    return out
+
+
 def story_account_mutation_allowed(account_id: int | None) -> tuple[bool, str]:
     if account_id is None:
         return False, "account_id_required"
-    raw = (os.environ.get(STORY_ACCOUNT_ALLOWLIST_FLAG) or "").strip()
-    if not raw:
+    allowed = parse_story_mutation_allowlist()
+    if allowed and int(account_id) in allowed:
+        return True, "account_mutation_allowed"
+    # MODEL A: durable campaign-scoped wave authorization (env allowlist optional)
+    try:
+        from src.stories.autostory_hardening import account_in_active_wave_authorization
+
+        if account_in_active_wave_authorization(int(account_id)):
+            return True, "account_mutation_allowed_campaign_wave"
+    except Exception as exc:
+        logger.warning("campaign_wave_auth_check_failed", error=str(exc), account_id=account_id)
+    if not allowed:
         return False, "account_mutation_allowlist_empty"
-    allowed = {part.strip() for part in raw.split(",") if part.strip()}
-    if str(int(account_id)) not in allowed:
-        return False, "account_mutation_denied"
-    return True, "account_mutation_allowed"
+    return False, "account_mutation_denied"
+
+
+def story_accounts_mutation_allowed(account_ids: list[int] | None) -> tuple[bool, str, list[int]]:
+    """Return whether every requested id is on the mutation allowlist or active wave."""
+    ids = [int(x) for x in (account_ids or [])]
+    if not ids:
+        return False, "account_id_required", []
+    denied: list[int] = []
+    for aid in ids:
+        ok, _reason = story_account_mutation_allowed(aid)
+        if not ok:
+            denied.append(aid)
+    if denied:
+        allowed = parse_story_mutation_allowlist()
+        if not allowed:
+            # Distinguish empty env vs partial deny when none have wave auth
+            return False, "account_mutation_denied", denied
+        return False, "account_mutation_denied", denied
+    return True, "account_mutation_allowed", []
 
 
 def _hmac_key() -> bytes:

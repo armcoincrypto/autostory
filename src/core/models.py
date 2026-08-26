@@ -7,7 +7,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     Column, Integer, String, Text, Boolean, Date, DateTime,
-    ForeignKey, JSON, Enum as SQLEnum, Float
+    ForeignKey, JSON, Enum as SQLEnum, Float, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from src.security.session_material import EncryptedSessionText
@@ -50,7 +50,7 @@ class Account(Base):
     session_string = Column(EncryptedSessionText(), nullable=True)
 
     # Account info
-    user_id = Column(Integer, nullable=True, index=True)  # Telegram user ID
+    user_id = Column(Integer, nullable=True, index=True)
     username = Column(String(100), nullable=True)
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
@@ -62,39 +62,53 @@ class Account(Base):
     last_error = Column(Text, nullable=True)
     flood_wait_until = Column(DateTime, nullable=True)
 
-    # Telegram health check results (written by fleet health check jobs)
-    health_status = Column(String(50), nullable=True)       # alive / banned / frozen / restricted / auth_required / flood_wait / deleted
-    health_reason = Column(Text, nullable=True)             # human-readable summary from last health check
-    health_checked_at = Column(DateTime, nullable=True)     # UTC timestamp of last health check
+    health_status = Column(String(50), nullable=True)
+    health_reason = Column(Text, nullable=True)
+    health_message = Column(Text, nullable=True)
+    health_checked_at = Column(DateTime, nullable=True)
+    session_path = Column(String(512), nullable=True)
 
-    # Story precheck results (written by /api/accounts/story-precheck)
-    story_precheck_status = Column(String(50), nullable=True)   # allowed / frozen / not_authorized
+    story_precheck_status = Column(String(50), nullable=True)
     story_precheck_reason = Column(String(255), nullable=True)
-    story_precheck_checked_at = Column(DateTime, nullable=True) # UTC timestamp of last story precheck
+    story_precheck_checked_at = Column(DateTime, nullable=True)
     story_status = Column(String(20), nullable=True)
     story_status_reason = Column(String(255), nullable=True)
     story_status_checked_at = Column(DateTime, nullable=True)
     story_blocked_until = Column(DateTime, nullable=True)
     last_story_attempt_at = Column(DateTime, nullable=True)
     last_story_success_at = Column(DateTime, nullable=True)
+    last_story_failure_at = Column(DateTime, nullable=True)
+    successful_story_count = Column(Integer, default=0)
+    failed_story_count = Column(Integer, default=0)
+    story_attempts_today = Column(Integer, default=0)
 
-    # Account purpose — controls which subsystems use this account
-    # autostory | messaging | both | ai_agent (ai_agent: negotiation desk only, no scheduler/stories)
     purpose = Column(String(20), nullable=True, default="both")
 
-    # Rate limiting counters (stories_today is success-only; day boundary is UTC)
     stories_today = Column(Integer, default=0)
-    stories_today_on = Column(Date, nullable=True)  # UTC calendar day for stories_today
+    stories_today_on = Column(Date, nullable=True)
     actions_today = Column(Integer, default=0)
     last_action_at = Column(DateTime, nullable=True)
 
-    # Metadata
+    imported_at = Column(DateTime, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    import_source = Column(String(100), nullable=True)
+    warmup_status = Column(String(20), nullable=True)
+    risk_notes = Column(Text, nullable=True)
+    username_last_changed_at = Column(DateTime, nullable=True)
+    profile_photo_last_changed_at = Column(DateTime, nullable=True)
+    manual_review_required = Column(Boolean, default=False)
+    manual_review_reason = Column(String(255), nullable=True)
+    identity_audit_status = Column(String(32), nullable=True)
+    identity_audit_reason = Column(String(255), nullable=True)
+    identity_audit_at = Column(DateTime, nullable=True)
+    profile_capability_status = Column(String(20), nullable=True)
+    profile_capability_reason = Column(String(255), nullable=True)
+
     proxy_config = Column(JSON, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationships
     stories = relationship("Story", back_populates="account")
     tasks = relationship("Task", back_populates="account")
 
@@ -373,6 +387,124 @@ class StoryRunStep(Base):
 
     def __repr__(self):
         return f"<StoryRunStep run={self.run_id} account={self.account_id} {self.status}>"
+
+
+class AutoStoryCampaign(Base):
+    """Multi-day auto story campaign: shared media/caption, unique mentions per wave."""
+
+    __tablename__ = "auto_story_campaigns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    status = Column(String(20), default="draft", index=True)  # draft|active|paused|completed|cancelled
+
+    account_ids = Column(JSON, nullable=False)  # list[int]
+    media_path = Column(String(500), nullable=False)
+    caption = Column(Text, nullable=True)
+    mention_source_chat_id = Column(Integer, nullable=True)
+    mentions_per_story = Column(Integer, default=1)
+
+    duration_days = Column(Integer, nullable=False, default=1)
+    posts_per_day = Column(Integer, nullable=False, default=1)
+    times_json = Column(JSON, nullable=False)  # list[str] "HH:MM"
+
+    # Recurring AutoStory (additive; legacy rows default accounts_publish_once)
+    # accounts_publish_once | recurring_daily
+    campaign_mode = Column(String(32), nullable=False, default="accounts_publish_once")
+    stories_per_account_per_day = Column(Integer, nullable=False, default=1)
+    awake_start_hhmm = Column(String(5), nullable=True)  # local, default 10:00
+    awake_end_hhmm = Column(String(5), nullable=True)  # local, default 20:00
+
+    started_at = Column(DateTime, nullable=True)
+    ends_at = Column(DateTime, nullable=True)
+    next_wave_at = Column(DateTime, nullable=True, index=True)
+    last_wave_at = Column(DateTime, nullable=True)
+    last_story_run_id = Column(Integer, ForeignKey("story_runs.id"), nullable=True)
+
+    waves_ok = Column(Integer, default=0)
+    waves_failed = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+
+    # Operator approval captured at Start (reused for scheduled waves)
+    confirmation_token = Column(String(128), nullable=True)
+    explicit_operator_approval = Column(Boolean, default=False)
+
+    # MODEL A: durable multi-worker claim + campaign-scoped wave authorization
+    claimed_by = Column(String(128), nullable=True)
+    claimed_at = Column(DateTime, nullable=True)
+    claim_expires_at = Column(DateTime, nullable=True, index=True)
+    authorized_account_ids = Column(JSON, nullable=True)  # <= MAX_AUTOSTORY_WAVE_SIZE
+    authorization_wave_index = Column(Integer, nullable=True)
+    authorization_revoked_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<AutoStoryCampaign {self.id} {self.status}>"
+
+
+class AutoStoryAccountProgress(Base):
+    """Durable per-account progress within an AutoStory campaign wave."""
+
+    __tablename__ = "auto_story_account_progress"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "wave_index", "account_id", name="uq_autostory_progress_cwa"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("auto_story_campaigns.id"), nullable=False, index=True)
+    wave_index = Column(Integer, nullable=False, default=0)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    run_id = Column(Integer, ForeignKey("story_runs.id"), nullable=True)
+    story_id = Column(Integer, ForeignKey("stories.id"), nullable=True)
+    telegram_story_id = Column(Integer, nullable=True)
+
+    # pending|claimed|attempting|published|reconciled|failed|deferred|ambiguous
+    status = Column(String(32), default="pending", index=True)
+    attempt_count = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
+    reconciled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return (
+            f"<AutoStoryAccountProgress c={self.campaign_id} w={self.wave_index} "
+            f"a={self.account_id} {self.status}>"
+        )
+
+
+class AutoStoryDailyProgress(Base):
+    """Per-account daily Story targets for recurring_daily campaigns."""
+
+    __tablename__ = "auto_story_daily_progress"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "account_id", "local_date", name="uq_autostory_daily_cad"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("auto_story_campaigns.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    local_date = Column(Date, nullable=False, index=True)  # Asia/Yerevan campaign day
+    target_count = Column(Integer, nullable=False, default=1)
+    successful_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    ambiguous_count = Column(Integer, nullable=False, default=0)
+    last_attempt_at = Column(DateTime, nullable=True)
+    last_story_id = Column(Integer, ForeignKey("stories.id"), nullable=True)
+    completed_for_day = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return (
+            f"<AutoStoryDailyProgress c={self.campaign_id} a={self.account_id} "
+            f"d={self.local_date} {self.successful_count}/{self.target_count}>"
+        )
 
 
 # Import scheduler models so they're registered with Base

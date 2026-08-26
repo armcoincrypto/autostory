@@ -1,8 +1,0 @@
-{
-  "http_status": 400,
-  "duration_sec": 0.065,
-  "response": {
-    "error": "canary_batch_ok=true required",
-    "ok": false
-  }
-}

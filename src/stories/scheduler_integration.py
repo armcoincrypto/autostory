@@ -3,6 +3,9 @@
 Controlled web publication and scheduler mutation deliberately use independent
 flags. The legacy ``STORY_EXECUTION_ENABLED`` flag is observation-only and
 never authorizes either path.
+
+Scheduler Story path (when enabled) only ticks Auto Story campaigns — legacy
+rotation remains uncertified.
 """
 from __future__ import annotations
 
@@ -29,12 +32,55 @@ def scheduler_story_execution_enabled() -> bool:
 
 
 def controlled_story_execution_allowed(account_id: int | None) -> tuple[bool, str]:
+    """Allow controlled live when flag is on and account is authorized.
+
+    Authorization: env mutation allowlist, OR durable campaign wave scope,
+    OR legacy single ``CONTROLLED_STORY_ACCOUNT_ID`` when allowlist empty.
+    """
     if not controlled_story_execution_enabled():
         return False, "controlled_story_execution_disabled"
+    if account_id is None:
+        return False, "controlled_story_account_mismatch"
+
+    from src.stories.mutation_boundary import parse_story_mutation_allowlist
+
+    allowlist = parse_story_mutation_allowlist()
+    if allowlist and int(account_id) in allowlist:
+        return True, "controlled_story_publish_ok"
+
+    try:
+        from src.stories.autostory_hardening import account_in_active_wave_authorization
+
+        if account_in_active_wave_authorization(int(account_id)):
+            return True, "controlled_story_publish_ok_campaign_wave"
+    except Exception:
+        pass
+
+    if allowlist:
+        return False, "controlled_story_account_mismatch"
+
     configured = os.environ.get(CONTROLLED_ACCOUNT_FLAG, "").strip()
-    if account_id is None or configured != str(int(account_id)):
+    if configured != str(int(account_id)):
         return False, "controlled_story_account_mismatch"
     return True, "controlled_story_publish_ok"
+
+
+def controlled_story_accounts_execution_allowed(
+    account_ids: list[int] | None,
+) -> tuple[bool, str, list[int]]:
+    """Multi-account variant of ``controlled_story_execution_allowed``."""
+    if not controlled_story_execution_enabled():
+        return False, "controlled_story_execution_disabled", list(account_ids or [])
+    ids = [int(x) for x in (account_ids or [])]
+    if not ids:
+        return False, "controlled_story_account_mismatch", []
+    denied: list[int] = []
+    for aid in ids:
+        ok, reason = controlled_story_execution_allowed(aid)
+        if not ok:
+            denied.append(aid)
+            return False, reason, denied
+    return True, "controlled_story_publish_ok", []
 
 
 def story_execution_enabled() -> bool:
@@ -51,23 +97,28 @@ def build_story_scheduler_integration_map() -> dict[str, Any]:
         "controlled_env_flag": CONTROLLED_EXECUTION_FLAG,
         "default": "false",
         "worker_loop": "src.scheduler.worker.run_scheduler_loop",
-        "engine": "disabled_in_clean_runtime_safety_phase",
+        "engine": "auto_story_campaigns",
         "current_state": (
             "disabled_no_live_story_execution"
             if not enabled
-            else "blocked_pending_certified_scheduler_contract"
+            else "auto_story_campaign_tick_enabled"
         ),
-        "status_transitions": {},
+        "status_transitions": {
+            "draft": ["active", "cancelled"],
+            "active": ["paused", "completed", "cancelled"],
+            "paused": ["active", "cancelled"],
+        },
         "safety": {
             "controlled_and_scheduler_flags_separate": True,
-            "scheduler_mutation_hard_disabled": True,
+            "scheduler_requires_mutations_and_allowlist": True,
             "precheck_and_dry_run_do_not_publish": True,
+            "manual_first_wave_recommended": True,
         },
     }
 
 
 async def maybe_tick_story_rotation() -> dict[str, Any]:
-    """Fail closed: scheduler Story mutation is not certified in this phase."""
+    """Tick due Auto Story campaigns when scheduler Story execution is enabled."""
     integration = build_story_scheduler_integration_map()
     if not integration["story_execution_enabled"]:
         return {
@@ -75,8 +126,12 @@ async def maybe_tick_story_rotation() -> dict[str, Any]:
             "reason": "scheduler_story_execution_disabled",
             "integration": integration,
         }
+    from src.stories.auto_story_service import tick_due_auto_story_campaigns
+
+    tick = tick_due_auto_story_campaigns()
     return {
-        "skipped": True,
-        "reason": "scheduler_story_execution_not_certified",
+        "skipped": bool(tick.get("skipped")),
+        "reason": tick.get("reason"),
         "integration": integration,
+        "auto_story": tick,
     }

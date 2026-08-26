@@ -240,13 +240,15 @@ def test_live_canonical_matrix_expected_shape_if_present():
     summary = views["summary"]
     by_id = views["accounts_by_id"]
     assert summary["total_accounts"] == 104
-    assert summary["authorized"] == 93
-    assert summary["certified"] == 2
+    # Post account-107 recovery (2026-07-28): 94 authorized, 0 needs session.
+    assert summary["authorized"] == 94
+    assert summary["certified"] == 3
     assert summary["ready"] == 91
-    assert summary["needs_session"] == 1
+    assert summary["needs_session"] == 0
     assert summary["disabled"] == 5
     assert summary["unavailable"] == 10
-    assert by_id[107]["display_status"] == "NEEDS_SESSION"
+    assert by_id[107]["display_status"] == "CERTIFIED"
+    assert by_id[107]["authorization_label"] == "Auth OK"
     assert by_id[106]["display_status"] == "CERTIFIED"
     assert by_id[140]["display_status"] == "CERTIFIED"
     assert by_id[13]["display_status"] == "DISABLED"

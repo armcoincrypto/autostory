@@ -1367,6 +1367,48 @@ def upload_media():
     })
 
 
+@api.route('/media/prepare-for-story', methods=['POST'])
+def prepare_media_for_story():
+    """Create a durable 1080×1920 Story derivative (contain + letterbox). Never overwrites source."""
+    from src.stories.autostory_media import prepare_story_derivative, validate_campaign_media
+
+    data = request.get_json(silent=True) or {}
+    media_path = (data.get('media_path') or data.get('path') or '').strip()
+    if not media_path:
+        return jsonify({'ok': False, 'error': 'media_path_required', 'message': 'Media path required.'}), 400
+
+    result = prepare_story_derivative(media_path)
+    if not result.get('ok'):
+        return jsonify(result), 400
+
+    # Re-validate with same gate used by campaigns
+    check = validate_campaign_media(result.get('path') or result.get('absolute_path'))
+    result['media_ok'] = bool(check.get('ok'))
+    result['validation'] = {
+        'ok': check.get('ok'),
+        'message': check.get('message'),
+        'compat_blocker': check.get('compat_blocker'),
+    }
+    return jsonify(result)
+
+
+def _is_system_test_media(filename: str) -> bool:
+    """True when filename matches operator-hidden system/test media patterns."""
+    import re
+
+    name = filename or ''
+    patterns = (
+        r'^canary_',
+        r'^audit_',
+        r'^scheduled_production_check_',
+        r'^test\.',
+        r'_test_',
+        r'^certification_',
+        r'^cert_',
+    )
+    return any(re.search(p, name, re.IGNORECASE) for p in patterns)
+
+
 @api.route('/media/files', methods=['GET'])
 def list_media_files():
     """List uploaded media files."""
@@ -1382,9 +1424,11 @@ def list_media_files():
             files.append({
                 'filename': f.name,
                 'path': str(f),
+                'url': f'/api/media/file/{f.name}',
                 'size': f.stat().st_size,
                 'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
                 'type': 'video' if f.suffix.lower() in {'.mp4', '.mov'} else 'photo',
+                'is_system_test': _is_system_test_media(f.name),
             })
     return jsonify({'files': files})
 

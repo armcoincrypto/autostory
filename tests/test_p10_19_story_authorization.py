@@ -27,6 +27,7 @@ def _write_valid_vertical_story_jpeg(path: Path, size: tuple[int, int] = (1080, 
 
 def _app(monkeypatch, **env):
     monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", TOKEN)
+    monkeypatch.setenv("ENVIRONMENT", env.get("ENVIRONMENT", "production"))
     monkeypatch.setenv(
         "CONTROLLED_STORY_EXECUTION_ENABLED",
         env.get(

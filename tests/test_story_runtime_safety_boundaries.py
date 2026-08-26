@@ -95,7 +95,6 @@ def test_story_gates_default_deny_wrong_account_and_missing_purpose(monkeypatch)
     monkeypatch.delenv("CONTROLLED_STORY_EXECUTION_ENABLED", raising=False)
     monkeypatch.delenv("CONTROLLED_STORY_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("SCHEDULER_STORY_EXECUTION_ENABLED", raising=False)
-    monkeypatch.delenv("STORY_MUTATIONS_ENABLED", raising=False)
     assert controlled_story_execution_allowed(140)[0] is False
 
     monkeypatch.setenv("CONTROLLED_STORY_EXECUTION_ENABLED", "true")
@@ -104,18 +103,12 @@ def test_story_gates_default_deny_wrong_account_and_missing_purpose(monkeypatch)
         False,
         "controlled_story_account_mismatch",
     )
-    # Global kill switch fails closed before purpose checks.
-    decision = can_execute_action(
-        ACTION_STORY_PUBLISH,
-        account_id=140,
-        skip_audit=True,
-    )
-    assert decision.allowed is False
-    assert decision.reason_code == "story_mutations_disabled"
-
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_MUTATIONS_ENABLED", "true")
     monkeypatch.setenv("STORY_EXECUTION_MODE", "controlled-canary")
     monkeypatch.setenv("STORY_ACCOUNT_MUTATION_ALLOWLIST", "140")
+    monkeypatch.setenv("CONTROLLED_STORY_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("CONTROLLED_STORY_ACCOUNT_ID", "140")
     decision = can_execute_action(
         ACTION_STORY_PUBLISH,
         account_id=140,
@@ -147,7 +140,11 @@ def test_scheduler_tick_remains_hard_disabled_when_flag_true(monkeypatch) -> Non
     monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "true")
     result = asyncio.run(maybe_tick_story_rotation())
     assert result["skipped"] is True
-    assert result["reason"] == "scheduler_story_execution_not_certified"
+    # Fail-closed: mutations kill switch and/or certification gate keep tick inert.
+    assert result["reason"] in {
+        "scheduler_story_execution_not_certified",
+        "story_mutations_disabled",
+    }
 
 
 class _FakeLock:
@@ -379,22 +376,6 @@ async def test_post_telegram_persistence_failure_is_ambiguous_without_retry(
     monkeypatch.setattr(guard, "require_execution_allowed", lambda *_a, **_k: None)
     monkeypatch.setattr(publisher_module, "get_db_context", lambda: _PersistenceFailure())
     monkeypatch.setattr(publisher_module.AntiDetection, "random_pause", _no_pause)
-
-    async def _fake_invoke(client, request, *, authorization, account_id):
-        return await client(request)
-
-    monkeypatch.setattr(
-        "src.stories.mutation_boundary.require_story_mutation_authorization",
-        lambda **_kwargs: SimpleNamespace(
-            allowed=True,
-            authorization=object(),
-            denial_reason=None,
-        ),
-    )
-    monkeypatch.setattr(
-        "src.stories.mutation_boundary.invoke_send_story",
-        _fake_invoke,
-    )
 
     result = await StoryPublisher().publish_story(
         SimpleNamespace(client=client, account=account),

@@ -512,26 +512,48 @@ def durable_certification_evidence(db: Any) -> dict[int, dict[str, Any]]:
     evidence: dict[int, dict[str, Any]] = {}
     for log in rows:
         details = log.details if isinstance(log.details, dict) else {}
-        if not details.get("success"):
-            continue
-        account_id = details.get("account_id")
-        db_story_id = details.get("db_story_id")
-        telegram_story_id = details.get("telegram_story_id")
-        if not account_id or not db_story_id or telegram_story_id is None:
-            continue
-        story = db.get(Story, int(db_story_id))
-        if (
-            story is None
-            or int(story.account_id) != int(account_id)
-            or story.story_id is None
-        ):
-            continue
-        evidence[int(account_id)] = {
-            "system_log_id": int(log.id),
-            "db_story_id": int(story.id),
-            "telegram_story_id": int(story.story_id),
-            "published_at": iso(story.published_at),
-        }
+        candidates: list[dict[str, Any]] = []
+        if details.get("success"):
+            candidates.append(
+                {
+                    "account_id": details.get("account_id"),
+                    "db_story_id": details.get("db_story_id"),
+                    "telegram_story_id": details.get("telegram_story_id"),
+                }
+            )
+        # Multi-account controlled runs (v2) record per-step success.
+        if details.get("schema") == "controlled_live_story_run_v2_multi":
+            for step in details.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                if not step.get("ok"):
+                    continue
+                candidates.append(
+                    {
+                        "account_id": step.get("account_id"),
+                        "db_story_id": step.get("db_id"),
+                        "telegram_story_id": step.get("story_id"),
+                    }
+                )
+        for cand in candidates:
+            account_id = cand.get("account_id")
+            db_story_id = cand.get("db_story_id")
+            telegram_story_id = cand.get("telegram_story_id")
+            if not account_id or not db_story_id or telegram_story_id is None:
+                continue
+            story = db.get(Story, int(db_story_id))
+            if (
+                story is None
+                or int(story.account_id) != int(account_id)
+                or story.story_id is None
+            ):
+                continue
+            evidence[int(account_id)] = {
+                "system_log_id": int(log.id),
+                "db_story_id": int(story.id),
+                "telegram_story_id": int(story.story_id),
+                "published_at": iso(story.published_at),
+            }
     return evidence
 
 
@@ -577,6 +599,19 @@ def classify_account(
         or probe_status == "flood_wait"
         or probe.get("story_probe_status") == "rate_limited"
     ):
+        # Same-day Story capacity exhaustion (STORIES_TOO_MUCH) is often mapped to
+        # rate_limited. That must not wipe durable CERTIFIED_PUBLISH after a canary.
+        reason = str(probe.get("story_probe_reason") or probe.get("safe_error_summary") or "")
+        if (
+            certified
+            and probe.get("auth_valid")
+            and probe.get("identity_matches")
+            and "STORIES_TOO_MUCH" in reason.upper()
+        ):
+            return "CERTIFIED_PUBLISH", [
+                "durable_controlled_story_evidence",
+                "capacity_stories_too_much",
+            ]
         return "FLOOD_WAIT", ["flood_wait"]
     if probe_status == "unauthorized":
         return "AUTH_FAILED", ["telegram_unauthorized"]

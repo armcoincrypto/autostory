@@ -39,7 +39,37 @@ _DIAGNOSTIC_RATE_MAX = 30
 
 
 def _production_environment() -> bool:
-    return settings.environment.strip().lower() in ("production", "prod")
+    env_name = (os.environ.get("ENVIRONMENT") or settings.environment or "").strip().lower()
+    return env_name in ("production", "prod")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _redacted_database_label() -> str:
+    """Path/scheme only. Never include credentials."""
+    raw = (os.environ.get("DATABASE_URL") or "sqlite:///./data/storyfleet.db").strip()
+    if raw.startswith("sqlite"):
+        if ":///" in raw:
+            return raw.split(":///", 1)[-1].split("?", 1)[0]
+        return "sqlite"
+    scheme = raw.split(":", 1)[0] if raw else "unset"
+    return f"{scheme}://***"
+
+
+def build_debug_runtime_payload() -> dict[str, Any]:
+    env_name = (os.environ.get("ENVIRONMENT") or settings.environment or "").strip() or "unset"
+    return {
+        "environment": env_name,
+        "database": _redacted_database_label(),
+        "campaign_execution_enabled": _env_flag("CAMPAIGN_EXECUTION_ENABLED"),
+        "controlled_story_execution_enabled": _env_flag("CONTROLLED_STORY_EXECUTION_ENABLED"),
+        "scheduler_story_execution_enabled": _env_flag("SCHEDULER_STORY_EXECUTION_ENABLED"),
+        "story_mutations_enabled": _env_flag("STORY_MUTATIONS_ENABLED")
+        and env_name.strip().lower() in {"production", "prod"},
+        "mentions_certified": _env_flag("AUTOSTORY_MENTIONS_PRODUCTION_CERTIFIED"),
+    }
 
 
 def _load_optional_blueprints(
@@ -71,10 +101,14 @@ def _configure_reverse_proxy_and_session(app: Flask) -> None:
     Without ProxyFix, ``request.is_secure`` stays false behind TLS termination while
     Flask-WTF ``WTF_CSRF_SSL_STRICT`` still enforces referrer checks when the proxy
     sets ``X-Forwarded-Proto: https``. Session cookies must use ``Secure`` on HTTPS.
+
+    ``WTF_CSRF_SSL_STRICT`` is disabled: Cloudflare/privacy browsers often omit
+    Referer on POST, which falsely fails login CSRF while the session token is valid.
     """
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["WTF_CSRF_SSL_STRICT"] = False
     if _production_environment():
         app.config["PREFERRED_URL_SCHEME"] = "https"
         app.config["SESSION_COOKIE_SECURE"] = True
@@ -979,7 +1013,21 @@ def create_app() -> Flask:
     def csrf_error(error):
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": "csrf_failed", "message": str(error.description)}), 400
-        return {"error": "CSRF failed"}, 400
+        # HTML forms (especially /login): re-render a usable page instead of raw JSON.
+        if request.path.rstrip("/").endswith("/login") or request.endpoint == "auth.login":
+            from flask import render_template
+
+            return (
+                render_template(
+                    "login.html",
+                    error="Session expired or blocked. Refresh the page and try again.",
+                    next_url=(request.form.get("next") or request.args.get("next") or "/"),
+                ),
+                400,
+            )
+        from flask import redirect, url_for
+
+        return redirect(url_for("auth.login", next=request.path or "/"))
 
     @app.errorhandler(405)
     def method_not_allowed(error):
@@ -1013,6 +1061,13 @@ def create_app() -> Flask:
     _readiness_present = any(
         r.rule == "/api/v1/accounts/readiness" for r in app.url_map.iter_rules()
     )
+    @app.route("/debug", methods=["GET"], endpoint="debug_runtime_env")
+    def debug_runtime_env():
+        """Local-only operational flags. 404 in production. Never returns secrets."""
+        if _production_environment():
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        return jsonify(build_debug_runtime_payload())
+
     logger.info(
         "Flask app created",
         environment=settings.environment,

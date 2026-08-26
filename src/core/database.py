@@ -93,9 +93,14 @@ def _make_engine():
     if _is_sqlite(url):
         # Use creator so every connection gets WAL + busy_timeout at open (active in all entrypoints)
         kwargs["creator"] = _sqlite_creator
-        kwargs["pool_size"] = 2
-        kwargs["max_overflow"] = 4
-        kwargs["pool_pre_ping"] = True
+        if _sqlite_path_from_url(url) == ":memory:":
+            from sqlalchemy.pool import StaticPool
+
+            kwargs["poolclass"] = StaticPool
+        else:
+            kwargs["pool_size"] = 2
+            kwargs["max_overflow"] = 4
+            kwargs["pool_pre_ping"] = True
     else:
         kwargs["pool_size"] = settings.database.pool_size
         kwargs["max_overflow"] = settings.database.max_overflow
@@ -231,6 +236,7 @@ def init_db() -> None:
     _ensure_message_deliveries_send_intent_columns()
     _ensure_story_runs_mention_plan_column()
     _ensure_social_connections_meta_columns()
+    _ensure_autostory_hardening_schema()
     logger.info("Database initialized", tables=list(Base.metadata.tables.keys()))
     if _is_sqlite(settings.database.url):
         try:
@@ -774,3 +780,139 @@ def get_db_context() -> Generator[Session, None, None]:
         raise
     finally:
         db.close()
+
+
+def _ensure_autostory_hardening_schema() -> None:
+    """Additive MODEL A columns/tables for unsupervised AutoStory scheduling."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+
+    if "auto_story_campaigns" in tables:
+        cols = {c["name"] for c in insp.get_columns("auto_story_campaigns")}
+        additions = [
+            ("claimed_by", "VARCHAR(128)"),
+            ("claimed_at", "DATETIME"),
+            ("claim_expires_at", "DATETIME"),
+            ("authorized_account_ids", "JSON"),
+            ("authorization_wave_index", "INTEGER"),
+            ("authorization_revoked_at", "DATETIME"),
+            ("campaign_mode", "VARCHAR(32) DEFAULT 'accounts_publish_once'"),
+            ("stories_per_account_per_day", "INTEGER DEFAULT 1"),
+            ("awake_start_hhmm", "VARCHAR(5)"),
+            ("awake_end_hhmm", "VARCHAR(5)"),
+        ]
+        for name, ddl in additions:
+            if name in cols:
+                continue
+            try:
+                with engine.connect() as conn:
+                    conn.execute(
+                        text(f"ALTER TABLE auto_story_campaigns ADD COLUMN {name} {ddl}")
+                    )
+                    conn.commit()
+                logger.info("Added auto_story_campaigns.%s", name)
+            except Exception as e:
+                logger.warning("Could not add auto_story_campaigns.%s", name, error=str(e))
+
+    if "auto_story_account_progress" not in tables:
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS auto_story_account_progress (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          campaign_id INTEGER NOT NULL,
+                          wave_index INTEGER NOT NULL DEFAULT 0,
+                          account_id INTEGER NOT NULL,
+                          run_id INTEGER,
+                          story_id INTEGER,
+                          telegram_story_id INTEGER,
+                          status VARCHAR(32) DEFAULT 'pending',
+                          attempt_count INTEGER DEFAULT 0,
+                          error TEXT,
+                          reconciled_at DATETIME,
+                          created_at DATETIME,
+                          updated_at DATETIME,
+                          UNIQUE(campaign_id, wave_index, account_id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_autostory_progress_campaign "
+                        "ON auto_story_account_progress (campaign_id)"
+                    )
+                )
+                conn.commit()
+            logger.info("Created auto_story_account_progress table")
+        except Exception as e:
+            logger.warning("Could not create auto_story_account_progress", error=str(e))
+
+    if "auto_story_account_locks" not in tables:
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS auto_story_account_locks (
+                          account_id INTEGER PRIMARY KEY,
+                          campaign_id INTEGER NOT NULL,
+                          wave_index INTEGER NOT NULL,
+                          locked_at DATETIME,
+                          expires_at DATETIME
+                        )
+                        """
+                    )
+                )
+                conn.commit()
+            logger.info("Created auto_story_account_locks table")
+        except Exception as e:
+            logger.warning("Could not create auto_story_account_locks", error=str(e))
+
+    # Refresh table list after possible creates
+    tables = set(inspect(engine).get_table_names())
+    if "auto_story_daily_progress" not in tables:
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS auto_story_daily_progress (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          campaign_id INTEGER NOT NULL,
+                          account_id INTEGER NOT NULL,
+                          local_date DATE NOT NULL,
+                          target_count INTEGER NOT NULL DEFAULT 1,
+                          successful_count INTEGER NOT NULL DEFAULT 0,
+                          failed_count INTEGER NOT NULL DEFAULT 0,
+                          ambiguous_count INTEGER NOT NULL DEFAULT 0,
+                          last_attempt_at DATETIME,
+                          last_story_id INTEGER,
+                          completed_for_day BOOLEAN NOT NULL DEFAULT 0,
+                          created_at DATETIME,
+                          updated_at DATETIME,
+                          UNIQUE(campaign_id, account_id, local_date)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_autostory_daily_campaign "
+                        "ON auto_story_daily_progress (campaign_id)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_autostory_daily_date "
+                        "ON auto_story_daily_progress (local_date)"
+                    )
+                )
+                conn.commit()
+            logger.info("Created auto_story_daily_progress table")
+        except Exception as e:
+            logger.warning("Could not create auto_story_daily_progress", error=str(e))

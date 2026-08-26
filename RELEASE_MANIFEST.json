@@ -1,0 +1,48 @@
+{
+  "ai_autopublish_expected": "disabled_no_worker",
+  "branch": "HEAD",
+  "build_timestamp_utc": "20260728T092957Z",
+  "data_link": "symlink:/opt/autostory/data",
+  "database_schema_version": "sqlite-shared-external",
+  "dependency_lock_hashes": {
+    "requirements.txt": "3cb7da8d11d2fed60c02020ec8e2a8ee5d271e46d122efac3fd5a76e2299fc72"
+  },
+  "environment_fingerprint_redacted": {
+    "data_reference": "/opt/autostory/data",
+    "env_reference": "/opt/autostory/.env",
+    "venv_reference": "/opt/autostory/venv"
+  },
+  "expected_safety_flags": {
+    "AI_AGENT_AUTO_LOOP_ENABLED": "false",
+    "META_FACEBOOK_PUBLISHING_ENABLED": "false",
+    "META_INSTAGRAM_PUBLISHING_ENABLED": "false",
+    "META_PUBLISHING_EXECUTION_MODE": "disabled",
+    "SCHEDULER_MUTATIONS_ENABLED": "false",
+    "STORY_MUTATIONS_ENABLED": "false",
+    "TELEGRAM_SESSION_ENCRYPTION_MODE": "encrypted-only"
+  },
+  "fixed_nested_data_symlink": true,
+  "git_sha": "74c315aa0879f5f85a4cbae48d7ed4bde904e6e6",
+  "kathleen_expected": "stopped",
+  "method": "rsync-overlay-from-current",
+  "mutation_lock_expected": {
+    "CAMPAIGN_EXECUTION_ENABLED": "false",
+    "DISCOVERY_EXECUTION_ENABLED": "false",
+    "SCHEDULER_MUTATIONS_ENABLED": "false",
+    "STORY_EXECUTION_ENABLED": "false"
+  },
+  "node_version": "v22.22.0",
+  "notes": "Simple Stories UI: multi-select Ready accounts, discovered-group random mentions without reuse, allowlist-gated multi-account controlled live. Legacy publish/batch remain blocked. Live env not flipped.",
+  "python_version": "3.12.3",
+  "readiness_entrypoint": "scripts/run_readiness_worker.py",
+  "release_id": "20260728T092957Z-stories-multi-account-simple",
+  "release_path": "/opt/autostory-releases/20260728T092957Z-stories-multi-account-simple",
+  "rollback_release": "/opt/autostory-releases/20260727T201759Z-74c315aa0879",
+  "scheduler_entrypoint": "main.py scheduler",
+  "source_repository": "/tmp/autostory-phase21-clean-1182866",
+  "source_tree_hash": "ec7f2ee6cccb606cc7654991bff80bb75678c641",
+  "telegram_bot_expected": "stopped",
+  "telegram_gateway_expected": "stopped",
+  "web_entrypoint": "wsgi:app",
+  "base_release": "/opt/autostory-releases/20260727T201759Z-74c315aa0879"
+}

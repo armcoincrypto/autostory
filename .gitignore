@@ -113,9 +113,16 @@ celerybeat.pid
 
 # Logs
 *.log
+gunicorn.ctl
+None
+
+# Runtime sockets / PID
+*.pid
+*.ctl
 
 # local bot session
 data/bot/storyfleet_bot.session
 
 data/*.backup*
 data/backups/
+data/audit/
