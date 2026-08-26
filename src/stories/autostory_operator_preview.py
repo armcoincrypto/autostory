@@ -383,6 +383,7 @@ def build_operator_campaign_preview(db, payload: dict[str, Any]) -> dict[str, An
         CAMPAIGN_MODE_RECURRING,
         awake_bounds,
         clamp_stories_per_account_per_day,
+        max_stories_per_account_per_day,
         max_story_publishes,
         plan_recurring_times_json,
     )
@@ -641,6 +642,10 @@ def build_operator_campaign_preview(db, payload: dict[str, Any]) -> dict[str, An
         "mentions_message": mention_norm.get("message"),
         "stories_per_account": spad if raw_mode == CAMPAIGN_MODE_RECURRING else 1,
         "max_story_publishes": max_story_publishes_n,
+        "planned_story_publishes": max_story_publishes_n,
+        "planned_story_publishes_label": "planned / maximum (fleet eligibility may vary)",
+        "certified_stories_per_account_per_day_max": max_stories_per_account_per_day(),
+        "mentions_certified": False,
         "campaign_semantics": semantics,
         "schedule_starts": schedule_starts,
         "schedule_starts_label": (

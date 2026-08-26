@@ -123,13 +123,14 @@ def is_account_certified_publish(db: Session, account_id: int) -> tuple[bool, st
 
 def account_has_daily_capacity(db: Session, account_id: int) -> tuple[bool, str]:
     from src.core.models import Account
+    from src.stories.autostory_recurring import platform_daily_limit
     from src.stories.daily_story_counter import ensure_stories_today_current
 
     acc = db.get(Account, int(account_id))
     if acc is None:
         return False, "account_not_found"
     count = ensure_stories_today_current(acc)
-    limit = int(getattr(acc, "daily_story_limit", None) or getattr(acc, "daily_limit", None) or 1)
+    limit = platform_daily_limit(acc)
     if count >= limit:
         return False, "daily_capacity_exhausted"
     return True, "capacity_ok"

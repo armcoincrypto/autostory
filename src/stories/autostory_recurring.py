@@ -18,12 +18,24 @@ logger = structlog.get_logger(__name__)
 CAMPAIGN_MODE_ONCE = "accounts_publish_once"
 CAMPAIGN_MODE_RECURRING = "recurring_daily"
 
-# Platform daily capacity defaults to 1 until daily_story_limit is raised.
-MAX_STORIES_PER_ACCOUNT_PER_DAY = int(
-    os.environ.get("MAX_STORIES_PER_ACCOUNT_PER_DAY") or "1"
-)
+# Certified local range for Stories/account/day. Pickup-window math already
+# supports up to 12 slots; this wave certifies 1..3 only (10:00 / 15:00 / 20:00).
+CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY = 3
 DEFAULT_AWAKE_START = "10:00"
 DEFAULT_AWAKE_END = "20:00"
+
+
+def max_stories_per_account_per_day() -> int:
+    """Effective platform/campaign clamp (env may lower; cannot exceed certified max)."""
+    try:
+        n = int(os.environ.get("MAX_STORIES_PER_ACCOUNT_PER_DAY") or CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY)
+    except (TypeError, ValueError):
+        n = CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY
+    return max(1, min(CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY, n))
+
+
+# Backward-compatible alias: certified ceiling, not the possibly-lower env clamp.
+MAX_STORIES_PER_ACCOUNT_PER_DAY = CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY
 
 
 def clamp_stories_per_account_per_day(raw: Any) -> int:
@@ -31,7 +43,23 @@ def clamp_stories_per_account_per_day(raw: Any) -> int:
         n = int(raw if raw not in (None, "") else 1)
     except (TypeError, ValueError):
         n = 1
-    return max(1, min(MAX_STORIES_PER_ACCOUNT_PER_DAY, n))
+    return max(1, min(max_stories_per_account_per_day(), n))
+
+
+# Durable AutoStoryAccountProgress status → recurring daily semantics.
+# "consumed" means remaining_today must not allow another *blind* send.
+RECURRING_PROGRESS_STATUS_MATRIX: dict[str, dict[str, Any]] = {
+    "pending": {"daily_target_consumed": False, "retry": True, "terminal": False},
+    "claimed": {"daily_target_consumed": False, "retry": True, "terminal": False},
+    "attempting": {"daily_target_consumed": False, "retry": True, "terminal": False},
+    "published": {"daily_target_consumed": True, "retry": False, "terminal": True},
+    "reconciled": {"daily_target_consumed": True, "retry": False, "terminal": True},
+    "ok": {"daily_target_consumed": True, "retry": False, "terminal": True},
+    "failed": {"daily_target_consumed": False, "retry": True, "terminal": False},
+    "deferred": {"daily_target_consumed": False, "retry": True, "terminal": False},
+    "ambiguous": {"daily_target_consumed": True, "retry": False, "terminal": True},
+    "skipped": {"daily_target_consumed": False, "retry": False, "terminal": True},
+}
 
 
 def campaign_mode_of(campaign: Any) -> str:
@@ -290,6 +318,178 @@ def remaining_today(
     return max(0, int(row.target_count or 0) - int(row.successful_count or 0))
 
 
+def successful_count_today(
+    db,
+    *,
+    campaign_id: int,
+    account_id: int,
+    local_date: date | None = None,
+) -> int:
+    d = local_date or campaign_local_today()
+    row = get_daily_row(db, campaign_id=campaign_id, account_id=account_id, local_date=d)
+    if row is None:
+        return 0
+    return int(row.successful_count or 0)
+
+
+def platform_daily_limit(account: Any) -> int:
+    """Global per-account cap. Explicit account fields win; else certified clamp."""
+    for attr in ("daily_story_limit", "daily_limit"):
+        raw = getattr(account, attr, None)
+        if raw not in (None, ""):
+            try:
+                return max(1, int(raw))
+            except (TypeError, ValueError):
+                continue
+    return max_stories_per_account_per_day()
+
+
+def platform_remaining_today(db, account_id: int) -> int:
+    from src.core.models import Account
+    from src.stories.daily_story_counter import ensure_stories_today_current
+
+    acc = db.get(Account, int(account_id))
+    if acc is None:
+        return 0
+    used = ensure_stories_today_current(acc)
+    return max(0, platform_daily_limit(acc) - int(used or 0))
+
+
+def effective_remaining_today(
+    db,
+    *,
+    campaign_id: int,
+    account_id: int,
+    local_date: date | None = None,
+) -> int:
+    """min(campaign remaining today, global account remaining today)."""
+    campaign_rem = remaining_today(
+        db, campaign_id=campaign_id, account_id=account_id, local_date=local_date
+    )
+    if campaign_rem <= 0:
+        return 0
+    return min(campaign_rem, platform_remaining_today(db, account_id))
+
+
+def next_monotonic_wave_index(campaign: Any) -> int:
+    """Wave indexes are campaign-global and never reset at local midnight."""
+    return int(getattr(campaign, "waves_ok", None) or 0)
+
+
+def reconcile_daily_from_wave_slot(
+    db,
+    *,
+    campaign_id: int,
+    wave_index: int,
+    account_id: int,
+    local_date: date | None = None,
+) -> bool:
+    """Count a durable no-resend wave slot toward today if the daily row missed it.
+
+    Covers the crash window after AutoStoryAccountProgress reached published/
+    reconciled/ambiguous but before record_daily_success/ambiguous committed.
+    """
+    from src.core.models import AutoStoryAccountProgress
+    from src.stories.autostory_hardening import PROGRESS_NO_RESEND
+
+    row = (
+        db.query(AutoStoryAccountProgress)
+        .filter_by(
+            campaign_id=int(campaign_id),
+            wave_index=int(wave_index),
+            account_id=int(account_id),
+        )
+        .one_or_none()
+    )
+    if row is None or str(row.status) not in PROGRESS_NO_RESEND:
+        return False
+    d = local_date or campaign_local_today()
+    daily = get_daily_row(db, campaign_id=campaign_id, account_id=account_id, local_date=d)
+    if daily is None:
+        return False
+    story_id = int(row.story_id) if row.story_id is not None else None
+    if story_id is not None and int(daily.last_story_id or 0) == story_id:
+        return False
+    reconciled_at = getattr(row, "reconciled_at", None)
+    last_attempt = getattr(daily, "last_attempt_at", None)
+    if (
+        story_id is None
+        and reconciled_at is not None
+        and last_attempt is not None
+        and last_attempt >= reconciled_at
+    ):
+        return False
+    if str(row.status) == "ambiguous":
+        if int(daily.ambiguous_count or 0) > 0:
+            return False
+        record_daily_ambiguous(db, campaign_id=campaign_id, account_id=account_id, local_date=d)
+        return True
+    if remaining_today(db, campaign_id=campaign_id, account_id=account_id, local_date=d) <= 0:
+        return False
+    record_daily_success(
+        db,
+        campaign_id=campaign_id,
+        account_id=account_id,
+        local_date=d,
+        story_id=story_id,
+    )
+    return True
+
+
+def plan_recurring_dry_run_calendar(
+    *,
+    account_ids: list[int],
+    stories_per_account_per_day: int,
+    duration_days: int,
+    started_at: datetime | None = None,
+    awake_start: str | None = None,
+    awake_end: str | None = None,
+    tz_name: str | None = None,
+) -> dict[str, Any]:
+    """Provider-free multi-day plan. Never publishes or inserts Story rows."""
+    ids = [int(x) for x in account_ids]
+    spad = clamp_stories_per_account_per_day(stories_per_account_per_day)
+    dates = campaign_local_dates(
+        started_at=started_at,
+        duration_days=duration_days,
+        tz_name=tz_name,
+    )
+    start, end = awake_bounds(
+        {"awake_start_hhmm": awake_start, "awake_end_hhmm": awake_end}
+    )
+    sched = plan_recurring_times_json(
+        account_count=len(ids) or 1,
+        stories_per_account_per_day=spad,
+        awake_start=start,
+        awake_end=end,
+        tz_name=tz_name,
+    )
+    days: list[dict[str, Any]] = []
+    for d in dates:
+        per_account = {int(aid): spad for aid in ids}
+        days.append(
+            {
+                "local_date": d.isoformat(),
+                "planned_per_account": spad,
+                "accounts": per_account,
+                "planned_total": spad * len(ids),
+            }
+        )
+    return {
+        "dry_run": True,
+        "provider_calls": 0,
+        "real_story_inserts": 0,
+        "campaign_days": len(dates),
+        "stories_per_account_per_day": spad,
+        "account_ids": ids,
+        "window": f"{start}–{end}",
+        "local_times": list(sched.get("local_times_json") or []),
+        "days": days,
+        "planned_total": spad * len(ids) * len(dates),
+        "mentions": "Off",
+    }
+
+
 def _refresh_completed(row) -> None:
     if int(row.ambiguous_count or 0) > 0:
         row.completed_for_day = True
@@ -391,12 +591,20 @@ def select_next_recurring_wave_accounts(
     *,
     wave_index: int,
 ) -> dict[str, Any]:
-    """Eligible accounts with remaining daily target for local today."""
+    """Eligible accounts with remaining daily target for local today.
+
+    Fills the current daily slot across the fleet before starting the next
+    Story/account/day slot. Wave size overflow sets ``wave_truncated`` so the
+    scheduler may continue immediately; additional same-day Stories wait for
+    the next ``times_json`` pickup.
+    """
     from src.stories.autostory_hardening import (
         MAX_AUTOSTORY_WAVE_SIZE,
+        PROGRESS_NO_RESEND,
         account_has_daily_capacity,
         ensure_progress_row,
         is_account_certified_publish,
+        progress_status,
         rotate_account_ids,
     )
 
@@ -418,17 +626,23 @@ def select_next_recurring_wave_accounts(
         target_count=spad,
     )
 
-    eligible: list[int] = []
     blocked: list[dict[str, Any]] = []
     unfinished: list[int] = []
     today_remaining_accounts = 0
     capacity_blocked_today = 0
+    slot_candidates: list[tuple[int, int, int]] = []  # (successful_count, rotate_idx, aid)
 
-    for aid in rotated:
+    for rotate_idx, aid in enumerate(rotated):
+        reconcile_daily_from_wave_slot(
+            db,
+            campaign_id=int(campaign.id),
+            wave_index=int(wave_index),
+            account_id=aid,
+            local_date=today,
+        )
         rem = remaining_today(
             db, campaign_id=int(campaign.id), account_id=aid, local_date=today
         )
-        # Also count future incomplete days toward unfinished
         future_rem = 0
         for d in dates:
             if d < today:
@@ -441,6 +655,14 @@ def select_next_recurring_wave_accounts(
         if rem <= 0:
             continue
         today_remaining_accounts += 1
+
+        st = progress_status(
+            db, campaign_id=int(campaign.id), wave_index=int(wave_index), account_id=aid
+        )
+        if st in PROGRESS_NO_RESEND:
+            blocked.append({"account_id": aid, "reason": f"wave_slot_{st}"})
+            continue
+
         cert_ok, cert_reason = is_account_certified_publish(db, aid)
         if not cert_ok:
             blocked.append({"account_id": aid, "reason": cert_reason})
@@ -457,9 +679,19 @@ def select_next_recurring_wave_accounts(
                 status="deferred",
             )
             continue
-        eligible.append(aid)
-        if len(eligible) >= MAX_AUTOSTORY_WAVE_SIZE:
-            break
+        succ = successful_count_today(
+            db, campaign_id=int(campaign.id), account_id=aid, local_date=today
+        )
+        slot_candidates.append((succ, rotate_idx, aid))
+
+    slot_candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+    current_slot: list[int] = []
+    if slot_candidates:
+        min_succ = slot_candidates[0][0]
+        current_slot = [aid for succ, _, aid in slot_candidates if succ == min_succ]
+
+    eligible = current_slot[:MAX_AUTOSTORY_WAVE_SIZE]
+    wave_truncated = len(current_slot) > MAX_AUTOSTORY_WAVE_SIZE
 
     return {
         "wave_account_ids": eligible,
@@ -472,6 +704,9 @@ def select_next_recurring_wave_accounts(
         "max_wave_size": MAX_AUTOSTORY_WAVE_SIZE,
         "local_date": today.isoformat(),
         "recurring": True,
+        "wave_truncated": wave_truncated,
+        "current_slot_size": len(current_slot),
+        "stories_per_account_per_day": spad,
     }
 
 

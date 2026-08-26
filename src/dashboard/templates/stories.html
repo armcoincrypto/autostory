@@ -585,9 +585,12 @@
         <div class="row g-2 mb-2" id="auto-recurring-schedule">
           <div class="col-md-4">
             <label class="form-label small mb-1" style="color:var(--sc-muted)">Stories per account per day</label>
-            <input type="number" class="form-control form-control-sm" id="auto-spad" value="1" min="1" max="1" readonly
-                   title="Platform daily capacity is 1 Story per account until raised">
-            <div class="small mt-1" style="color:var(--sc-muted)">Fixed at 1 (platform daily capacity)</div>
+            <select class="form-select form-select-sm" id="auto-spad" onchange="previewAutoScheduleDebounced()">
+              <option value="1" selected>1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+            <div class="small mt-1" style="color:var(--sc-muted)">Certified range 1–3. Additional same-day Stories use the time window, not back-to-back posts.</div>
           </div>
           <div class="col-md-4">
             <label class="form-label small mb-1" style="color:var(--sc-muted)">How many days?</label>
@@ -1814,7 +1817,7 @@ function buildAutoSchedulePayload() {
     mentions_per_story: mentions,
     selection_mode: selMode,
     campaign_mode: 'recurring_daily',
-    stories_per_account_per_day: 1,
+    stories_per_account_per_day: parseInt(document.getElementById('auto-spad')?.value || '1', 10) || 1,
     awake_start_hhmm: start,
     awake_end_hhmm: end,
     duration_days: parseInt(document.getElementById('auto-days-awake')?.value || '3', 10) || 3,
@@ -1887,9 +1890,9 @@ function renderAutoPreview(d) {
 
   const sections = [
     `<div class="sc-preview-section"><div class="pv-title">Content</div><div class="pv-body">${escapeHtml(mediaName)}<br>Caption: ${escapeHtml(cap || '—')}<br>Mentions: ${escapeHtml(mentionsN)}</div></div>`,
-    `<div class="sc-preview-section"><div class="pv-title">Accounts</div><div class="pv-body">Requested ${escapeHtml(String(requested))} · Planned ${escapeHtml(String(planned))} · Available ${escapeHtml(String(available))}<br>${accountsExtra}</div></div>`,
-    `<div class="sc-preview-section"><div class="pv-title">Schedule</div><div class="pv-body">${scheduleLines.join('<br>')}</div></div>`,
-    `<div class="sc-preview-section"><div class="pv-body"><strong>Maximum Stories:</strong> ${escapeHtml(String(maxPub))}<br><span class="pv-ok">Mentions Off</span></div></div>`,
+    `<div class="sc-preview-section"><div class="pv-title">Accounts</div><div class="pv-body">Accounts: ${escapeHtml(String(planned))}<br>Requested ${escapeHtml(String(requested))} · Available ${escapeHtml(String(available))}<br>${accountsExtra}</div></div>`,
+    `<div class="sc-preview-section"><div class="pv-title">Schedule</div><div class="pv-body">Stories/account/day: ${escapeHtml(String(spad))}<br>Days: ${escapeHtml(String(duration))}<br>Window: ${escapeHtml(String(windowLabel))}<br>${scheduleLines.join('<br>')}</div></div>`,
+    `<div class="sc-preview-section"><div class="pv-body"><strong>Total planned Stories:</strong> ${escapeHtml(String(maxPub))} <span class="small" style="color:var(--sc-muted)">(planned / maximum — fleet eligibility may vary)</span><br><span class="pv-ok">Mentions: Off</span></div></div>`,
   ];
   if (d.approval_blocked && d.approval_block_reason) {
     sections.push(`<div class="sc-preview-section"><div class="pv-body pv-warn">BLOCKED: ${escapeHtml(d.approval_block_reason)}</div></div>`);
@@ -2011,7 +2014,7 @@ async function createAutoCampaign(runNow) {
     '',
     `${p.planned_count ?? p.account_count ?? '—'} accounts`,
     `${p.duration_days ?? body.duration_days ?? '—'} day(s) · ${p.stories_per_account_per_day ?? 1} Story/account/day`,
-    `Maximum Stories: ${p.max_story_publishes ?? p.planned_count ?? '—'}`,
+    `Total planned Stories: ${p.max_story_publishes ?? p.planned_count ?? '—'} (planned / maximum)`,
     `Mentions: Off`,
     p.timezone || 'UTC',
   ].join('\n');

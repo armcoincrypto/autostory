@@ -338,7 +338,7 @@ def validate_campaign_execution_policy(campaign: Any) -> dict[str, Any]:
     from src.stories.autostory_recurring import (
         is_recurring,
         clamp_stories_per_account_per_day,
-        MAX_STORIES_PER_ACCOUNT_PER_DAY,
+        max_stories_per_account_per_day,
     )
 
     if is_recurring(campaign):
@@ -351,14 +351,15 @@ def validate_campaign_execution_policy(campaign: Any) -> dict[str, Any]:
             requested_spad = int(spad_raw if spad_raw not in (None, "") else 1)
         except (TypeError, ValueError):
             requested_spad = 1
-        if requested_spad > MAX_STORIES_PER_ACCOUNT_PER_DAY:
+        cap = max_stories_per_account_per_day()
+        if requested_spad > cap:
             blockers.append("stories_per_account_per_day_exceeds_platform_cap")
             if classification == "VALID_CURRENT_POLICY":
                 classification = "INVALID_CAPACITY"
                 reason = "stories_per_account_per_day_exceeds_platform_cap"
                 message = (
                     f"Stories per account per day cannot exceed platform capacity "
-                    f"({MAX_STORIES_PER_ACCOUNT_PER_DAY})."
+                    f"({cap})."
                 )
 
     ok = not blockers

@@ -20,7 +20,6 @@ from src.core.models import (
 from src.stories.autostory_recurring import (
     CAMPAIGN_MODE_ONCE,
     CAMPAIGN_MODE_RECURRING,
-    MAX_STORIES_PER_ACCOUNT_PER_DAY,
     campaign_mode_of,
     clamp_stories_per_account_per_day,
     ensure_daily_progress_rows,
@@ -41,12 +40,20 @@ def test_max_story_publishes_formula():
 
 
 def test_spad_clamped_to_platform_cap(monkeypatch):
+    from src.stories.autostory_recurring import (
+        CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY,
+        max_stories_per_account_per_day,
+    )
+
     monkeypatch.setenv("MAX_STORIES_PER_ACCOUNT_PER_DAY", "1")
-    # Re-import clamp uses module constant; assert constant is 1 in this release
-    assert MAX_STORIES_PER_ACCOUNT_PER_DAY == 1
+    assert max_stories_per_account_per_day() == 1
     assert clamp_stories_per_account_per_day(1) == 1
     assert clamp_stories_per_account_per_day(3) == 1
     assert clamp_stories_per_account_per_day(0) == 1
+    monkeypatch.setenv("MAX_STORIES_PER_ACCOUNT_PER_DAY", "99")
+    assert max_stories_per_account_per_day() == CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY
+    assert clamp_stories_per_account_per_day(3) == CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY
+    assert clamp_stories_per_account_per_day(4) == CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY
 
 
 def test_legacy_null_mode_is_once():
@@ -387,3 +394,10 @@ def test_ui_primary_has_schedule_cta_no_pickup_slots_day():
     assert "Approve &amp; Run" not in html
     assert 'id="btn-auto-approve"' in html
     assert "Stories per account per day" in html
+    assert 'id="auto-spad"' in html
+    assert 'option value="1"' in html
+    assert 'option value="2"' in html
+    assert 'option value="3"' in html
+    assert "readonly" not in html.split('id="auto-spad"', 1)[1][:400]
+    assert "Mentions stay Off" in html
+    assert "auto-mentions-locked" in html

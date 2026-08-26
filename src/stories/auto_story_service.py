@@ -808,6 +808,18 @@ def dry_run_campaign_wave(campaign_id: int) -> dict[str, Any]:
             "dry_run": True,
         }
         plan = build_story_dry_run_plan(db, payload)
+        calendar = None
+        from src.stories.autostory_recurring import is_recurring, plan_recurring_dry_run_calendar
+
+        if is_recurring(c):
+            calendar = plan_recurring_dry_run_calendar(
+                account_ids=list(c.account_ids or []),
+                stories_per_account_per_day=int(getattr(c, "stories_per_account_per_day", None) or 1),
+                duration_days=int(c.duration_days or 1),
+                started_at=c.started_at,
+                awake_start=getattr(c, "awake_start_hhmm", None),
+                awake_end=getattr(c, "awake_end_hhmm", None),
+            )
     return {
         "ok": bool(plan.get("ok")),
         "dry_run": True,
@@ -815,6 +827,7 @@ def dry_run_campaign_wave(campaign_id: int) -> dict[str, Any]:
         "plan": plan,
         "wave_preview": selection,
         "fleet_plan": fleet_plan,
+        "recurring_calendar": calendar,
         "max_autostory_wave_size": MAX_AUTOSTORY_WAVE_SIZE,
         "selected_mention_candidates": plan.get("selected_mention_candidates") or [],
         "per_account_mentions": plan.get("per_account_mentions") or [],
@@ -1009,6 +1022,7 @@ def execute_wave(
 
     claimed_here = False
     wave_index = 0
+    wave_truncated = False
     camp_snapshot: dict[str, Any] = {"id": int(campaign_id)}
 
     try:
@@ -1250,6 +1264,7 @@ def execute_wave(
             msc_snap = c.mention_source_chat_id
             conf_snap = c.confirmation_token
             remaining_after = int(selection.get("remaining_after_wave") or 0)
+            wave_truncated = bool(selection.get("wave_truncated"))
 
         from src.stories.autostory_media import validate_campaign_execution_policy, validate_campaign_media
 
@@ -1460,6 +1475,14 @@ def execute_wave(
                     c.next_wave_at = None
                     c.updated_at = now
                 else:
+                    from src.stories.autostory_recurring import is_recurring as _is_recurring
+
+                    continue_now = bool(wave_ok and eligible_next)
+                    if _is_recurring(c):
+                        # Same-day extra Stories wait for the next pickup slot.
+                        # Immediate continuation is only for wave-size overflow
+                        # of the current daily slot (fleet > MAX_AUTOSTORY_WAVE_SIZE).
+                        continue_now = bool(wave_ok and wave_truncated)
                     _advance_after_wave(
                         c,
                         now=now,
@@ -1467,7 +1490,7 @@ def execute_wave(
                         run_id=result.get("run_id"),
                         error=None if wave_ok else str(result.get("error") or "wave_failed"),
                         remaining_accounts=rem if wave_ok else rem,
-                        continue_immediately=bool(wave_ok and eligible_next),
+                        continue_immediately=continue_now,
                     )
                 db.commit()
                 camp_out = campaign_to_dict(c)
