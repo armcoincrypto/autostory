@@ -23,6 +23,7 @@ from src.core.models import (
 from src.stories.autostory_hardening import (
     PROGRESS_NO_RESEND,
     claim_campaign,
+    progress_status,
     update_progress,
 )
 from src.stories.autostory_recurring import (
@@ -35,6 +36,7 @@ from src.stories.autostory_recurring import (
     clamp_stories_per_account_per_day,
     effective_remaining_today,
     ensure_daily_progress_rows,
+    get_daily_row,
     next_monotonic_wave_index,
     plan_recurring_dry_run_calendar,
     platform_remaining_today,
@@ -1216,45 +1218,236 @@ def test_crash_after_send_before_persist_is_ambiguous_not_resent(rec_db, monkeyp
     assert ids[0] not in sel["wave_account_ids"]
 
 
-def test_true_process_kill_attempting_status_is_reselectable_known_gap(rec_db, monkeypatch):
-    """Documents a narrow, real crash-window gap for a follow-up wave.
+def _mark_attempting_stale(db, *, campaign_id: int, wave_index: int, account_id: int, minutes: float) -> None:
+    """Test helper: back-date a progress row's updated_at to simulate elapsed
+    wall-clock time since a crashed worker last touched it, without faking
+    the system clock (recover_stale_attempting only reads row.updated_at)."""
+    row = (
+        db.query(AutoStoryAccountProgress)
+        .filter_by(campaign_id=int(campaign_id), wave_index=int(wave_index), account_id=int(account_id))
+        .one()
+    )
+    row.updated_at = datetime.utcnow() - timedelta(minutes=minutes)
+    db.commit()
 
-    If the OS kills the worker between Telegram accepting SendStoryRequest
-    and Python's own except-handler running (a true kill, not a catchable
-    exception), no code path ever reaches the ambiguous_no_retry
-    classification in publisher.py -- the durable AutoStoryAccountProgress
-    row is left at "attempting" (set immediately before the Telegram call;
-    see auto_story_service.execute_wave). "attempting" is NOT in
-    PROGRESS_NO_RESEND, so once the campaign's claim lease
-    (CLAIM_LEASE_MINUTES) expires and a fresh worker re-claims the
-    campaign, a later selection at the SAME wave_index treats the account
-    as available again -- a real blind-resend risk beyond what the
-    exception-catching path already prevents.
 
-    This test intentionally asserts the CURRENT behavior (reselected, not
-    blocked) so the gap stays visible in CI instead of silently accepted.
-    Recommended fix for the next wave: treat a pre-existing "attempting"
-    row observed by a *different* execute_wave invocation as ambiguous
-    (add it to PROGRESS_NO_RESEND / RECURRING_PROGRESS_STATUS_MATRIX with
-    retry=False), together with a review of the "unfinished"/completion
-    bookkeeping in select_next_recurring_wave_accounts so a permanently
-    blocked wave slot cannot silently stall campaign completion.
+def test_fresh_attempting_not_recovered_still_owned_by_worker(rec_db, monkeypatch):
+    """A just-written attempting row (age < CLAIM_LEASE_MINUTES) may still be
+    a legitimate in-flight worker -- must not be marked ambiguous yet, and
+    stays selectable at the same slot (mirrors the pre-existing crash-retry
+    invariant in test_recurring_crash_after_claim_retries_same_slot_not_new_slot).
     """
     _cert_ok(monkeypatch)
     db = rec_db
     ids = _seed_accounts(db, 1)
     day0 = date(2026, 8, 26)
     c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
-    # Durable state left behind by the crashed worker, exactly as
-    # auto_story_service.execute_wave writes it immediately before the
-    # (never-returning) Telegram call.
     update_progress(
         db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
     )
     monkeypatch.setattr(
         "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
     )
-    # The daily row is untouched by the crash (no record_daily_* call ever ran).
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert ids[0] in sel["wave_account_ids"]
+    assert (
+        progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+        == "attempting"
+    )
+
+
+def test_stale_attempting_becomes_ambiguous_and_blocks_resend(rec_db, monkeypatch):
+    """Phase 12 fix verification (replaces the former known-gap test).
+
+    A true process kill between Telegram accepting SendStoryRequest and any
+    local code running leaves AutoStoryAccountProgress at "attempting" with
+    zero identifying evidence of the outcome (no story_id, no run linkage --
+    see recover_stale_attempting's docstring). No Telegram-side lookup
+    capability exists for Stories today (unlike the P5D message gateway's
+    live reconciliation), so FOUND/ABSENT can never be positively proven for
+    this row -- ambiguous (fail closed, no resend) is the only
+    evidence-supported classification, covering Phase 9 scenarios A/B/C
+    identically since the available evidence is identical (none) regardless
+    of what actually happened on Telegram's side.
+    """
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    _mark_attempting_stale(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], minutes=45)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+
     assert remaining_today(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0) == 1
     sel = select_next_recurring_wave_accounts(db, c, wave_index=0)
-    assert ids[0] in sel["wave_account_ids"]  # current gap: reselected, not blocked
+    assert ids[0] not in sel["wave_account_ids"]  # STALE_ATTEMPTING_BLIND_RESEND=BLOCKED
+    assert (
+        progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+        == "ambiguous"
+    )
+
+
+def test_stale_attempting_recovery_reflects_into_daily_progress(rec_db, monkeypatch):
+    """Phase 7: recovered ambiguous state must consume the daily target
+    exactly once via the existing reconcile_daily_from_wave_slot path.
+    """
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=3, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    _mark_attempting_stale(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], minutes=31)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    select_next_recurring_wave_accounts(db, c, wave_index=0)
+    row = get_daily_row(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0)
+    assert row.ambiguous_count == 1
+    assert row.completed_for_day is True
+    assert remaining_today(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0) == 0
+    r = record_daily_success(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0)
+    assert r["ok"] is False  # blind resend into the daily target is still refused
+
+
+def test_stale_attempting_recovery_is_idempotent(rec_db, monkeypatch):
+    """Phase 9-D: repeated recovery must not double-count."""
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    _mark_attempting_stale(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], minutes=60)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    select_next_recurring_wave_accounts(db, c, wave_index=0)
+    select_next_recurring_wave_accounts(db, c, wave_index=0)
+    select_next_recurring_wave_accounts(db, c, wave_index=0)
+    row = get_daily_row(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0)
+    assert row.ambiguous_count == 1
+    assert (
+        progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+        == "ambiguous"
+    )
+
+
+def test_stale_attempting_recovery_race_two_ticks_no_double_count(rec_db, monkeypatch):
+    """Phase 9-E concurrency proxy.
+
+    True multi-process concurrency isn't reproducible against a single
+    in-memory SQLite session (the same constraint applies to every other
+    claim-race test in this suite, e.g. test_recurring_no_duplicate_scheduler_tick,
+    which verifies the atomic compare-and-set UPDATE rather than real
+    threads). The atomic campaign claim in claim_campaign already guarantees
+    only one worker at a time can reach wave execution/selection for a given
+    campaign; this test proves that even if two "ticks" both run recovery
+    against the same stale row back-to-back (the worst case the claim
+    mechanism allows), the transition and daily counters stay single-valued
+    -- no resend is triggered by either.
+    """
+    from src.stories.autostory_hardening import recover_stale_attempting
+
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    _mark_attempting_stale(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], minutes=31)
+
+    first = recover_stale_attempting(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+    second = recover_stale_attempting(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+    assert first == "ambiguous"
+    assert second is None  # already resolved -- nothing left for a second "worker" to do
+    assert (
+        progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+        == "ambiguous"
+    )
+
+
+def test_restart_after_stale_recovery_not_reselected(rec_db, monkeypatch):
+    """Phase 9-F: reconciled/ambiguous outcomes survive a simulated restart."""
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    _mark_attempting_stale(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], minutes=31)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    select_next_recurring_wave_accounts(db, c, wave_index=0)  # crashed worker's tick recovers it
+
+    # Simulate a fresh process/worker restart: a brand new scheduler tick.
+    sel_after_restart = select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert ids[0] not in sel_after_restart["wave_account_ids"]
+
+
+def test_restart_after_ambiguous_no_blind_resend(rec_db, monkeypatch):
+    """Phase 9-G: the pre-existing exception-caught ambiguous path (not the
+    stale-attempting recovery path) is also restart-safe -- both crash
+    classification routes converge to the same no-resend guarantee.
+    """
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db,
+        campaign_id=int(c.id),
+        wave_index=0,
+        account_id=ids[0],
+        status="ambiguous",
+        telegram_story_id=555111,
+    )
+    record_daily_ambiguous(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert ids[0] not in sel["wave_account_ids"]
+
+
+def test_ambiguous_day_one_does_not_block_day_two(rec_db, monkeypatch):
+    """Phase 9-H: an uncertain Day 1 slot must not silently ban the account
+    from the campaign forever -- only that day's target is consumed.
+    """
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0, day1 = date(2026, 8, 26), date(2026, 8, 27)
+    c = _campaign(db, ids, spad=1, days=2, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    _mark_attempting_stale(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], minutes=31)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert remaining_today(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0) == 0
+
+    # Day 2: fresh daily row, fresh wave_index -- no lingering ban.
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day1
+    )
+    assert remaining_today(db, campaign_id=int(c.id), account_id=ids[0], local_date=day1) == 1
+    sel_day2 = select_next_recurring_wave_accounts(db, c, wave_index=1)
+    assert ids[0] in sel_day2["wave_account_ids"]

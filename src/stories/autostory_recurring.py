@@ -635,6 +635,7 @@ def select_next_recurring_wave_accounts(
         ensure_progress_row,
         is_account_certified_publish,
         progress_status,
+        recover_stale_attempting,
         rotate_account_ids,
     )
 
@@ -663,6 +664,12 @@ def select_next_recurring_wave_accounts(
     slot_candidates: list[tuple[int, int, int]] = []  # (successful_count, rotate_idx, aid)
 
     for rotate_idx, aid in enumerate(rotated):
+        recover_stale_attempting(
+            db,
+            campaign_id=int(campaign.id),
+            wave_index=int(wave_index),
+            account_id=aid,
+        )
         reconcile_daily_from_wave_slot(
             db,
             campaign_id=int(campaign.id),

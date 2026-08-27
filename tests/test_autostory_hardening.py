@@ -232,3 +232,60 @@ def test_pause_activate_cancel_are_state_only(hard_db, monkeypatch):
     assert cancelled["ok"] is True
     assert cancelled["campaign"]["status"] == "cancelled"
     assert get_provider_call_count() == 0
+
+
+def test_legacy_stale_attempting_recovered_and_excluded_no_resend(hard_db, monkeypatch):
+    """accounts_publish_once compatibility for the attempting-recovery fix.
+
+    A stale attempting row (true-kill crash window, no exception ever ran)
+    must resolve to ambiguous and then be permanently excluded from
+    reselection -- exactly like any other PROGRESS_NO_RESEND status already
+    is for legacy one-shot campaigns. _mk_campaign leaves campaign_mode at
+    its accounts_publish_once column default, so this exercises the legacy
+    branch of select_next_wave_accounts, not the recurring_daily path.
+    """
+    from src.stories.autostory_hardening import (
+        progress_status,
+        recover_stale_attempting,
+        select_next_wave_accounts,
+    )
+
+    monkeypatch.setattr(
+        "src.stories.autostory_hardening.is_account_certified_publish",
+        lambda db, aid: (True, "certified_publish"),
+    )
+    db = hard_db
+    acc = Account(phone_number="+15551234567")
+    db.add(acc)
+    db.commit()
+    aid = int(acc.id)
+    c = _mk_campaign(db, [aid])
+    assert c.campaign_mode == "accounts_publish_once"
+
+    update_progress(db, campaign_id=int(c.id), wave_index=0, account_id=aid, status="attempting")
+    row = (
+        db.query(AutoStoryAccountProgress)
+        .filter_by(campaign_id=int(c.id), wave_index=0, account_id=aid)
+        .one()
+    )
+    row.updated_at = datetime.utcnow() - timedelta(minutes=45)
+    db.commit()
+
+    # Too-fresh case first (age 0): not yet recovered, still owned by a
+    # worker that could legitimately still be in flight.
+    fresh_row_untouched = recover_stale_attempting(
+        db, campaign_id=int(c.id), wave_index=0, account_id=aid, now=row.updated_at
+    )
+    assert fresh_row_untouched is None
+    assert (
+        progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=aid) == "attempting"
+    )
+
+    sel = select_next_wave_accounts(db, c, wave_index=0)
+    assert aid not in sel["wave_account_ids"]
+    assert progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=aid) == "ambiguous"
+
+    # Idempotent and permanently excluded: legacy mode gives each account
+    # exactly one terminal outcome per campaign.
+    sel2 = select_next_wave_accounts(db, c, wave_index=1)
+    assert aid not in sel2["wave_account_ids"]

@@ -476,6 +476,80 @@ def progress_status(
     return str(row.status) if row else None
 
 
+def recover_stale_attempting(
+    db: Session,
+    *,
+    campaign_id: int,
+    wave_index: int,
+    account_id: int,
+    now: datetime | None = None,
+) -> str | None:
+    """Resolve a stale in-flight ``attempting`` wave slot to a durable, no-resend state.
+
+    Covers the crash window a caught exception cannot: if the worker process
+    is killed outright between Telegram accepting a Story send and any local
+    code running (not a Python exception -- publisher.py's own
+    ``telegram_accepted`` except-branch already classifies *that* case as
+    ``ambiguous_no_retry``), the durable row is left at ``attempting`` with
+    no story_id, no run linkage, and no other identifying evidence of the
+    outcome. No Telegram-side lookup capability exists for Stories today
+    (unlike the P5D message-gateway's live reconciliation lookup) to prove
+    the send was published or never sent, so ``ambiguous`` -- fail closed,
+    no resend -- is the only classification the available evidence
+    supports. ``reconcile_daily_from_wave_slot`` (already called immediately
+    after this in both selection paths) then reflects the transition into
+    ``AutoStoryDailyProgress`` using its existing idempotent logic.
+
+    Staleness reuses ``CLAIM_LEASE_MINUTES`` -- the same TTL that already
+    bounds campaign claims and account locks -- instead of a second timer:
+    ``attempting`` is written immediately after a wave claim is won, so once
+    a full lease period has elapsed since the row's last write, the worker
+    that wrote it can no longer legitimately hold that claim, confirming it
+    is gone (crashed, not merely slow). This is a pure, row-local, evidence
+    age check -- it does not require the caller to currently hold the
+    campaign claim, so it is safe to call from read-only preview/dry-run
+    selection paths as well as live wave execution.
+
+    Idempotent: a row already resolved away from ``attempting`` is a no-op.
+    Returns the resulting status, or ``None`` if there was nothing to do.
+    """
+    from src.core.models import AutoStoryAccountProgress
+
+    now = now or datetime.utcnow()
+    row = (
+        db.query(AutoStoryAccountProgress)
+        .filter_by(
+            campaign_id=int(campaign_id),
+            wave_index=int(wave_index),
+            account_id=int(account_id),
+        )
+        .one_or_none()
+    )
+    if row is None or str(row.status) != "attempting":
+        return None
+
+    age_minutes = (now - row.updated_at).total_seconds() / 60.0 if row.updated_at else None
+    if age_minutes is None or age_minutes < CLAIM_LEASE_MINUTES:
+        return None  # still within the window a legitimate worker may own this
+
+    update_progress(
+        db,
+        campaign_id=int(campaign_id),
+        wave_index=int(wave_index),
+        account_id=int(account_id),
+        status="ambiguous",
+        error="stale_attempting_no_evidence_of_outcome",
+    )
+    logger.warning(
+        "autostory.progress.stale_attempting_recovered",
+        campaign_id=int(campaign_id),
+        wave_index=int(wave_index),
+        account_id=int(account_id),
+        age_minutes=round(age_minutes, 1),
+    )
+    return "ambiguous"
+
+
 def select_next_wave_accounts(
     db: Session,
     campaign: Any,
@@ -504,11 +578,21 @@ def select_next_wave_accounts(
         .all()
     )
     for row in prior:
-        if row.status in PROGRESS_NO_RESEND or row.status in ("failed", "deferred"):
+        status = str(row.status)
+        if status == "attempting":
+            recovered = recover_stale_attempting(
+                db,
+                campaign_id=int(campaign.id),
+                wave_index=int(row.wave_index),
+                account_id=int(row.account_id),
+            )
+            if recovered is not None:
+                status = recovered
+        if status in PROGRESS_NO_RESEND or status in ("failed", "deferred"):
             # deferred may retry next day — exclude from this wave index only if same wave done
-            if row.status in PROGRESS_NO_RESEND:
+            if status in PROGRESS_NO_RESEND:
                 done_ids.add(int(row.account_id))
-            elif row.status == "deferred" and int(row.wave_index) == int(wave_index):
+            elif status == "deferred" and int(row.wave_index) == int(wave_index):
                 done_ids.add(int(row.account_id))
 
     eligible: list[int] = []
