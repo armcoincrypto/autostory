@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -241,6 +241,36 @@ def campaign_local_dates(
         start_local = st.astimezone(tz).date()
     days = max(1, int(duration_days))
     return [start_local + timedelta(days=i) for i in range(days)]
+
+
+def recurring_campaign_ends_at(
+    *,
+    started_at: datetime,
+    duration_days: int,
+    tz_name: str | None = None,
+) -> datetime:
+    """UTC-naive bound at the end of the last campaign-local calendar day.
+
+    ``recurring_daily`` campaigns are certified/gated by the exact date list
+    from ``campaign_local_dates`` (e.g. Aug26/27/28 for a 3-day campaign
+    started mid-day). A wall-clock ``started_at + duration_days`` bound can
+    retain up to ~24h of scheduler slack past that last local date. Daily-row
+    gating already fails closed during that slack window (no row exists to
+    authorize a publish), but aligning ``ends_at`` to the local-day boundary
+    removes the slack itself so the scheduler stops offering extra ticks.
+    Legacy ``accounts_publish_once`` campaigns do not use this helper.
+    """
+    tz_name = tz_name or operator_timezone_name()
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    dates = campaign_local_dates(
+        started_at=started_at, duration_days=duration_days, tz_name=tz_name
+    )
+    last_date = dates[-1]
+    boundary_local = datetime.combine(last_date + timedelta(days=1), dt_time(0, 0), tzinfo=tz)
+    return boundary_local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def ensure_daily_progress_rows(

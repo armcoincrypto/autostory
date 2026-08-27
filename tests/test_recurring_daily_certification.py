@@ -26,6 +26,7 @@ from src.stories.autostory_hardening import (
     update_progress,
 )
 from src.stories.autostory_recurring import (
+    CAMPAIGN_MODE_ONCE,
     CAMPAIGN_MODE_RECURRING,
     CERTIFIED_MAX_STORIES_PER_ACCOUNT_PER_DAY,
     RECURRING_PROGRESS_STATUS_MATRIX,
@@ -43,6 +44,7 @@ from src.stories.autostory_recurring import (
     reconcile_daily_from_wave_slot,
     remaining_today,
     recurring_campaign_complete,
+    recurring_campaign_ends_at,
     select_next_recurring_wave_accounts,
     spread_local_times,
 )
@@ -827,3 +829,432 @@ def test_next_wave_respects_end_and_window():
         ends_at=datetime(2026, 8, 26, 6, 0, 0),
     )
     assert before_window is None or before_window <= datetime(2026, 8, 26, 6, 0, 0)
+
+
+# ── Wave 1C: ends_at / calendar completion hardening ───────────────────────
+# started Aug 26 (mid-day), days=3 -> only Aug26/27/28 are eligible local
+# dates. A wall-clock started_at+duration_days ends_at retains slack past
+# Aug 28; recurring_campaign_ends_at removes that slack for recurring_daily
+# without touching accounts_publish_once semantics.
+
+
+def test_recurring_campaign_ends_at_boundary():
+    start = datetime(2026, 8, 26, 14, 22, 0)
+    ends = recurring_campaign_ends_at(started_at=start, duration_days=3, tz_name="UTC")
+    assert ends == datetime(2026, 8, 29, 0, 0, 0)
+    dates = campaign_local_dates(started_at=start, duration_days=3, tz_name="UTC")
+    assert dates == [date(2026, 8, 26), date(2026, 8, 27), date(2026, 8, 28)]
+    # Old wall-clock formula would have allowed until Aug 29 14:22 -- strictly wider.
+    assert ends < start + timedelta(days=3)
+
+
+def test_recurring_ends_at_blocks_slot_past_final_local_day():
+    from src.stories.auto_story_service import next_wave_after
+
+    start = datetime(2026, 8, 26, 14, 22, 0)
+    ends = recurring_campaign_ends_at(started_at=start, duration_days=3, tz_name="UTC")
+    times = ["10:00", "15:00", "20:00"]
+    last_slot = next_wave_after(now=datetime(2026, 8, 28, 19, 0, 0), times=times, ends_at=ends)
+    assert last_slot == datetime(2026, 8, 28, 20, 0, 0)
+    # No Aug 29 slot is claimable, even though the old start+3d wall clock
+    # (Aug 29 14:22) would still have allowed one.
+    assert next_wave_after(now=last_slot, times=times, ends_at=ends) is None
+
+
+def test_activate_campaign_recurring_sets_tightened_ends_at(rec_db, monkeypatch):
+    from src.stories.auto_story_service import activate_campaign
+
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    started = datetime(2026, 8, 26, 14, 22, 0)
+    c = AutoStoryCampaign(
+        status="paused",
+        account_ids=list(ids),
+        media_path="/tmp/cert.jpg",
+        caption="cert",
+        mentions_per_story=0,
+        duration_days=3,
+        posts_per_day=1,
+        times_json=["10:00", "15:00", "20:00"],
+        campaign_mode=CAMPAIGN_MODE_RECURRING,
+        stories_per_account_per_day=1,
+        started_at=started,
+        ends_at=None,
+        awake_start_hhmm="10:00",
+        awake_end_hhmm="20:00",
+        explicit_operator_approval=True,
+        confirmation_token="I_CONFIRM_STORY_PUBLISH",
+    )
+    db.add(c)
+    db.commit()
+    monkeypatch.setattr(
+        "src.stories.autostory_media.validate_campaign_media",
+        lambda path: {"ok": True, "path": path, "error": None},
+    )
+    out = activate_campaign(
+        int(c.id),
+        {"explicit_operator_approval": True, "confirmation_token": "I_CONFIRM_STORY_PUBLISH"},
+    )
+    assert out["ok"] is True
+    db.refresh(c)
+    # Compare against the same helper activate_campaign wires through to
+    # (operator timezone resolved internally, not hardcoded here).
+    assert c.ends_at == recurring_campaign_ends_at(started_at=c.started_at, duration_days=3)
+
+
+def test_activate_campaign_legacy_keeps_wall_clock_ends_at(rec_db, monkeypatch):
+    """accounts_publish_once must retain its existing ends_at semantics unchanged."""
+    from src.stories.auto_story_service import activate_campaign
+
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    started = datetime(2026, 8, 26, 14, 22, 0)
+    c = AutoStoryCampaign(
+        status="paused",
+        account_ids=list(ids),
+        media_path="/tmp/cert.jpg",
+        caption="cert",
+        mentions_per_story=0,
+        duration_days=3,
+        posts_per_day=1,
+        times_json=["12:00"],
+        campaign_mode=CAMPAIGN_MODE_ONCE,
+        stories_per_account_per_day=1,
+        started_at=started,
+        ends_at=None,
+        explicit_operator_approval=True,
+        confirmation_token="I_CONFIRM_STORY_PUBLISH",
+    )
+    db.add(c)
+    db.commit()
+    monkeypatch.setattr(
+        "src.stories.autostory_media.validate_campaign_media",
+        lambda path: {"ok": True, "path": path, "error": None},
+    )
+    before = datetime.utcnow()
+    out = activate_campaign(
+        int(c.id),
+        {"explicit_operator_approval": True, "confirmation_token": "I_CONFIRM_STORY_PUBLISH"},
+    )
+    after = datetime.utcnow()
+    assert out["ok"] is True
+    db.refresh(c)
+    # Unchanged legacy formula: now() + duration_days (not started_at-based).
+    assert before + timedelta(days=3) <= c.ends_at <= after + timedelta(days=3)
+
+
+def test_recurring_last_day_partial_completion_not_complete(rec_db, monkeypatch):
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 2)
+    start = datetime(2026, 8, 26, 6, 0, 0)
+    c = _campaign(db, ids, spad=1, days=3, started_at=start)
+    dates = campaign_local_dates(started_at=start, duration_days=3, tz_name="UTC")
+    for d in dates[:-1]:
+        for aid in ids:
+            record_daily_success(db, campaign_id=int(c.id), account_id=aid, local_date=d)
+    # Last day: only the first account has completed so far.
+    record_daily_success(db, campaign_id=int(c.id), account_id=ids[0], local_date=dates[-1])
+    assert recurring_campaign_complete(db, c) is False
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: dates[-1]
+    )
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=5)
+    assert sel["wave_account_ids"] == [ids[1]]
+    assert sel["unfinished_count"] == 1
+
+    # Completing the last account finishes the campaign cleanly on Day 3 --
+    # no lingering Day 4 slack to reason about.
+    record_daily_success(db, campaign_id=int(c.id), account_id=ids[1], local_date=dates[-1])
+    assert recurring_campaign_complete(db, c) is True
+    sel_done = select_next_recurring_wave_accounts(db, c, wave_index=6)
+    assert sel_done["wave_account_ids"] == []
+    assert sel_done["unfinished_count"] == 0
+
+
+def test_recurring_restart_after_final_completion_is_idempotent(rec_db, monkeypatch):
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    start = datetime(2026, 8, 26, 6, 0, 0)
+    c = _campaign(db, ids, spad=1, days=2, started_at=start)
+    dates = campaign_local_dates(started_at=start, duration_days=2, tz_name="UTC")
+    for d in dates:
+        record_daily_success(db, campaign_id=int(c.id), account_id=ids[0], local_date=d)
+    assert recurring_campaign_complete(db, c) is True
+    c.status = "completed"
+    c.next_wave_at = None
+    db.commit()
+
+    # Simulate a worker restart: re-run selection/tick against durable state.
+    # Nothing new is claimable and the completed campaign is left alone.
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: dates[-1]
+    )
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=10)
+    assert sel["wave_account_ids"] == []
+    assert sel["unfinished_count"] == 0
+
+    from src.stories.auto_story_service import tick_due_auto_story_campaigns
+
+    tick_due_auto_story_campaigns(now=datetime.utcnow())
+    db.refresh(c)
+    assert c.status == "completed"
+    assert c.next_wave_at is None
+
+
+def test_tick_force_completes_stale_active_campaign_past_ends_at(rec_db, monkeypatch):
+    """Late/post-end scheduler tick: no fresh next_wave_at, ends_at already passed."""
+    from src.stories.auto_story_service import tick_due_auto_story_campaigns
+
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    start = datetime(2026, 8, 26, 6, 0, 0)
+    c = _campaign(db, ids, spad=1, days=1, started_at=start)
+    c.next_wave_at = None
+    c.ends_at = start + timedelta(days=1)
+    db.commit()
+    monkeypatch.setattr(
+        "src.stories.auto_story_service.scheduler_story_execution_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "src.stories.mutation_boundary.story_mutations_enabled", lambda: True
+    )
+    late_now = c.ends_at + timedelta(hours=6)
+    result = tick_due_auto_story_campaigns(now=late_now)
+    assert result["skipped"] is False
+    assert result["due_ids"] == []
+    db.refresh(c)
+    assert c.status == "completed"
+    assert c.next_wave_at is None
+
+
+def test_tick_force_completes_when_next_wave_at_exceeds_ends_at(rec_db, monkeypatch):
+    """Stale next_wave_at past ends_at (pre-hardening slack) is force-corrected, not fired."""
+    from src.stories.auto_story_service import tick_due_auto_story_campaigns
+
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    start = datetime(2026, 8, 26, 6, 0, 0)
+    c = _campaign(db, ids, spad=1, days=1, started_at=start)
+    c.ends_at = start + timedelta(days=1)
+    c.next_wave_at = c.ends_at + timedelta(hours=2)
+    db.commit()
+    monkeypatch.setattr(
+        "src.stories.auto_story_service.scheduler_story_execution_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "src.stories.mutation_boundary.story_mutations_enabled", lambda: True
+    )
+    result = tick_due_auto_story_campaigns(now=c.next_wave_at + timedelta(minutes=1))
+    assert result["due_ids"] == []
+    db.refresh(c)
+    assert c.status == "completed"
+    assert c.next_wave_at is None
+
+
+# ── Wave 1B: campaign-local (operator tz) vs global UTC-day capacity boundary ──
+# Asia/Yerevan (UTC+4) flips to a new local calendar day ~4h before the
+# global Account.stories_today UTC-day counter rolls over. See
+# docs/AUTOSTORY_RECURRING_TIMEZONE_CAPACITY_BOUNDARY_20260826.md for the
+# accepted policy and full analysis. These tests prove the mismatch window
+# is fail-closed (may transiently block a legitimate Story) and never
+# over-permissive (never allows more than the account's global daily cap).
+
+
+def test_recurring_local_day_ahead_of_utc_capacity_blocks_not_overflows(rec_db, monkeypatch):
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1, daily_limit=3)
+    acc = db.get(Account, ids[0])
+
+    stale_utc_day = date(2026, 8, 26)  # global counter's last-rolled-over UTC day
+    new_local_day = date(2026, 8, 27)  # Yerevan already flipped (UTC+4 ahead of UTC)
+
+    # Global UTC-day counter: account already exhausted its cap on the prior
+    # UTC day and the lazy-rollover clock has not yet crossed UTC midnight.
+    acc.stories_today = 3
+    acc.stories_today_on = stale_utc_day
+    db.commit()
+    monkeypatch.setattr(
+        "src.stories.daily_story_counter.production_story_day",
+        lambda now=None: stale_utc_day,
+    )
+
+    # Campaign-local day has already advanced to the new Yerevan date.
+    c = _campaign(db, ids, spad=3, days=2, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: new_local_day
+    )
+
+    campaign_rem = remaining_today(
+        db, campaign_id=int(c.id), account_id=ids[0], local_date=new_local_day
+    )
+    assert campaign_rem == 3  # fresh local-day target, untouched
+    assert platform_remaining_today(db, ids[0]) == 0  # stale UTC-day counter still exhausted
+
+    effective = effective_remaining_today(
+        db, campaign_id=int(c.id), account_id=ids[0], local_date=new_local_day
+    )
+    # Fail-closed: blocked for this boundary window, but never allowed past
+    # the already-exhausted global cap (min() composition can only be <=
+    # either side -- it cannot manufacture extra capacity).
+    assert effective == 0
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert ids[0] not in sel["wave_account_ids"]
+    assert sel["capacity_blocked_today"] == 1
+
+    # Once the global UTC-day counter catches up (lazy rollover crosses UTC
+    # midnight), the same local day is no longer blocked -- the mismatch is
+    # a transient boundary window, not a stuck state.
+    monkeypatch.setattr(
+        "src.stories.daily_story_counter.production_story_day",
+        lambda now=None: new_local_day,
+    )
+    assert platform_remaining_today(db, ids[0]) == 3
+    assert (
+        effective_remaining_today(
+            db, campaign_id=int(c.id), account_id=ids[0], local_date=new_local_day
+        )
+        == 3
+    )
+    sel2 = select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert ids[0] in sel2["wave_account_ids"]
+
+
+def test_recurring_local_day_behind_utc_never_double_counts(rec_db, monkeypatch):
+    """Negative-offset mirror: global UTC-day counter resets first while the
+    campaign-local day (still catching up) keeps gating on its own
+    already-in-progress target -- the smaller of the two always wins.
+    """
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1, daily_limit=3)
+    acc = db.get(Account, ids[0])
+
+    still_current_local_day = date(2026, 8, 26)
+    fresh_utc_day = date(2026, 8, 27)  # UTC counter already rolled over
+
+    acc.stories_today = 0
+    acc.stories_today_on = fresh_utc_day
+    db.commit()
+    monkeypatch.setattr(
+        "src.stories.daily_story_counter.production_story_day",
+        lambda now=None: fresh_utc_day,
+    )
+
+    c = _campaign(db, ids, spad=3, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    record_daily_success(
+        db, campaign_id=int(c.id), account_id=ids[0], local_date=still_current_local_day
+    )
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today",
+        lambda **k: still_current_local_day,
+    )
+
+    assert platform_remaining_today(db, ids[0]) == 3  # global side is fully fresh
+    campaign_rem = remaining_today(
+        db, campaign_id=int(c.id), account_id=ids[0], local_date=still_current_local_day
+    )
+    assert campaign_rem == 2  # 1 of 3 already used today, correctly gates the ceiling
+    effective = effective_remaining_today(
+        db, campaign_id=int(c.id), account_id=ids[0], local_date=still_current_local_day
+    )
+    assert effective == 2  # never inflated by the fresher global counter
+
+
+# ── Wave 1D: provider send/persist crash window ────────────────────────────
+# src/stories/publisher.py sets telegram_accepted=True immediately after
+# SendStoryRequest succeeds. If the local Story-row persistence that follows
+# then raises, the except block (locals().get("telegram_accepted")) returns
+# ambiguous_no_retry=True / result_classification=AMBIGUOUS_NO_RETRY,
+# preserving the Telegram story_id but db_id=None. No Telegram call is made
+# in these tests -- they exercise the service/reconciliation boundary
+# (_record_wave_progress_from_result, update_progress, record_daily_*)
+# with a synthetic step shaped exactly like _finalize_multi_run's output.
+
+
+def test_crash_after_send_before_persist_is_ambiguous_not_resent(rec_db, monkeypatch):
+    """The catchable-exception crash path (the common case): proven safe."""
+    from src.stories.auto_story_service import _record_wave_progress_from_result
+    from src.stories.autostory_hardening import progress_status
+
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    crashed_result = {
+        "run_id": 9999,
+        "steps": [
+            {
+                "account_id": ids[0],
+                "ok": False,
+                "ambiguous_no_retry": True,
+                "status": "ambiguous_no_retry",
+                "db_id": None,  # local Story row never persisted
+                "story_id": 555111,  # Telegram accepted the send
+                "error": "local_story_persistence_failed:OperationalError: ...",
+            }
+        ],
+    }
+    _record_wave_progress_from_result(
+        db, campaign_id=int(c.id), wave_index=0, result=crashed_result
+    )
+
+    assert (
+        progress_status(db, campaign_id=int(c.id), wave_index=0, account_id=ids[0])
+        == "ambiguous"
+    )
+    assert remaining_today(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0) == 0
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=1)
+    assert ids[0] not in sel["wave_account_ids"]
+
+
+def test_true_process_kill_attempting_status_is_reselectable_known_gap(rec_db, monkeypatch):
+    """Documents a narrow, real crash-window gap for a follow-up wave.
+
+    If the OS kills the worker between Telegram accepting SendStoryRequest
+    and Python's own except-handler running (a true kill, not a catchable
+    exception), no code path ever reaches the ambiguous_no_retry
+    classification in publisher.py -- the durable AutoStoryAccountProgress
+    row is left at "attempting" (set immediately before the Telegram call;
+    see auto_story_service.execute_wave). "attempting" is NOT in
+    PROGRESS_NO_RESEND, so once the campaign's claim lease
+    (CLAIM_LEASE_MINUTES) expires and a fresh worker re-claims the
+    campaign, a later selection at the SAME wave_index treats the account
+    as available again -- a real blind-resend risk beyond what the
+    exception-catching path already prevents.
+
+    This test intentionally asserts the CURRENT behavior (reselected, not
+    blocked) so the gap stays visible in CI instead of silently accepted.
+    Recommended fix for the next wave: treat a pre-existing "attempting"
+    row observed by a *different* execute_wave invocation as ambiguous
+    (add it to PROGRESS_NO_RESEND / RECURRING_PROGRESS_STATUS_MATRIX with
+    retry=False), together with a review of the "unfinished"/completion
+    bookkeeping in select_next_recurring_wave_accounts so a permanently
+    blocked wave slot cannot silently stall campaign completion.
+    """
+    _cert_ok(monkeypatch)
+    db = rec_db
+    ids = _seed_accounts(db, 1)
+    day0 = date(2026, 8, 26)
+    c = _campaign(db, ids, spad=1, days=1, started_at=datetime(2026, 8, 26, 6, 0, 0))
+    # Durable state left behind by the crashed worker, exactly as
+    # auto_story_service.execute_wave writes it immediately before the
+    # (never-returning) Telegram call.
+    update_progress(
+        db, campaign_id=int(c.id), wave_index=0, account_id=ids[0], status="attempting"
+    )
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: day0
+    )
+    # The daily row is untouched by the crash (no record_daily_* call ever ran).
+    assert remaining_today(db, campaign_id=int(c.id), account_id=ids[0], local_date=day0) == 1
+    sel = select_next_recurring_wave_accounts(db, c, wave_index=0)
+    assert ids[0] in sel["wave_account_ids"]  # current gap: reselected, not blocked

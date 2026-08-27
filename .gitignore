@@ -64,6 +64,7 @@ coverage.xml
 *env*_backup*
 *env*_preflight*
 .venv
+.venv312
 env/
 venv/
 ENV/

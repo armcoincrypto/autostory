@@ -375,6 +375,7 @@ def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
         clamp_stories_per_account_per_day,
         ensure_daily_progress_rows,
         plan_recurring_times_json,
+        recurring_campaign_ends_at,
     )
 
     media_raw = str(payload.get("media_path") or "").strip()
@@ -554,7 +555,12 @@ def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
                 }
             camp.status = "active"
             camp.started_at = now
-            camp.ends_at = now + timedelta(days=duration_days)
+            if raw_mode == CAMPAIGN_MODE_RECURRING:
+                camp.ends_at = recurring_campaign_ends_at(
+                    started_at=now, duration_days=duration_days
+                )
+            else:
+                camp.ends_at = now + timedelta(days=duration_days)
             computed = next_wave_after(
                 now=now - timedelta(seconds=1),
                 times=times,
@@ -741,7 +747,15 @@ def activate_campaign(campaign_id: int, payload: dict[str, Any]) -> dict[str, An
         now = datetime.utcnow()
         c.status = "active"
         c.started_at = c.started_at or now
-        c.ends_at = c.ends_at or (now + timedelta(days=int(c.duration_days or 1)))
+        if c.ends_at is None:
+            from src.stories.autostory_recurring import is_recurring, recurring_campaign_ends_at
+
+            if is_recurring(c):
+                c.ends_at = recurring_campaign_ends_at(
+                    started_at=c.started_at, duration_days=int(c.duration_days or 1)
+                )
+            else:
+                c.ends_at = now + timedelta(days=int(c.duration_days or 1))
         c.next_wave_at = next_wave_after(
             now=now - timedelta(seconds=1),
             times=list(c.times_json or []),
