@@ -2,10 +2,16 @@
 # Canonical AutoStory production deploy. Fails closed at every stage.
 #
 # Usage:
-#   sudo scripts/release/deploy_production.sh --sha <git-sha> [--dry-run]
-#   sudo scripts/release/deploy_production.sh <git-sha> [--dry-run]
+#   sudo scripts/release/deploy_production.sh --sha <git-sha> [--dry-run] [--force]
+#   sudo scripts/release/deploy_production.sh <git-sha> [--dry-run] [--force]
 #
 # Always pins to an explicit, immutable Git SHA -- never a branch tip.
+#
+# If the requested SHA is already the live release (all three services already
+# report a RELEASE_MANIFEST.json git_sha matching it), a real (non-dry-run) run
+# ABORTS rather than performing a pointless cutover -- pass --force to rebuild
+# and cut over anyway (e.g. to recover from a corrupted release directory).
+# --dry-run always reports this fact but is never blocked by it.
 #
 # Pipeline: prechecks -> DB backup+integrity -> build release -> verify manifest
 #   -> python syntax -> active-campaign gate -> systemd cutover (web, scheduler,
@@ -26,11 +32,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/_deploy_lib.sh"
 
 DRY_RUN=0
+FORCE=0
 SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --sha) SHA="${2:?--sha requires a value}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --force) FORCE=1; shift ;;
     -h|--help)
       sed -n '1,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)
@@ -91,6 +99,32 @@ if [[ -r "$SHARED_ENV" ]]; then
   pc "shared_env_path=OK ($SHARED_ENV)"
 else
   fail "shared .env not readable: $SHARED_ENV"
+fi
+
+# Detect whether the requested SHA is already live before doing any build work.
+# A cutover that doesn't change code is pointless work (service restarts, DB
+# backup) for zero benefit -- a real run aborts unless --force is given.
+# --dry-run always just reports this, never blocked by it.
+ALREADY_LIVE_UNITS=()
+for u in "${SYSTEMD_UNITS[@]}"; do
+  rel="$(current_release_of "$u")"
+  live_sha=""
+  if [[ -n "$rel" && -f "$rel/RELEASE_MANIFEST.json" ]]; then
+    live_sha="$(python3 -c "import json;print(json.load(open('$rel/RELEASE_MANIFEST.json')).get('git_sha',''))" 2>/dev/null || true)"
+  fi
+  if [[ "$live_sha" == "$FULL_SHA" ]]; then
+    ALREADY_LIVE_UNITS+=("$u")
+  fi
+done
+if [[ "${#ALREADY_LIVE_UNITS[@]}" -eq "${#SYSTEMD_UNITS[@]}" ]]; then
+  pc "already_live=YES all three services already report git_sha=$FULL_SHA -- a cutover would be a no-op"
+  if [[ "$DRY_RUN" -eq 0 && "$FORCE" -eq 0 ]]; then
+    fail "requested SHA is already live on all services (nothing to deploy) -- pass --force to rebuild/cut over anyway"
+  fi
+elif [[ "${#ALREADY_LIVE_UNITS[@]}" -gt 0 ]]; then
+  pc "already_live=PARTIAL (${ALREADY_LIVE_UNITS[*]}) -- other services are on a different release; proceeding to align them"
+else
+  pc "already_live=NO"
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -240,6 +274,14 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   rm -rf "$BUILD_ROOT"
   {
     echo "=== DRY-RUN SUMMARY ==="
+    echo "candidate_sha=$FULL_SHA"
+    if [[ "${#ALREADY_LIVE_UNITS[@]}" -eq "${#SYSTEMD_UNITS[@]}" ]]; then
+      echo "already_live=YES (all three services already report this exact git_sha -- a real run would ABORT here without --force, no pointless cutover)"
+    elif [[ "${#ALREADY_LIVE_UNITS[@]}" -gt 0 ]]; then
+      echo "already_live=PARTIAL (${ALREADY_LIVE_UNITS[*]})"
+    else
+      echo "already_live=NO"
+    fi
     echo "would_build_release=${RELEASES_ROOT}/${STAMP}-${SHORT}"
     echo "current_release(web)=$PREV_RELEASE_WEB"
     for u in "${SYSTEMD_UNITS[@]}"; do

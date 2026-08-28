@@ -155,5 +155,43 @@ find "$SANDBOX/audits" -type f | sort
 echo
 echo "== FINAL_REPORT (dry-run summary) =="
 cat "$SANDBOX"/audits/*/FINAL_REPORT.txt
+
+# --- second scenario: requested SHA already live on all three services ---
+# Seed the "current" release with a RELEASE_MANIFEST.json matching $SHA, then
+# confirm dry-run reports already_live=YES and still exits 0 (never blocked).
+echo
+echo "== scenario 2: SHA already live (dry-run must report it, never block) =="
+python3 - "$FAKE_OLD_RELEASE/RELEASE_MANIFEST.json" "$SHA" <<'PY'
+import json, sys
+json.dump({"git_sha": sys.argv[2]}, open(sys.argv[1], "w"))
+PY
+
+PATH="$SANDBOX/bin:$PATH" \
+RELEASES_ROOT="$SANDBOX/releases" \
+SHARED_ENV="$SANDBOX/.env" \
+SHARED_DATA="$SANDBOX/data/real" \
+SHARED_DB="$SANDBOX/data/storyfleet.db" \
+SHARED_VENV_PY="$VENV_PY" \
+DEPLOY_MIRROR="$SANDBOX/mirror.git" \
+GIT_REMOTE_URL="$REPO_ROOT" \
+OVERRIDE_CONF_WEB="$SANDBOX/systemd.d/web/override.conf" \
+OVERRIDE_CONF_SCHEDULER="$SANDBOX/systemd.d/scheduler/override.conf" \
+OVERRIDE_CONF_READINESS="$SANDBOX/systemd.d/readiness/override.conf" \
+AUDIT_ROOT="$SANDBOX/audits" \
+LOCK_FILE="$SANDBOX/deploy.lock" \
+VERIFY_MANIFEST_SCRIPT="$SANDBOX_VERIFY_SCRIPT" \
+  "$TEST_BASH" "$HERE/deploy_production.sh" --sha "$SHA" --dry-run > "$SANDBOX/scenario2.out" 2>&1
+SCENARIO2_EXIT=$?
+cat "$SANDBOX/scenario2.out"
+if [[ "$SCENARIO2_EXIT" -ne 0 ]]; then
+  echo "FAIL: dry-run must exit 0 even when the SHA is already live"
+  exit 1
+fi
+if ! grep -q "already_live=YES" "$SANDBOX/scenario2.out"; then
+  echo "FAIL: dry-run did not report already_live=YES for a SHA that is already live on all three services"
+  exit 1
+fi
+echo "scenario 2: PASS (already_live=YES reported, dry-run still exited 0)"
+
 echo
 echo "LOCAL_SANDBOX_CHECK=PASS"
