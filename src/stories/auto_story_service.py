@@ -42,6 +42,58 @@ FRESH_AUTH_FAILURE_BACKOFF_MINUTES = int(
 )
 
 
+def _record_account_deferred_if_new_state(
+    db,
+    *,
+    campaign_id: int,
+    wave_index: int,
+    account_id: int,
+    error: str,
+    reason: str,
+    blocked_until: str | None,
+    retry_at: str,
+) -> bool:
+    """Durable autostory.account.deferred row, but only on a genuine state
+    transition (new error/blocked_until for this campaign+account), not once
+    per retry. Returns True if a row was written.
+    """
+    from src.core.models import SystemLog
+    from src.stories.autostory_operator_preview import emit_autostory_system_log
+
+    last = (
+        db.query(SystemLog)
+        .filter(
+            SystemLog.message == "autostory.account.deferred",
+            SystemLog.account_id == account_id,
+        )
+        .order_by(SystemLog.id.desc())
+        .first()
+    )
+    last_details = (last.details if last is not None else None) or {}
+    if (
+        last is not None
+        and int(last_details.get("campaign_id") or -1) == int(campaign_id)
+        and last_details.get("error") == error
+        and last_details.get("blocked_until") == blocked_until
+    ):
+        return False  # unchanged cooldown/error -- no new information to record
+
+    emit_autostory_system_log(
+        db,
+        "autostory.account.deferred",
+        level="WARNING",
+        campaign_id=int(campaign_id),
+        wave_number=int(wave_index) + 1,
+        account_id=int(account_id),
+        result="deferred",
+        error=error,
+        reason=reason or "fresh_story_auth_failed",
+        blocked_until=blocked_until,
+        retry_at=retry_at,
+    )
+    return True
+
+
 def _run_coro_sync(coro):  # type: ignore[no-untyped-def]
     """Run ``coro`` from sync code, including when a loop is already running.
 
@@ -1365,24 +1417,27 @@ def execute_wave(
                         if not operator_manual and require_scheduler_flag:
                             c.next_wave_at = now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)
                         db.commit()
-                    from src.stories.autostory_operator_preview import emit_autostory_system_log
-
                     retry_at_iso = (now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)).isoformat()
                     # Durable (SystemLog row), not just structlog: precheck failure detail
                     # for a deferred wave was previously only visible via structlog, which
                     # this incident showed is not reliably captured in production (no
                     # journald/file record survived for the Slot 1 delay window).
+                    #
+                    # One row per actual state TRANSITION, not one per retry: a long
+                    # cooldown (e.g. a multi-hour STORIES_TOO_MUCH block) would otherwise
+                    # write a near-identical row every FRESH_AUTH_FAILURE_BACKOFF_MINUTES
+                    # for as long as the account stays blocked. Only write when the
+                    # error/blocked_until actually differs from the last recorded row for
+                    # this (campaign, account) pair.
                     for item in fresh_gate["failed"]:
-                        emit_autostory_system_log(
+                        _record_account_deferred_if_new_state(
                             db,
-                            "autostory.account.deferred",
-                            level="WARNING",
                             campaign_id=camp_id_for_auth,
-                            wave_number=wave_index_for_auth + 1,
+                            wave_index=wave_index_for_auth,
                             account_id=int(item["account_id"]),
-                            result="deferred",
-                            reason="fresh_story_auth_failed",
                             error=str(item.get("error") or "")[:200],
+                            reason=str(item.get("reason") or "")[:200],
+                            blocked_until=item.get("blocked_until"),
                             retry_at=retry_at_iso,
                         )
                     db.commit()

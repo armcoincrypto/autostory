@@ -90,7 +90,12 @@ def _seed_account(db, i: int = 0) -> int:
 
 
 def _campaign(db, ids: list[int], *, spad: int = 1, days: int = 1) -> AutoStoryCampaign:
-    started = datetime(2026, 8, 29, 6, 0, 0)
+    # started_at/ends_at are real wall-clock bounds checked for real inside
+    # execute_wave (unlike campaign_local_today, which every test mocks to a
+    # fixed fake date) -- ends_at must stay safely in the future regardless of
+    # when the suite actually runs, or the campaign force-completes instead of
+    # ever reaching the code path under test.
+    now = datetime.utcnow()
     c = AutoStoryCampaign(
         status="active",
         account_ids=list(ids),
@@ -102,8 +107,9 @@ def _campaign(db, ids: list[int], *, spad: int = 1, days: int = 1) -> AutoStoryC
         times_json=["10:00"],
         campaign_mode=CAMPAIGN_MODE_RECURRING,
         stories_per_account_per_day=spad,
-        started_at=started,
-        ends_at=started + timedelta(days=days),
+        started_at=now - timedelta(hours=1),
+        ends_at=now + timedelta(days=365),
+        next_wave_at=now,  # immediately due, matching how a real activated campaign starts
         awake_start_hhmm="10:00",
         awake_end_hhmm="20:00",
         explicit_operator_approval=True,
@@ -352,7 +358,8 @@ def test_execute_wave_backs_off_on_fresh_auth_failure_no_tight_loop(rec_db, monk
     # showed is not reliably captured in production).
     rows = db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").all()
     assert len(rows) == 1
-    assert rows[0].details.get("reason") == "fresh_story_auth_failed"
+    assert rows[0].details.get("reason") == "STORIES_TOO_MUCH"
+    assert rows[0].details.get("error") == "precheck_rate_limited"
     assert rows[0].account_id == aid
 
 
@@ -407,6 +414,7 @@ def test_100_scheduler_ticks_bounded_precheck_calls_no_spam(rec_db, monkeypatch)
 
     elapsed_equivalent_minutes = (ticks * LOOP_INTERVAL_SEC) / 60
     expected_max_calls = int(elapsed_equivalent_minutes // FRESH_AUTH_FAILURE_BACKOFF_MINUTES) + 2
+    assert call_count["n"] >= 1, "sanity: the loop must actually have called execute_wave at least once"
     assert call_count["n"] <= expected_max_calls, (
         f"expected <= {expected_max_calls} precheck attempts over "
         f"{elapsed_equivalent_minutes:.0f} simulated minutes, got {call_count['n']} "
@@ -496,3 +504,199 @@ def test_tick_at_or_after_backoff_expiry_rechecks_eligibility(rec_db, monkeypatc
     # stuck after one failure).
     execute_wave(campaign_id, require_scheduler_flag=True, worker_id="w1")
     assert calls["n"] == 2
+
+
+# ── Wave 2: durable observability -- one row per transition, not per retry ──
+
+
+def test_durable_deferred_record_has_full_required_context(rec_db, monkeypatch):
+    """A blocked/deferred attempt must be answerable: campaign_id, account_id,
+    wave_index, event, reason, blocked_until/retry_at, next_wave_at -- without
+    relying on structlog/journald (proven unreliable in the incident)."""
+    from src.stories.auto_story_service import FRESH_AUTH_FAILURE_BACKOFF_MINUTES, execute_wave
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid = _seed_account(db)
+    c = _campaign(db, [aid])
+    campaign_id = int(c.id)
+    blocked_until_iso = (datetime.utcnow() + timedelta(hours=6)).isoformat()
+
+    async def _blocked(account_ids):
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [
+                {
+                    "account_id": aid,
+                    "error": "precheck_rate_limited",
+                    "reason": "STORIES_TOO_MUCH",
+                    "blocked_until": blocked_until_iso,
+                    "checked_at": datetime.utcnow().isoformat(),
+                }
+            ],
+            "ok": False,
+        }
+
+    monkeypatch.setattr("src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _blocked)
+    execute_wave(campaign_id, require_scheduler_flag=True, worker_id="w1")
+    db.commit()
+
+    row = db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").one()
+    d = row.details
+    assert d["campaign_id"] == campaign_id
+    assert row.account_id == aid
+    assert d["wave_number"] == 1  # wave_index 0 + 1
+    assert d["reason"] == "STORIES_TOO_MUCH"
+    assert d["error"] == "precheck_rate_limited"
+    assert d["blocked_until"] == blocked_until_iso
+    assert "retry_at" in d and d["retry_at"] is not None
+
+    campaign_row = db.get(AutoStoryCampaign, campaign_id)
+    assert campaign_row.next_wave_at is not None  # answers "when will we look again"
+
+
+def test_unchanged_cooldown_across_retries_writes_no_duplicate_log(rec_db, monkeypatch):
+    """The exact 'cooldown tick -> no repeated identical SystemLog spam' requirement:
+    the same block reason/blocked_until across multiple retries must not create a
+    new row each time."""
+    from src.stories.auto_story_service import execute_wave
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid = _seed_account(db)
+    c = _campaign(db, [aid])
+    campaign_id = int(c.id)
+    fixed_blocked_until = (datetime.utcnow() + timedelta(hours=6)).isoformat()
+
+    async def _same_block_every_time(account_ids):
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [
+                {
+                    "account_id": aid,
+                    "error": "precheck_rate_limited",
+                    "reason": "STORIES_TOO_MUCH",
+                    "blocked_until": fixed_blocked_until,
+                }
+            ],
+            "ok": False,
+        }
+
+    monkeypatch.setattr(
+        "src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _same_block_every_time
+    )
+
+    for _ in range(5):
+        execute_wave(campaign_id, require_scheduler_flag=True, worker_id="w1")
+        db.commit()
+        row = db.get(AutoStoryCampaign, campaign_id)
+        row.next_wave_at = datetime.utcnow() - timedelta(seconds=1)  # force-due for the next retry
+        db.commit()
+
+    rows = db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").all()
+    assert len(rows) == 1  # 5 retries, identical cooldown state -> exactly one durable record
+
+
+def test_new_block_reason_after_prior_cooldown_produces_new_record(rec_db, monkeypatch):
+    """A genuine state change (different reason or blocked_until) must still be
+    recorded -- de-duplication must not suppress real new information."""
+    from src.stories.auto_story_service import execute_wave
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid = _seed_account(db)
+    c = _campaign(db, [aid])
+    campaign_id = int(c.id)
+
+    state = {"reason": "STORIES_TOO_MUCH", "blocked_until": (datetime.utcnow() + timedelta(hours=1)).isoformat()}
+
+    async def _blocked(account_ids):
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [{"account_id": aid, "error": "precheck_rate_limited", **state}],
+            "ok": False,
+        }
+
+    monkeypatch.setattr("src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _blocked)
+    execute_wave(campaign_id, require_scheduler_flag=True, worker_id="w1")
+    db.commit()
+    assert db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").count() == 1
+
+    # A new cooldown window (e.g. a fresh precheck extended the block) is new information.
+    state["blocked_until"] = (datetime.utcnow() + timedelta(hours=6)).isoformat()
+    row = db.get(AutoStoryCampaign, campaign_id)
+    row.next_wave_at = datetime.utcnow() - timedelta(seconds=1)
+    db.commit()
+    execute_wave(campaign_id, require_scheduler_flag=True, worker_id="w1")
+    db.commit()
+    assert db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").count() == 2
+
+
+def test_100_tick_simulation_log_volume_bounded(rec_db, monkeypatch):
+    """Extends the tight-loop regression test: not just Telegram calls, but
+    durable SystemLog rows must also stay bounded across 100 simulated ticks
+    of an unchanged cooldown."""
+    from src.stories.auto_story_service import execute_wave
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid = _seed_account(db)
+    c = _campaign(db, [aid])
+    campaign_id = int(c.id)
+    fixed_blocked_until = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+
+    async def _always_blocked(account_ids):
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [
+                {
+                    "account_id": aid,
+                    "error": "precheck_rate_limited",
+                    "reason": "STORIES_TOO_MUCH",
+                    "blocked_until": fixed_blocked_until,
+                }
+            ],
+            "ok": False,
+        }
+
+    monkeypatch.setattr(
+        "src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _always_blocked
+    )
+
+    LOOP_INTERVAL_SEC = 45
+    for _ in range(100):
+        row = db.get(AutoStoryCampaign, campaign_id)
+        if row.next_wave_at is not None and row.next_wave_at <= datetime.utcnow():
+            execute_wave(campaign_id, require_scheduler_flag=True, worker_id="sched")
+            db.commit()
+        row = db.get(AutoStoryCampaign, campaign_id)
+        if row.next_wave_at is not None:
+            row.next_wave_at -= timedelta(seconds=LOOP_INTERVAL_SEC)
+            db.commit()
+
+    rows = db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").count()
+    assert rows == 1, f"expected exactly 1 durable record for an unchanged 24h cooldown, got {rows}"

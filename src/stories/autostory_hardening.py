@@ -66,6 +66,7 @@ async def ensure_fresh_story_auth_for_accounts(
                         "error": "story_auth_blocked_until_future",
                         "reason": auth_state.get("reason") or "",
                         "blocked_until": auth_state.get("blocked_until"),
+                        "checked_at": auth_state.get("checked_at"),
                     }
                 )
                 continue
@@ -84,7 +85,21 @@ async def ensure_fresh_story_auth_for_accounts(
                 aid, status or "failed_check", reason, result.get("retry_after_seconds")
             )
             if status != "allowed":
-                failed.append({"account_id": aid, "error": f"precheck_{status}", "reason": reason})
+                retry_after = result.get("retry_after_seconds")
+                blocked_until_iso = (
+                    (datetime.utcnow() + timedelta(seconds=int(retry_after))).isoformat()
+                    if retry_after
+                    else None
+                )
+                failed.append(
+                    {
+                        "account_id": aid,
+                        "error": f"precheck_{status}",
+                        "reason": reason,
+                        "blocked_until": blocked_until_iso,
+                        "checked_at": datetime.utcnow().isoformat(),
+                    }
+                )
             else:
                 refreshed.append(aid)
         except Exception as exc:
