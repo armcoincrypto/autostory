@@ -55,6 +55,16 @@ def test_preview_mentions_default_and_max_publishes() -> None:
             "automatic_count": 25,
             "duration_days": 2,
             "posts_per_day": 1,
+            # This test asserts legacy accounts_publish_once semantics below
+            # (max_story_publishes == accounts, not accounts x days). Omitting
+            # campaign_mode no longer implies legacy for a *new* preview/create
+            # payload -- recurring_daily became the default for unspecified new
+            # campaigns (see autostory_operator_preview.build_operator_campaign_preview
+            # and auto_story_service.create_campaign), while an *existing* row
+            # with a NULL/missing campaign_mode still correctly reads back as
+            # legacy. Request legacy explicitly to keep testing what this test
+            # is actually about.
+            "legacy_once": True,
         },
     )
     assert p["mentions_per_story"] == 0
