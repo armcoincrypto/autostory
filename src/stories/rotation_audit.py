@@ -293,7 +293,13 @@ def allocate_mentions_without_replacement(
     return allocated
 
 
-def _mention_query(db: Session, *, source_chat_id: int | None, prefer_never_mentioned: bool = True):
+def _mention_query(
+    db: Session,
+    *,
+    source_chat_id: int | None,
+    prefer_never_mentioned: bool = True,
+    exclude_user_ids: set[int] | None = None,
+):
     q = db.query(DiscoveredUser).filter(
         DiscoveredUser.is_blocked == False,
         DiscoveredUser.username.isnot(None),
@@ -302,6 +308,8 @@ def _mention_query(db: Session, *, source_chat_id: int | None, prefer_never_ment
         q = q.filter(DiscoveredUser.times_mentioned == 0)
     if source_chat_id is not None:
         q = q.filter(DiscoveredUser.source_chat_id == int(source_chat_id))
+    if exclude_user_ids:
+        q = q.filter(DiscoveredUser.user_id.notin_({int(u) for u in exclude_user_ids}))
     return q
 
 
@@ -313,8 +321,13 @@ def select_mention_candidates(
     strategy: str = "random",
     prefer_never_mentioned: bool = True,
     mutate: bool = False,
+    exclude_user_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Select mention candidates for precheck/dry-run without mutating mention history."""
+    """Select mention candidates for precheck/dry-run without mutating mention history.
+
+    ``exclude_user_ids`` keeps a publishing account from mentioning itself --
+    pass the Telegram user_id of every account in the wave being published.
+    """
     if mutate:
         raise ValueError("mention candidate dry-run selection must not mutate")
     count = max(0, int(count or 0))
@@ -324,6 +337,7 @@ def select_mention_candidates(
         db,
         source_chat_id=source_chat_id,
         prefer_never_mentioned=prefer_never_mentioned,
+        exclude_user_ids=exclude_user_ids,
     )
     strategy = (strategy or "random").strip().lower()
     if strategy == "oldest":
@@ -643,11 +657,16 @@ def build_story_rotation_precheck(db: Session, payload: dict[str, Any] | None = 
     mention_total_needed = max(0, mentions_per_story) * max(1, len(ready_accounts) or 1)
     if mentions_per_story <= 0:
         mention_total_needed = 0
+    # Never let a publishing account mention itself.
+    publishing_user_ids = {
+        int(a.user_id) for a in accounts if getattr(a, "user_id", None) is not None
+    }
     selected_mentions = select_mention_candidates(
         db,
         source_chat_id=source_chat_id,
         count=mention_total_needed,
         strategy=mention_strategy,
+        exclude_user_ids=publishing_user_ids,
     )
     from src.stories.mention_plan import (
         evaluate_mention_plan_local,
