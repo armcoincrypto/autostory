@@ -30,7 +30,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.settings import settings
 from src.core.models import Account, Story, DiscoveredUser, Campaign, AccountStatus
 from src.core.database import get_db_context
-from src.bot.kathleen import try_handle_kathleen_message
+try:
+    from src.bot.kathleen import try_handle_kathleen_message
+except ModuleNotFoundError:
+    # See docs/audits/zollotex-social-agent-phase0-7-20260722T083419Z/KATHLEEN_DECISION.md:
+    # no authoritative source for src/bot/kathleen/ survived, so it does not ship; policy is
+    # "no hard import in entry points" (already true for web/scheduler/dexpert). This entry
+    # point (`python main.py bot`) was the one remaining hard import.
+    def try_handle_kathleen_message(sender_id: int, raw: str) -> str | None:
+        return "Kathleen is unavailable in this build."
 
 logger = structlog.get_logger(__name__)
 
