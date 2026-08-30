@@ -1066,6 +1066,8 @@ def execute_wave(
         claim_campaign,
         ensure_progress_row,
         is_account_certified_publish,
+        load_durable_mention_plan,
+        persist_mention_plan_for_wave,
         progress_status,
         release_campaign_claim,
         revoke_wave_authorization,
@@ -1074,6 +1076,7 @@ def execute_wave(
         wave_size_ok,
         worker_identity,
     )
+    from src.stories.rotation_audit import allocate_mentions_without_replacement
     from src.stories.controlled_live_run import (
         _execute_controlled_live_story_run,
         evaluate_controlled_live_run_gates,
@@ -1482,18 +1485,40 @@ def execute_wave(
                     account_id=aid,
                 )
 
-            dry_payload = {
-                "account_ids": account_ids,
-                "media_path": media_path_snap,
-                "caption": caption_snap,
-                "mentions_per_story": mps_snap,
-                "mention_source_chat_id": msc_snap,
-                "mention_strategy": "random",
-                "max_stories": len(account_ids),
-                "dry_run": True,
-            }
-            plan = build_story_dry_run_plan(db, dry_payload)
-            mention_plan = list(plan.get("selected_mention_candidates") or [])
+            durable_plan = load_durable_mention_plan(
+                db,
+                campaign_id=camp_id_for_auth,
+                wave_index=wave_index_for_auth,
+                account_ids=account_ids,
+            )
+            if durable_plan is not None:
+                # A prior attempt at this exact (campaign, wave) slot already
+                # selected targets -- reuse them so a retry never re-randomizes.
+                mention_plan = [m for aid in account_ids for m in durable_plan[aid]]
+            else:
+                dry_payload = {
+                    "account_ids": account_ids,
+                    "media_path": media_path_snap,
+                    "caption": caption_snap,
+                    "mentions_per_story": mps_snap,
+                    "mention_source_chat_id": msc_snap,
+                    "mention_strategy": "random",
+                    "max_stories": len(account_ids),
+                    "dry_run": True,
+                }
+                plan = build_story_dry_run_plan(db, dry_payload)
+                mention_plan = list(plan.get("selected_mention_candidates") or [])
+                per_account_chunks = allocate_mentions_without_replacement(
+                    mention_plan,
+                    account_ids=account_ids,
+                    mentions_per_story=mps_snap,
+                )
+                persist_mention_plan_for_wave(
+                    db,
+                    campaign_id=camp_id_for_auth,
+                    wave_index=wave_index_for_auth,
+                    per_account_plan=dict(zip(account_ids, per_account_chunks)),
+                )
             live_payload = _wave_payload_from_campaign(
                 c, mention_plan=mention_plan, account_ids=account_ids
             )
