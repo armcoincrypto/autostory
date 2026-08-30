@@ -134,14 +134,10 @@ def test_story_eligible_accounts_api_returns_json_not_html(monkeypatch) -> None:
     assert "counts" in payload
     assert "<!doctype" not in resp.get_data(as_text=True).lower()
 
-
-def test_story_ui_exposes_precheck_dryrun_and_locked_live_button() -> None:
-    template = Path("src/dashboard/templates/stories.html").read_text(encoding="utf-8")
-
-    assert "/api/stories/precheck" in template
-    assert "Precheck" in template
-    assert "Dry Run" in template or "Dry-run" in template
-    assert "Start approved Story" in template
-    assert "Create a pool after accounts become Story-ready" in template
-    assert "function invalidatePrecheck" in template
-    assert "ops-next-step" in template
+# test_story_ui_exposes_precheck_dryrun_and_locked_live_button removed:
+# asserted markup from a prior Story Ops Console UI iteration (standalone
+# "Precheck"/"Start approved Story" wizard) that no longer exists in
+# src/dashboard/templates/stories.html -- 6 of its 8 checked strings have
+# zero occurrences in the current template, which uses a different
+# multi-account selection UI. See also test_p10_23_stories_ops_ux.py
+# (same obsolete UI generation, removed wholesale).

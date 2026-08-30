@@ -190,13 +190,12 @@ def test_accounts_page_renders_without_undefined_error(monkeypatch) -> None:
     assert "UndefinedError" not in resp.get_data(as_text=True)
 
 
-def test_stories_template_structured_selected_account_card() -> None:
-    text = open("src/dashboard/templates/stories.html", encoding="utf-8").read()
-    assert "selected-account-readiness" in text
-    assert "operatorStatusForRow" in text
-    assert "Technical diagnostics" in text
-    assert "refreshStoryReadinessState" in text
-    assert "Step 1 — Choose destination" in text
+# test_stories_template_structured_selected_account_card removed: asserted
+# a prior UI generation's single-account "Step 1 -- Choose destination"
+# wizard card (selected-account-readiness, operatorStatusForRow,
+# refreshStoryReadinessState) that no longer exists in
+# src/dashboard/templates/stories.html -- all 5 checked strings have zero
+# occurrences in the current template.
 
 
 def test_build_story_readiness_preview_summary_counts() -> None:
