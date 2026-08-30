@@ -453,6 +453,72 @@ def ensure_progress_row(
     return row
 
 
+def load_durable_mention_plan(
+    db: Session,
+    *,
+    campaign_id: int,
+    wave_index: int,
+    account_ids: list[int],
+) -> dict[int, list[dict]] | None:
+    """Return the previously-persisted per-account mention plan for this wave slot.
+
+    Returns None unless *every* requested account already has a durably
+    stored plan (mention_plan is not None) for this exact (campaign_id,
+    wave_index) slot -- i.e. a prior attempt already selected targets and a
+    retry must reuse them rather than re-randomize. A stored empty list
+    (mentions_per_story == 0) still counts as decided and is reused.
+    """
+    from src.core.models import AutoStoryAccountProgress
+
+    if not account_ids:
+        return None
+    rows = (
+        db.query(AutoStoryAccountProgress)
+        .filter(
+            AutoStoryAccountProgress.campaign_id == int(campaign_id),
+            AutoStoryAccountProgress.wave_index == int(wave_index),
+            AutoStoryAccountProgress.account_id.in_([int(a) for a in account_ids]),
+        )
+        .all()
+    )
+    by_account = {int(r.account_id): r for r in rows}
+    plan: dict[int, list[dict]] = {}
+    for aid in account_ids:
+        row = by_account.get(int(aid))
+        if row is None or row.mention_plan is None:
+            return None
+        plan[int(aid)] = list(row.mention_plan)
+    return plan
+
+
+def persist_mention_plan_for_wave(
+    db: Session,
+    *,
+    campaign_id: int,
+    wave_index: int,
+    per_account_plan: dict[int, list[dict]],
+) -> None:
+    """Durably store each account's selected mention targets for this wave slot.
+
+    Called once, immediately after a fresh selection and before publish is
+    attempted, so a crash/retry of the same slot finds and reuses the
+    already-selected targets (see load_durable_mention_plan) instead of
+    drawing a new random sample. Never overwrites a slot that is already
+    decided (mention_plan is not None) -- defensive even though the normal
+    caller only reaches here when load_durable_mention_plan already
+    confirmed the whole account_ids set is undecided, this guarantees an
+    already-committed slot can never be clobbered if that set ever shifts.
+    """
+    for aid, chunk in per_account_plan.items():
+        row = ensure_progress_row(
+            db, campaign_id=campaign_id, wave_index=wave_index, account_id=int(aid)
+        )
+        if row.mention_plan is not None:
+            continue
+        row.mention_plan = list(chunk)
+    db.commit()
+
+
 def update_progress(
     db: Session,
     *,
