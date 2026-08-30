@@ -151,7 +151,16 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "$OUT"
   ')"
 else
-  NEW_RELEASE="$(bash "$HERE/build_immutable_release.sh" "$DEPLOY_MIRROR" "$FULL_SHA" "$BUILD_STAMP")"
+  # build_immutable_release.sh prints TWO lines to stdout: the manifest file
+  # path (from its Python heredoc's `print(path)`) and, last, the release
+  # directory path (from its final `echo "$OUT"`). Capturing the whole output
+  # corrupts NEW_RELEASE into a two-line string -- confirmed in production
+  # (2026-08-30): `ln -sfn ... "$NEW_RELEASE/data"` failed with a literal
+  # newline embedded in the target path. Only the last line is the actual
+  # release path. The dry-run branch above never exercises this because it
+  # deliberately bypasses build_immutable_release.sh to avoid writing into
+  # the real releases root, which is exactly why this escaped local testing.
+  NEW_RELEASE="$(bash "$HERE/build_immutable_release.sh" "$DEPLOY_MIRROR" "$FULL_SHA" "$BUILD_STAMP" | tail -1)"
 fi
 pc "release_artifact_builds=YES path=$NEW_RELEASE"
 

@@ -194,4 +194,24 @@ fi
 echo "scenario 2: PASS (already_live=YES reported, dry-run still exited 0)"
 
 echo
+echo "== regression guard: NEW_RELEASE capture from build_immutable_release.sh =="
+# build_immutable_release.sh prints TWO lines to stdout (the manifest file path,
+# then the release directory path from its final `echo "$OUT"`) -- confirmed by
+# reading its source, and confirmed the hard way in production on 2026-08-30:
+# capturing the whole output corrupted NEW_RELEASE into a two-line string and
+# broke the data/.env symlink step. The dry-run path above never exercises this
+# because it deliberately bypasses build_immutable_release.sh to avoid writing
+# into the real releases root -- so this guard checks the fix is still present
+# on the live-mode call site directly, since neither scenario here can safely
+# invoke the real (root/production-path-hardcoded) build script locally.
+if ! grep -qE 'build_immutable_release\.sh.*\|\s*tail -1' "$HERE/deploy_production.sh"; then
+  echo "FAIL: live-mode NEW_RELEASE capture no longer pipes through 'tail -1' --"
+  echo "      this is the exact fix for the 2026-08-30 production incident where"
+  echo "      NEW_RELEASE captured both lines of build_immutable_release.sh's"
+  echo "      output and broke the data/.env symlink step. Do not remove it."
+  exit 1
+fi
+echo "regression guard: PASS (tail -1 present on the live build capture)"
+
+echo
 echo "LOCAL_SANDBOX_CHECK=PASS"
