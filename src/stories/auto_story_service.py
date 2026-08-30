@@ -712,16 +712,35 @@ def get_campaign(campaign_id: int) -> dict[str, Any] | None:
 
 
 def _campaign_progress(db, c: AutoStoryCampaign, max_pub: int) -> dict[str, Any]:
-    from src.stories.autostory_recurring import is_recurring, campaign_daily_progress_summary
+    from src.stories.autostory_recurring import (
+        campaign_current_day_number,
+        campaign_daily_progress_summary,
+        campaign_shortfall_reason,
+        is_recurring,
+    )
 
+    status = str(getattr(c, "status", "") or "")
     if is_recurring(c):
         summary = campaign_daily_progress_summary(db, int(c.id))
-        return {
+        out = {
             **summary,
             "max_story_publishes": max_pub,
             "successful_count": int(summary.get("successful_count") or 0),
             "target_count": int(summary.get("target_count") or max_pub),
+            "day_number": campaign_current_day_number(
+                started_at=c.started_at, duration_days=int(c.duration_days or 1)
+            ),
+            "total_days": int(c.duration_days or 1),
         }
+        # Shortfall on already-finalized days -- shown while the campaign is
+        # still active (a past day fell short) as well as after it ends, but
+        # never for today's still-in-progress day.
+        shortfall = int(summary.get("finalized_shortfall") or 0)
+        if shortfall > 0:
+            out["shortfall"] = shortfall
+            out["shortfall_reason"] = campaign_shortfall_reason(db, int(c.id))
+        return out
+
     from src.core.models import AutoStoryAccountProgress
 
     rows = (
@@ -730,12 +749,18 @@ def _campaign_progress(db, c: AutoStoryCampaign, max_pub: int) -> dict[str, Any]
         .all()
     )
     ok_n = sum(1 for r in rows if r.status in {"reconciled", "published", "ok"})
-    return {
+    out = {
         "successful_count": ok_n,
         "target_count": max_pub,
         "remaining_count": max(0, max_pub - ok_n),
         "max_story_publishes": max_pub,
     }
+    # Legacy accounts_publish_once has no day granularity -- only flag a
+    # shortfall once the campaign has actually stopped running.
+    if status in ("completed", "failed") and ok_n < max_pub:
+        out["shortfall"] = max_pub - ok_n
+        out["shortfall_reason"] = campaign_shortfall_reason(db, int(c.id))
+    return out
 
 def cancel_campaign(campaign_id: int) -> dict[str, Any]:
     from src.stories.autostory_hardening import (
