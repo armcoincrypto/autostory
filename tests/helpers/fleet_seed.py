@@ -201,13 +201,14 @@ def seed_minimal_fleet(
                 failure_code="unauthorized_session",
             )
         elif aid == 140:
-            _upsert_account(db, account_id=140, purpose="both", health_status="alive")
+            # Session uses autoflush=False (see src/core/database.py); re-querying
+            # here instead of using the object _upsert_account already returns would
+            # silently miss a brand-new (not yet flushed) row and skip these fields.
+            acc = _upsert_account(db, account_id=140, purpose="both", health_status="alive")
             _upsert_readiness(db, 140, status="READY", reason="seed_story_ready")
-            acc = db.query(Account).filter(Account.id == 140).first()
-            if acc is not None:
-                acc.story_precheck_status = "allowed"
-                acc.story_precheck_checked_at = datetime.utcnow()
-                acc.stories_today = 0
+            acc.story_precheck_status = "allowed"
+            acc.story_precheck_checked_at = datetime.utcnow()
+            acc.stories_today = 0
         elif aid == 107:
             _upsert_account(db, account_id=107, purpose="both", health_status="alive")
             _upsert_readiness(db, 107, status="READY", reason="seed_fleet")
