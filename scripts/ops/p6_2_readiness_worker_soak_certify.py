@@ -108,6 +108,7 @@ def main() -> int:
     )
     now = datetime.now(timezone.utc)
     out = _REPO / "data/audit" / f"p6_2_soak_cert_{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     md = _REPO / "docs/audits/P6_2_BACKGROUND_READINESS_WORKER_SOAK_CERTIFICATION.md"
     blockers_lines = [f"- {b}" for b in result["blockers"]] or ["- none"]

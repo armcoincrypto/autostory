@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path("/opt/autostory")
+# Repo root computed relative to this file, not the production deploy path --
+# this test subprocess-invokes real scripts and must work from any checkout
+# (local dev, CI, or /opt/autostory-releases/<release> in production).
+REPO = Path(__file__).resolve().parents[1]
 CHECKPOINT = REPO / "scripts/ops/p6_2_readiness_worker_soak_checkpoint.py"
 CERTIFY = REPO / "scripts/ops/p6_2_readiness_worker_soak_certify.py"
 
