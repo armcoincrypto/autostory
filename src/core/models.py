@@ -461,6 +461,12 @@ class AutoStoryAccountProgress(Base):
     story_id = Column(Integer, ForeignKey("stories.id"), nullable=True)
     telegram_story_id = Column(Integer, nullable=True)
 
+    # Durable per-slot mention target selection: [{"user_id": ..., "username": ...}, ...].
+    # Set once when a wave first selects mentions for this account; reused on any retry
+    # of the same (campaign_id, wave_index, account_id) slot so a crash/retry never
+    # re-randomizes who gets mentioned. Null/empty when mentions_per_story == 0.
+    mention_plan = Column(JSON, nullable=True)
+
     # pending|claimed|attempting|published|reconciled|failed|deferred|ambiguous
     status = Column(String(32), default="pending", index=True)
     attempt_count = Column(Integer, default=0)

@@ -816,6 +816,21 @@ def _ensure_autostory_hardening_schema() -> None:
             except Exception as e:
                 logger.warning("Could not add auto_story_campaigns.%s", name, error=str(e))
 
+    if "auto_story_account_progress" in tables:
+        cols = {c["name"] for c in insp.get_columns("auto_story_account_progress")}
+        if "mention_plan" not in cols:
+            try:
+                with engine.connect() as conn:
+                    conn.execute(
+                        text("ALTER TABLE auto_story_account_progress ADD COLUMN mention_plan JSON")
+                    )
+                    conn.commit()
+                logger.info("Added auto_story_account_progress.mention_plan column")
+            except Exception as e:
+                logger.warning(
+                    "Could not add auto_story_account_progress.mention_plan column", error=str(e)
+                )
+
     if "auto_story_account_progress" not in tables:
         try:
             with engine.connect() as conn:
@@ -830,6 +845,7 @@ def _ensure_autostory_hardening_schema() -> None:
                           run_id INTEGER,
                           story_id INTEGER,
                           telegram_story_id INTEGER,
+                          mention_plan JSON,
                           status VARCHAR(32) DEFAULT 'pending',
                           attempt_count INTEGER DEFAULT 0,
                           error TEXT,
