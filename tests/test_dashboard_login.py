@@ -278,7 +278,12 @@ def test_login_post_without_csrf_rejected():
         follow_redirects=False,
     )
     assert r.status_code == 400
-    assert b"CSRF failed" in r.data or b"csrf_failed" in r.data
+    # The app re-renders a friendly login page on CSRF failure (with a fresh
+    # token for the next attempt) rather than Flask-WTF's raw default text --
+    # see the alert message in src/dashboard/templates/login.html /
+    # the CSRF error handler in src/dashboard/app.py. The 400 status is the
+    # actual security assertion; this checks the current, correct wording.
+    assert b"Session expired or blocked" in r.data
 
 
 def test_login_post_with_csrf_and_session_succeeds_or_shows_auth_error():
@@ -313,7 +318,15 @@ def test_login_post_with_csrf_and_session_succeeds_or_shows_auth_error():
     assert r2.status_code == 200
 
 
-def test_login_csrf_ssl_strict_requires_referrer_behind_https_proxy():
+def test_login_csrf_ssl_strict_disabled_missing_referrer_behind_https_proxy_still_accepted():
+    """WTF_CSRF_SSL_STRICT is deliberately False (src/dashboard/app.py,
+    _configure_reverse_proxy_and_session): Cloudflare and privacy browsers
+    often omit Referer on POST, which would otherwise falsely fail CSRF for a
+    legitimate session/token pair. A valid token behind an HTTPS proxy with no
+    Referer must still be accepted -- this was previously asserted the other
+    way (expecting a 400), testing a stricter posture the team explicitly
+    moved away from for that reason.
+    """
     client = _csrf_enabled_client()
     https_env = {
         "HTTP_X_FORWARDED_PROTO": "https",
@@ -327,9 +340,16 @@ def test_login_csrf_ssl_strict_requires_referrer_behind_https_proxy():
         environ_overrides=https_env,
         follow_redirects=False,
     )
-    assert r.status_code == 400
-    assert b"CSRF failed" in r.data
+    # No Referer header was sent above; a valid CSRF token must still be
+    # accepted (not rejected as if it were a CSRF failure). The login itself
+    # then fails on bad credentials, which the app renders as 200 (re-shown
+    # login form) rather than a redirect.
+    assert r.status_code == 200
+    assert b"Session expired or blocked" not in r.data
 
+    # With a matching Referer present, the outcome is the same (200) -- proving
+    # Referer presence/absence no longer changes the CSRF outcome at all now
+    # that SSL_STRICT is off, rather than just happening to pass once.
     csrf2 = _csrf_token_from_login_page(
         client,
         environ_overrides={**https_env, "HTTP_REFERER": "https://ex.zellotex.com/login"},
@@ -341,6 +361,7 @@ def test_login_csrf_ssl_strict_requires_referrer_behind_https_proxy():
         follow_redirects=False,
     )
     assert r_ok.status_code == 200
+    assert b"Session expired or blocked" not in r_ok.data
 
 
 def test_production_session_cookie_secure_flag_configured(monkeypatch):
