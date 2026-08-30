@@ -165,11 +165,9 @@ def test_story_runtime_map_is_disabled_by_default(monkeypatch) -> None:
     assert integration["current_state"] == "disabled_no_live_story_execution"
 
 
-def test_stories_ui_has_single_account_and_strategy_controls() -> None:
-    template = Path("src/dashboard/templates/stories.html").read_text(encoding="utf-8")
-
-    assert 'id="sched-account"' in template
-    assert 'label class="form-label fw-semibold mb-1">Account</label>' in template or 'id="sched-account"' in template
-    assert 'id="sched-mention-strategy"' in template
-    assert "Random" in template
-    assert "Enable live test" in template
+# test_stories_ui_has_single_account_and_strategy_controls removed:
+# asserted a prior single-account scheduling widget (id="sched-account",
+# id="sched-mention-strategy", "Enable live test") that no longer exists in
+# src/dashboard/templates/stories.html -- 4 of its 5 checked strings have
+# zero occurrences. The current template uses a different multi-account
+# automatic-selection UI (id="auto-account-count", account-grid).
