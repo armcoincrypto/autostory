@@ -2086,6 +2086,50 @@ async function viewAutoActivity() {
   await viewCampaignActivity(_autoCampaign?.id || _activityCampaignId);
 }
 
+function humanizeActivityEvent(ev) {
+  // Translates durable SystemLog rows (component=autostory) into plain
+  // sentences. Falls back to the raw event code + wave/account suffix for
+  // anything not yet mapped, so a new event type is never silently hidden.
+  const d = ev.details || {};
+  const wave = d.wave_number != null ? d.wave_number : null;
+  const aid = ev.account_id != null ? ev.account_id : d.account_id;
+  switch (ev.event) {
+    case 'autostory.campaign.claimed':
+      return `Worker claimed the campaign${wave != null ? ` for wave ${wave}` : ''}` +
+        (d.account_count != null ? ` — ${d.account_count} account(s) scheduled.` : '.');
+    case 'autostory.campaign.started':
+      return `Campaign started — ${d.account_count ?? '—'} account(s).`;
+    case 'autostory.wave.started':
+      return `Wave ${wave ?? '—'} started — ${d.wave_size ?? '—'} account(s).`;
+    case 'autostory.wave.completed':
+      return `Wave ${wave ?? '—'} finished — ${d.successful ?? 0} succeeded, ${d.failed ?? 0} failed.`;
+    case 'autostory.campaign.completed':
+      return `Campaign completed — ${d.successful ?? 0} succeeded, ${d.failed ?? 0} failed.`;
+    case 'autostory.campaign.paused':
+      return `Campaign paused — ${d.reason || 'reason unavailable'}.`;
+    case 'autostory.account.started':
+      return `Account ${aid ?? '—'}: publish attempt started${wave != null ? ` (wave ${wave})` : ''}.`;
+    case 'autostory.account.published':
+      return `Account ${aid ?? '—'}: Story published` +
+        (d.telegram_story_id != null ? ` (Telegram story #${d.telegram_story_id})` : '') +
+        `${wave != null ? ` — wave ${wave}` : ''}.`;
+    case 'autostory.account.failed':
+      return `Account ${aid ?? '—'}: publish failed — ${d.error || 'unknown error'}${wave != null ? ` (wave ${wave})` : ''}.`;
+    case 'autostory.account.deferred': {
+      const cause = d.error || d.reason || 'deferred';
+      const until = d.blocked_until ? ` until ${String(d.blocked_until).replace('T', ' ').slice(0, 19)}` : '';
+      return `Account ${aid ?? '—'}: deferred — ${cause}${until}${wave != null ? ` (wave ${wave})` : ''}.`;
+    }
+    case 'autostory.authorization.revoked':
+      return `Wave authorization revoked — ${d.previously_authorized_count ?? 0} account(s) were authorized.`;
+    default: {
+      const waveSuf = wave != null ? ` · wave ${wave}` : '';
+      const aidSuf = aid != null ? ` · account ${aid}` : '';
+      return `${ev.event}${waveSuf}${aidSuf}`;
+    }
+  }
+}
+
 async function viewCampaignActivity(campaignId) {
   const campId = campaignId || _autoCampaign?.id;
   if (!campId) return;
@@ -2106,9 +2150,7 @@ async function viewCampaignActivity(campaignId) {
     if (d.campaign) setAutoCampaign(d.campaign);
     const lines = (d.events || []).map(ev => {
       const t = (ev.at || '').replace('T', ' ').replace('Z', '');
-      const wave = ev.details?.wave_number != null ? ` · wave ${ev.details.wave_number}` : '';
-      const aid = ev.account_id != null ? ` · account ${ev.account_id}` : '';
-      return `${t.slice(0, 19) || t} ${ev.event}${wave}${aid}`;
+      return `${t.slice(0, 19) || t} ${humanizeActivityEvent(ev)}`;
     });
     if (log) {
       log.textContent = lines.length
