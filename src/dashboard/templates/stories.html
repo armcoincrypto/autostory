@@ -1684,12 +1684,17 @@ function setAutoCampaign(camp) {
       const prog = a.progress || {};
       const success = prog.successful_count ?? a.waves_ok ?? 0;
       const maxPub = prog.max_story_publishes ?? a.max_story_publishes ?? total;
+      const hasShortfall = !!prog.shortfall;
       const nextLocal = a.next_wave_at
         ? (() => { const d = new Date(a.next_wave_at); return isNaN(d.getTime()) ? a.next_wave_at : d.toLocaleString(); })()
         : '—';
+      const dayLabel = (prog.day_number && prog.total_days)
+        ? ` · Day <strong>${escapeHtml(String(prog.day_number))} / ${escapeHtml(String(prog.total_days))}</strong>`
+        : '';
       status.innerHTML =
-        `<strong>Campaign #${a.id}</strong> · <span style="color:${pres.needs_attention ? 'var(--sc-warn)' : 'var(--sc-ink)'}">${escapeHtml(label)}</span>` +
-        ` · Progress <strong>${escapeHtml(String(success))} / ${escapeHtml(String(maxPub))}</strong>` +
+        `<strong>Campaign #${a.id}</strong> · <span style="color:${pres.needs_attention || hasShortfall ? 'var(--sc-warn)' : 'var(--sc-ink)'}">${escapeHtml(label)}</span>` +
+        dayLabel +
+        ` · Progress <strong style="${hasShortfall ? 'color:var(--sc-warn)' : ''}">${escapeHtml(String(success))} / ${escapeHtml(String(maxPub))}</strong>` +
         ` · next ${escapeHtml(nextLocal)}`;
       if (detail) {
         const mode = a.campaign_mode || 'accounts_publish_once';
@@ -1703,6 +1708,9 @@ function setAutoCampaign(camp) {
             : `Once · ${total} accounts · ${a.duration_days || '—'} day(s)`,
           `Window: ${a.awake_start_hhmm || '10:00'}–${a.awake_end_hhmm || '20:00'} local`,
         ];
+        if (hasShortfall) {
+          lines.push(`⚠ Shortfall: ${prog.shortfall} of ${maxPub} did not publish — ${prog.shortfall_reason || 'reason unavailable, see Activity'}.`);
+        }
         if (pres.detail || a.last_error) lines.push(pres.detail || `Error: ${a.last_error}`);
         detail.innerHTML = lines.map(escapeHtml).join('<br>');
         detail.style.display = '';
