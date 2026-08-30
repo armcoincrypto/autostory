@@ -243,6 +243,29 @@ def campaign_local_dates(
     return [start_local + timedelta(days=i) for i in range(days)]
 
 
+def campaign_current_day_number(
+    *,
+    started_at: datetime | None,
+    duration_days: int,
+    tz_name: str | None = None,
+) -> int:
+    """1-indexed current day of the campaign's local date range for "Day X/Y" display.
+
+    Clamped to [1, duration_days]: before the first local date this is day 1
+    (not yet started); on/after the last local date this is the final day
+    (campaign-local "today" caught up to or past the schedule).
+    """
+    dates = campaign_local_dates(started_at=started_at, duration_days=duration_days, tz_name=tz_name)
+    if not dates:
+        return 1
+    today = campaign_local_today(tz_name=tz_name)
+    if today <= dates[0]:
+        return 1
+    if today >= dates[-1]:
+        return len(dates)
+    return dates.index(today) + 1
+
+
 def recurring_campaign_ends_at(
     *,
     started_at: datetime,
@@ -594,6 +617,8 @@ def campaign_daily_progress_summary(db, campaign_id: int) -> dict[str, Any]:
     )
     success = sum(int(r.successful_count or 0) for r in rows)
     target = sum(int(r.target_count or 0) for r in rows)
+    failed = sum(int(r.failed_count or 0) for r in rows)
+    ambiguous = sum(int(r.ambiguous_count or 0) for r in rows)
     remaining = sum(
         max(0, int(r.target_count or 0) - int(r.successful_count or 0))
         for r in rows
@@ -605,14 +630,58 @@ def campaign_daily_progress_summary(db, campaign_id: int) -> dict[str, Any]:
         if not r.completed_for_day and int(r.ambiguous_count or 0) == 0
         and int(r.successful_count or 0) < int(r.target_count or 0)
     ]
+    # Shortfall on days already finalized (completed_for_day) -- excludes the
+    # still-in-progress current day, so an active multi-day campaign that is
+    # simply "not done yet" is never mistaken for one that fell short.
+    finalized_shortfall = sum(
+        max(0, int(r.target_count or 0) - int(r.successful_count or 0))
+        for r in rows
+        if r.completed_for_day
+    )
     return {
         "successful_count": success,
         "target_count": target,
+        "failed_count": failed,
+        "ambiguous_count": ambiguous,
         "remaining_count": remaining,
         "row_count": len(rows),
         "incomplete_rows": len(incomplete),
         "all_complete": len(rows) > 0 and len(incomplete) == 0,
+        "finalized_shortfall": finalized_shortfall,
     }
+
+
+def campaign_shortfall_reason(db, campaign_id: int, *, max_reasons: int = 3) -> str | None:
+    """Human-readable "why didn't every planned Story succeed" summary.
+
+    Reads the already-durable AutoStoryAccountProgress.error field (the last
+    recorded failure/deferral reason per account+wave slot) -- no new data
+    collection. Returns None when there is nothing to explain.
+    """
+    from collections import Counter
+
+    from src.core.models import AutoStoryAccountProgress
+
+    rows = (
+        db.query(AutoStoryAccountProgress)
+        .filter(
+            AutoStoryAccountProgress.campaign_id == int(campaign_id),
+            AutoStoryAccountProgress.status.notin_(("reconciled", "published", "ok")),
+            AutoStoryAccountProgress.error.isnot(None),
+        )
+        .all()
+    )
+    if not rows:
+        return None
+    reasons = Counter((r.error or "").strip()[:200] for r in rows if (r.error or "").strip())
+    if not reasons:
+        return None
+    top = reasons.most_common(max_reasons)
+    parts = [f"{reason} ({count})" for reason, count in top]
+    remainder = sum(reasons.values()) - sum(c for _, c in top)
+    if remainder > 0:
+        parts.append(f"other ({remainder})")
+    return f"{sum(reasons.values())} not published: " + ", ".join(parts)
 
 
 def select_next_recurring_wave_accounts(
