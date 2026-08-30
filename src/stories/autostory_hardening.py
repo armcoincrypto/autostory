@@ -36,7 +36,7 @@ async def ensure_fresh_story_auth_for_accounts(
     from src.core.models import Account
     from src.stories.client_lifecycle import open_controlled_story_client
     from src.stories.precheck import persist_precheck_result, run_story_precheck
-    from src.stories.story_auth_state import story_auth_is_fresh
+    from src.stories.story_auth_state import resolve_story_auth_state, story_auth_is_fresh
 
     refreshed: list[int] = []
     already_fresh: list[int] = []
@@ -50,6 +50,24 @@ async def ensure_fresh_story_auth_for_accounts(
                 continue
             if story_auth_is_fresh(acc):
                 already_fresh.append(aid)
+                continue
+            # story_auth_is_fresh() is only ever True for a fresh "allowed" result --
+            # a known cooldown (story_blocked_until in the future, e.g. from a prior
+            # STORIES_TOO_MUCH/FloodWait precheck) is NOT "fresh" but must still skip
+            # the remote call: attempting a known-blocked account again is pointless
+            # and, at the scheduler's 45s base tick, becomes a tight retry loop that
+            # hammers Telegram (confirmed in production, Campaign #18). Reuse the
+            # durable story_blocked_until field rather than a new mechanism.
+            auth_state = resolve_story_auth_state(acc, now=datetime.utcnow())
+            if auth_state.get("state") == "blocked":
+                failed.append(
+                    {
+                        "account_id": aid,
+                        "error": "story_auth_blocked_until_future",
+                        "reason": auth_state.get("reason") or "",
+                        "blocked_until": auth_state.get("blocked_until"),
+                    }
+                )
                 continue
 
         lease, err = await open_controlled_story_client(aid)

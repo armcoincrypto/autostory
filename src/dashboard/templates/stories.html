@@ -586,11 +586,11 @@
           <div class="col-md-4">
             <label class="form-label small mb-1" style="color:var(--sc-muted)">Stories per account per day</label>
             <select class="form-select form-select-sm" id="auto-spad" onchange="previewAutoScheduleDebounced()">
-              <option value="1" selected>1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
+              <option value="1" selected>1 — Production certified</option>
+              <option value="2">2 — Not yet certified</option>
+              <option value="3">3 — Not yet certified</option>
             </select>
-            <div class="small mt-1" style="color:var(--sc-muted)">Certified range 1–3. Additional same-day Stories use the time window, not back-to-back posts.</div>
+            <div class="small mt-1" style="color:var(--sc-muted)">Only 1 Story/account/day is production-certified today. 2 and 3 are architecturally supported (source-certified) but not yet production-certified — a real canary hit a Telegram Story capacity limit (STORIES_TOO_MUCH); see Activity for details. Additional same-day Stories use the time window, not back-to-back posts.</div>
           </div>
           <div class="col-md-4">
             <label class="form-label small mb-1" style="color:var(--sc-muted)">How many days?</label>

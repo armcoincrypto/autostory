@@ -87,7 +87,14 @@ async def run_story_precheck(client: TelegramClient, account_id: int) -> Dict[st
             elif hasattr(e, "retry_after") and e.retry_after is not None:
                 sec = int(e.retry_after)
             else:
-                # Regex: look for "X seconds", "retry_after=X", "400" (common in RPC errors), etc.
+                # Telethon's RPCError formats str(e) as "RPCError {code}: {message}
+                # (caused by ...)" -- code is an HTTP-style status (e.g. 400) with no
+                # wait-time meaning at all. Regex must run against the clean
+                # `.message` (e.g. "STORIES_TOO_MUCH"), never the full formatted
+                # string, or a plain digit scan will misread the status code itself
+                # as a wait time (confirmed in production: "RPCError 400:
+                # STORIES_TOO_MUCH" produced a bogus 400-second cooldown).
+                search_text = str(getattr(e, "message", None) or err_str)
                 import re
                 for pattern in [
                     r"[Ww]ait\s+(\d+)\s*(?:s|sec|seconds?)?",
@@ -95,9 +102,12 @@ async def run_story_precheck(client: TelegramClient, account_id: int) -> Dict[st
                     r"STORIES_TOO_MUCH(?:_|-)?(\d+)",
                     r"STORY_SEND_FLOOD(?:_|-)?(\d+)",
                     r"(\d+)\s*(?:s|sec|seconds?)\s*(?:to\s+)?(?:retry|wait)",
-                    r"\b(\d{2,5})\b",  # 2-5 digit number (avoid error codes like 400 that are too small for wait times)
+                    # Deliberately no generic "any N-digit number" fallback here --
+                    # Telegram's STORIES_TOO_MUCH message carries no reset time, and
+                    # guessing from an unrelated digit sequence is worse than the
+                    # explicit 24h fallback below.
                 ]:
-                    m = re.search(pattern, err_str)
+                    m = re.search(pattern, search_text)
                     if m:
                         v = int(m.group(1))
                         if 60 <= v <= 86400 * 32:  # 1min to 32 days

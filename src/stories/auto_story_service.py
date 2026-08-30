@@ -7,6 +7,7 @@ Manual-first: operator creates/starts a campaign and runs the first wave via
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,6 +29,17 @@ logger = structlog.get_logger(__name__)
 
 AWAKE_START_MINUTES = 10 * 60  # 10:00
 AWAKE_END_MINUTES = 20 * 60  # 20:00
+
+# Backoff applied to a whole-wave fresh-story-auth failure (e.g. every selected
+# account currently rate_limited/blocked/frozen). Matches the existing
+# BLOCKED_POLICY backoff for consistency. Without this, next_wave_at stays due
+# and the scheduler's 45s base loop (LOOP_INTERVAL_SEC) re-claims and re-runs
+# a fresh CanSendStoryRequest every tick -- confirmed in production (Campaign
+# #18, 2026-08-29) to repeat 100+ times over ~90 minutes for one rate-limited
+# account before ends_at forced completion.
+FRESH_AUTH_FAILURE_BACKOFF_MINUTES = int(
+    os.environ.get("AUTOSTORY_FRESH_AUTH_FAILURE_BACKOFF_MINUTES") or "15"
+)
 
 
 def _run_coro_sync(coro):  # type: ignore[no-untyped-def]
@@ -1338,7 +1350,42 @@ def execute_wave(
                     )
             account_ids_for_auth = [a for a in account_ids_for_auth if a not in failed_ids]
             if not account_ids_for_auth:
+                now = datetime.utcnow()
                 with get_db_context() as db:
+                    c = db.get(AutoStoryCampaign, camp_id_for_auth)
+                    if c is not None:
+                        c.last_error = "fresh_story_auth_failed"[:2000]
+                        c.updated_at = now
+                        # Same backoff as the BLOCKED_POLICY path above. Without this the
+                        # campaign's next_wave_at stays due, and the 45s scheduler loop
+                        # (LOOP_INTERVAL_SEC) re-claims and re-attempts a fresh
+                        # CanSendStoryRequest every tick -- confirmed in production to
+                        # repeat ~100+ times over ~90 minutes for a single rate-limited
+                        # account before ends_at forced the campaign to complete.
+                        if not operator_manual and require_scheduler_flag:
+                            c.next_wave_at = now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)
+                        db.commit()
+                    from src.stories.autostory_operator_preview import emit_autostory_system_log
+
+                    retry_at_iso = (now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)).isoformat()
+                    # Durable (SystemLog row), not just structlog: precheck failure detail
+                    # for a deferred wave was previously only visible via structlog, which
+                    # this incident showed is not reliably captured in production (no
+                    # journald/file record survived for the Slot 1 delay window).
+                    for item in fresh_gate["failed"]:
+                        emit_autostory_system_log(
+                            db,
+                            "autostory.account.deferred",
+                            level="WARNING",
+                            campaign_id=camp_id_for_auth,
+                            wave_number=wave_index_for_auth + 1,
+                            account_id=int(item["account_id"]),
+                            result="deferred",
+                            reason="fresh_story_auth_failed",
+                            error=str(item.get("error") or "")[:200],
+                            retry_at=retry_at_iso,
+                        )
+                    db.commit()
                     revoke_wave_authorization(db, camp_id_for_auth)
                     release_campaign_claim(db, camp_id_for_auth, worker_id=worker_id, force=True)
                 return {
