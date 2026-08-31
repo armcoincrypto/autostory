@@ -274,21 +274,25 @@ async def test_cleanup_releases_lock_when_disconnect_raises() -> None:
 async def test_controlled_execution_closes_client_when_publisher_raises(
     monkeypatch,
 ) -> None:
+    """Multi-account pipeline: _execute_controlled_live_story_run creates a
+    real StoryRun, runs _publish_one_account per account, then finalizes via
+    _finalize_multi_run (replaced the old single-account _finalize_run).
+    Uses a real in-memory DB rather than mocking finalize, since finalize now
+    does real StoryRun/StoryRunStep/SystemLog persistence -- this is a
+    stronger test than the original (less mocking, more real behavior)."""
     import src.core.execution_guard as guard
     import src.stories.client_lifecycle as lifecycle
     import src.stories.controlled_live_run as controlled
     import src.stories.publisher as publisher_module
 
-    class _RunDB:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    class _Context:
         def __enter__(self):
-            class _DB:
-                def add(self, obj):
-                    obj.id = 91
-
-                def flush(self):
-                    return None
-
-            return _DB()
+            return db
 
         def __exit__(self, *_args):
             return False
@@ -310,27 +314,20 @@ async def test_controlled_execution_closes_client_when_publisher_raises(
         raise RuntimeError("publisher failed")
 
     lease = _Lease()
-    monkeypatch.setattr(controlled, "get_db_context", lambda: _RunDB())
+    monkeypatch.setattr(controlled, "get_db_context", lambda: _Context())
     monkeypatch.setattr(guard, "require_execution_allowed", lambda *_a, **_k: None)
     monkeypatch.setattr(lifecycle, "open_controlled_story_client", _open)
     monkeypatch.setattr(publisher_module.story_publisher, "publish_story", _publish)
-    monkeypatch.setattr(
-        controlled,
-        "_finalize_run",
-        lambda **kwargs: {
-            "ok": kwargs["success"],
-            "error": kwargs["error"],
-        },
-    )
 
     result = await controlled._execute_controlled_live_story_run(
-        {"media_path": "/tmp/story.jpg", "mentions_per_story": 0},
+        {"account_ids": [140], "media_path": "/tmp/story.jpg", "mentions_per_story": 0},
         {"media": {"path": "/tmp/story.jpg"}},
     )
     assert result["ok"] is False
-    assert "publisher failed" in result["error"]
-    assert result["cleanup"]["ok"] is True
     assert lease.closes == 1
+    step = result["steps"][0]
+    assert step["error"] and "publisher failed" in step["error"]
+    assert step["cleanup"]["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -369,6 +366,9 @@ async def test_post_telegram_persistence_failure_is_ambiguous_without_retry(
     async def _no_pause(*_args, **_kwargs):
         return None
 
+    async def _fake_invoke_send_story(client, request, *, authorization, account_id):
+        return await client(request)
+
     client = _PublisherClient()
     account = SimpleNamespace(id=140)
     media = tmp_path / "story.jpg"
@@ -376,6 +376,15 @@ async def test_post_telegram_persistence_failure_is_ambiguous_without_retry(
     monkeypatch.setattr(guard, "require_execution_allowed", lambda *_a, **_k: None)
     monkeypatch.setattr(publisher_module, "get_db_context", lambda: _PersistenceFailure())
     monkeypatch.setattr(publisher_module.AntiDetection, "random_pause", _no_pause)
+    # Phase 1.1 mutation-boundary gate now runs inside publish_story before any
+    # Telegram call; bypass it the same way test_story_mention_handoff.py does,
+    # so this test still reaches the post-send persistence-failure path it
+    # actually exercises.
+    monkeypatch.setattr(
+        "src.stories.mutation_boundary.require_story_mutation_authorization",
+        lambda **_kwargs: SimpleNamespace(allowed=True, authorization=object(), denial_reason=None),
+    )
+    monkeypatch.setattr("src.stories.mutation_boundary.invoke_send_story", _fake_invoke_send_story)
 
     result = await StoryPublisher().publish_story(
         SimpleNamespace(client=client, account=account),
@@ -390,6 +399,13 @@ async def test_post_telegram_persistence_failure_is_ambiguous_without_retry(
 
 
 def test_ambiguous_result_is_persisted_on_existing_run(monkeypatch) -> None:
+    """_finalize_run was replaced by _finalize_multi_run (multi-account:
+    account_ids + step_results, not a single account_id). Same safety
+    property under test: a step whose publish_result carries
+    ambiguous_no_retry=True (Telegram accepted the send, but local
+    persistence then failed) must durably land as ambiguous_no_retry on the
+    StoryRun, the StoryRunStep, and a SystemLog row -- never silently
+    downgraded to an ordinary retryable failure."""
     import src.stories.controlled_live_run as controlled
 
     engine = create_engine("sqlite:///:memory:")
@@ -408,18 +424,28 @@ def test_ambiguous_result_is_persisted_on_existing_run(monkeypatch) -> None:
             return False
 
     monkeypatch.setattr(controlled, "get_db_context", lambda: _Context())
-    result = controlled._finalize_run(
+    step_results = [
+        {
+            "account_id": 140,
+            "success": False,
+            "error": "local_story_persistence_failed:RuntimeError: database unavailable",
+            "publish_result": {
+                "success": False,
+                "ambiguous_no_retry": True,
+                "telegram_accepted": True,
+                "story_id": 77,
+                "db_id": None,
+                "error": "local_story_persistence_failed",
+            },
+            "mention_plan": [],
+            "cleanup": {"ok": True, "errors": []},
+        }
+    ]
+    result = controlled._finalize_multi_run(
         run_id=run.id,
-        account_id=140,
-        success=False,
-        error="local_story_persistence_failed",
-        publish_result={
-            "ambiguous_no_retry": True,
-            "telegram_accepted": True,
-            "story_id": 77,
-            "error": "local_story_persistence_failed",
-        },
-        mention_plan=[],
+        account_ids=[140],
+        step_results=step_results,
+        flat_mention_plan=[],
     )
 
     db.refresh(run)
@@ -430,5 +456,9 @@ def test_ambiguous_result_is_persisted_on_existing_run(monkeypatch) -> None:
     assert result["result_classification"] == "AMBIGUOUS_NO_RETRY"
     assert run.status == "ambiguous_no_retry"
     assert step.status == "ambiguous_no_retry"
-    assert log.message == "controlled_story_run_ambiguous_no_retry"
+    assert step.account_id == 140
+    assert step.story_id is None  # db_id, not the Telegram story_id -- never resent as if unpublished
+    assert log.message == "controlled_story_multi_run_finished"
+    assert log.level == "WARNING"
+    assert log.details["status"] == "ambiguous_no_retry"
 
