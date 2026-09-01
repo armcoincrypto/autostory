@@ -587,10 +587,10 @@
             <label class="form-label small mb-1" style="color:var(--sc-muted)">Stories per account per day</label>
             <select class="form-select form-select-sm" id="auto-spad" onchange="previewAutoScheduleDebounced()">
               <option value="1" selected>1 — Production certified</option>
-              <option value="2">2 — Not yet certified</option>
-              <option value="3">3 — Not yet certified</option>
+              <option value="2">2 — Capability dependent</option>
+              <option value="3">3 — Not certified</option>
             </select>
-            <div class="small mt-1" style="color:var(--sc-muted)">Only 1 Story/account/day is production-certified today. 2 and 3 are architecturally supported (source-certified) but not yet production-certified — a real canary hit a Telegram Story capacity limit (STORIES_TOO_MUCH); see Activity for details. Additional same-day Stories use the time window, not back-to-back posts.</div>
+            <div class="small mt-1" style="color:var(--sc-muted)">1 Story/account/day is production-certified. 2 is capability dependent, not guaranteed: two real canaries each hit a genuine Telegram-side limit on a healthy account (a daily capacity cap, then a weekly flood cap) — Telegram may restrict some accounts, and AutoStory will never force publication beyond Telegram's capacity. 3 is not production-certified. See Activity for real per-account results.</div>
           </div>
           <div class="col-md-4">
             <label class="form-label small mb-1" style="color:var(--sc-muted)">How many days?</label>
