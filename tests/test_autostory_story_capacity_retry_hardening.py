@@ -700,3 +700,259 @@ def test_100_tick_simulation_log_volume_bounded(rec_db, monkeypatch):
 
     rows = db.query(SystemLog).filter(SystemLog.message == "autostory.account.deferred").count()
     assert rows == 1, f"expected exactly 1 durable record for an unchanged 24h cooldown, got {rows}"
+
+
+# ── G. blocked_until-aware next_wave_at scheduling (production Campaign #20:
+# a 24h weekly-flood block correctly stopped hammering Telegram, but the
+# scheduler still re-claimed and re-attempted the campaign every 15 minutes
+# for 8+ hours instead of respecting the block it already knew about) ──────
+
+
+def test_single_account_blocked_24h_100_ticks_near_zero_calls(rec_db, monkeypatch):
+    """The core Wave 1 fix: once blocked_until is known to be far out, the
+    scheduler must not keep re-claiming the campaign every
+    FRESH_AUTH_FAILURE_BACKOFF_MINUTES -- next_wave_at should jump straight to
+    (approximately) blocked_until, so a 100-tick / ~75-simulated-minute run
+    against a 24h block calls execute_wave close to once, not ~5 times (the
+    pre-fix 15-minute cadence over the same window)."""
+    from src.stories.auto_story_service import execute_wave
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid = _seed_account(db)
+    c = _campaign(db, [aid])
+    campaign_id = int(c.id)
+    blocked_until_dt = datetime.utcnow() + timedelta(hours=24)
+
+    call_count = {"n": 0}
+
+    async def _always_blocked(account_ids):
+        call_count["n"] += 1
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [
+                {
+                    "account_id": aid,
+                    "error": "story_auth_blocked_until_future",
+                    "reason": "RPCError 420: STORY_SEND_FLOOD_WEEKLY_x (caused by CanSendStoryRequest)",
+                    "blocked_until": blocked_until_dt.isoformat(),
+                }
+            ],
+            "ok": False,
+        }
+
+    monkeypatch.setattr(
+        "src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _always_blocked
+    )
+
+    LOOP_INTERVAL_SEC = 45
+    for _ in range(100):
+        row = db.get(AutoStoryCampaign, campaign_id)
+        if row.next_wave_at is not None and row.next_wave_at <= datetime.utcnow():
+            execute_wave(campaign_id, require_scheduler_flag=True, worker_id="sched")
+            db.commit()
+        row = db.get(AutoStoryCampaign, campaign_id)
+        if row.next_wave_at is not None:
+            row.next_wave_at -= timedelta(seconds=LOOP_INTERVAL_SEC)
+            db.commit()
+
+    # 100 ticks * 45s ~= 75 simulated minutes -- nowhere near the 24h block,
+    # so the campaign must only ever have been attempted once.
+    assert call_count["n"] == 1, (
+        f"expected exactly 1 execute_wave call across ~75 simulated minutes against a "
+        f"24h block, got {call_count['n']} (pre-fix: ~5, one every 15 minutes)"
+    )
+    refreshed = db.get(AutoStoryCampaign, campaign_id)
+    # next_wave_at should track blocked_until, not a flat +15min. The tick loop
+    # above keeps decrementing next_wave_at by LOOP_INTERVAL_SEC every
+    # iteration (simulating elapsed time) even after the one execute_wave call,
+    # so by the end of 100 ticks it has drifted down from blocked_until_dt by
+    # the full simulated ~75 minutes -- compare against that, not exact equality.
+    assert refreshed.next_wave_at is not None
+    expected_after_drift = blocked_until_dt - timedelta(seconds=100 * LOOP_INTERVAL_SEC)
+    assert abs((refreshed.next_wave_at - expected_after_drift).total_seconds()) < 5
+    # Sanity: still nowhere near "due" -- proves this isn't a flat +15min backoff.
+    assert refreshed.next_wave_at > datetime.utcnow() + timedelta(hours=20)
+
+
+@pytest.mark.asyncio
+async def test_25_accounts_1_blocked_24_continue(rec_db, monkeypatch):
+    """25 accounts (exactly MAX_AUTOSTORY_WAVE_SIZE): 1 genuinely blocked,
+    24 healthy. The fresh-auth gate must isolate exactly the 1 blocked
+    account -- no remote call for it -- while the other 24 get a real
+    (mocked) precheck call and are reported as refreshed/eligible to
+    continue in this same wave."""
+    db = rec_db
+    blocked_id = _seed_account(db, 0)
+    healthy_ids = [_seed_account(db, i) for i in range(1, 25)]
+    assert len(healthy_ids) == 24
+
+    acc = db.get(Account, blocked_id)
+    acc.story_precheck_status = "rate_limited"
+    acc.story_precheck_checked_at = datetime.utcnow()
+    acc.story_blocked_until = datetime.utcnow() + timedelta(hours=24)
+    db.commit()
+
+    remote_calls: list[int] = []
+
+    class _Lease:
+        def __init__(self):
+            self.wrapper = type("W", (), {"client": object()})()
+
+        async def close(self):
+            pass
+
+    async def _open(account_id):
+        remote_calls.append(account_id)
+        return _Lease(), None
+
+    async def _precheck(client, account_id):
+        return {"status": "allowed", "reason": "CanSendStory OK", "retry_after_seconds": None}
+
+    monkeypatch.setattr("src.stories.client_lifecycle.open_controlled_story_client", _open)
+    monkeypatch.setattr("src.stories.precheck.run_story_precheck", _precheck)
+
+    out = await ensure_fresh_story_auth_for_accounts([blocked_id, *healthy_ids])
+
+    assert sorted(remote_calls) == sorted(healthy_ids)  # blocked account skipped, no remote call
+    assert set(out["refreshed"]) == set(healthy_ids)
+    assert len(out["refreshed"]) == 24
+    assert [f["account_id"] for f in out["failed"]] == [blocked_id]
+
+
+def test_all_accounts_blocked_next_wave_at_uses_earliest_blocked_until(rec_db, monkeypatch):
+    """Multiple accounts, all blocked, with DIFFERENT blocked_until times --
+    next_wave_at must track the EARLIEST one (the first account that could
+    plausibly become eligible again), not the latest and not a flat backoff."""
+    from src.stories.auto_story_service import execute_wave
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid1 = _seed_account(db, 1)
+    aid2 = _seed_account(db, 2)
+    aid3 = _seed_account(db, 3)
+    c = _campaign(db, [aid1, aid2, aid3])
+    campaign_id = int(c.id)
+
+    now = datetime.utcnow()
+    earliest = now + timedelta(hours=2)
+    middle = now + timedelta(hours=10)
+    latest = now + timedelta(hours=24)
+
+    async def _mixed_blocks(account_ids):
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [
+                {"account_id": aid1, "error": "story_auth_blocked_until_future", "blocked_until": middle.isoformat()},
+                {"account_id": aid2, "error": "story_auth_blocked_until_future", "blocked_until": earliest.isoformat()},
+                {"account_id": aid3, "error": "story_auth_blocked_until_future", "blocked_until": latest.isoformat()},
+            ],
+            "ok": False,
+        }
+
+    monkeypatch.setattr(
+        "src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _mixed_blocks
+    )
+
+    result = execute_wave(campaign_id, require_scheduler_flag=True, worker_id="test-worker")
+    assert result["ok"] is False
+    assert result["error"] == "fresh_story_auth_failed"
+
+    refreshed = db.get(AutoStoryCampaign, campaign_id)
+    assert refreshed.next_wave_at is not None
+    assert abs((refreshed.next_wave_at - earliest).total_seconds()) < 5
+    # Never the middle or latest block time, and never earlier than the earliest.
+    assert refreshed.next_wave_at < middle
+    assert refreshed.next_wave_at < latest
+
+
+def test_blocked_until_exceeds_campaign_ends_at_no_pointless_polling(rec_db, monkeypatch):
+    """When the block outlasts the campaign, next_wave_at must not be set to a
+    time that will never usefully be reached -- no interim polling, and the
+    existing ends_at expiry sweep (tick_due_auto_story_campaigns) must still
+    complete the campaign honestly once ends_at passes."""
+    from src.stories.auto_story_service import execute_wave, tick_due_auto_story_campaigns
+
+    db = rec_db
+    _enable_execution_flags(monkeypatch)
+    _mock_policy_ok(monkeypatch)
+    _cert_ok(monkeypatch)
+    monkeypatch.setattr(
+        "src.stories.autostory_recurring.campaign_local_today", lambda **k: date(2026, 8, 29)
+    )
+    aid = _seed_account(db)
+    now = datetime.utcnow()
+    c = AutoStoryCampaign(
+        status="active",
+        account_ids=[aid],
+        media_path="/tmp/cert.jpg",
+        caption="cert",
+        mentions_per_story=0,
+        duration_days=1,
+        posts_per_day=1,
+        times_json=["10:00"],
+        campaign_mode=CAMPAIGN_MODE_RECURRING,
+        stories_per_account_per_day=1,
+        started_at=now - timedelta(hours=1),
+        ends_at=now + timedelta(hours=6),  # ends well before the block clears
+        next_wave_at=now,
+        awake_start_hhmm="10:00",
+        awake_end_hhmm="20:00",
+        explicit_operator_approval=True,
+        confirmation_token="I_CONFIRM_STORY_PUBLISH",
+    )
+    db.add(c)
+    db.commit()
+    ensure_daily_progress_rows(
+        db, campaign_id=int(c.id), account_ids=[aid], local_dates=[date(2026, 8, 29)], target_count=1
+    )
+    db.commit()
+    campaign_id = int(c.id)
+
+    blocked_until_dt = now + timedelta(hours=24)  # past ends_at
+
+    async def _long_block(account_ids):
+        return {
+            "already_fresh": [],
+            "refreshed": [],
+            "failed": [
+                {
+                    "account_id": aid,
+                    "error": "story_auth_blocked_until_future",
+                    "blocked_until": blocked_until_dt.isoformat(),
+                }
+            ],
+            "ok": False,
+        }
+
+    monkeypatch.setattr(
+        "src.stories.autostory_hardening.ensure_fresh_story_auth_for_accounts", _long_block
+    )
+
+    result = execute_wave(campaign_id, require_scheduler_flag=True, worker_id="test-worker")
+    assert result["ok"] is False
+
+    refreshed = db.get(AutoStoryCampaign, campaign_id)
+    # No point scheduling a retry that can never fire before the campaign ends.
+    assert refreshed.next_wave_at is None
+
+    # The pre-existing ends_at expiry sweep must still honestly complete the
+    # campaign once ends_at actually passes -- no manual intervention needed,
+    # and definitely no further polling in the interim (next_wave_at stayed None).
+    tick_due_auto_story_campaigns(now=refreshed.ends_at + timedelta(minutes=1))
+    db.commit()
+    final = db.get(AutoStoryCampaign, campaign_id)
+    assert final.status == "completed"
+    assert final.next_wave_at is None
