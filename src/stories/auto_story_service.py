@@ -1436,14 +1436,45 @@ def execute_wave(
                     if c is not None:
                         c.last_error = "fresh_story_auth_failed"[:2000]
                         c.updated_at = now
-                        # Same backoff as the BLOCKED_POLICY path above. Without this the
-                        # campaign's next_wave_at stays due, and the 45s scheduler loop
-                        # (LOOP_INTERVAL_SEC) re-claims and re-attempts a fresh
-                        # CanSendStoryRequest every tick -- confirmed in production to
-                        # repeat ~100+ times over ~90 minutes for a single rate-limited
+                        # Without this the campaign's next_wave_at stays due, and the 45s
+                        # scheduler loop (LOOP_INTERVAL_SEC) re-claims and re-attempts a
+                        # fresh CanSendStoryRequest every tick -- confirmed in production
+                        # to repeat ~100+ times over ~90 minutes for a single rate-limited
                         # account before ends_at forced the campaign to complete.
+                        #
+                        # blocked_until-aware: a flat FRESH_AUTH_FAILURE_BACKOFF_MINUTES
+                        # retry is correct when we don't know how long an account will
+                        # stay blocked, but every account here already reported a real
+                        # story_blocked_until (e.g. a 24h weekly-flood block, confirmed in
+                        # production Campaign #20) -- retrying every 15 minutes for hours
+                        # before that time is pointless, safe-but-wasteful polling. Never
+                        # retry earlier than the earliest account's own blocked_until.
                         if not operator_manual and require_scheduler_flag:
-                            c.next_wave_at = now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)
+                            from src.stories.rotation_audit import parse_dt
+
+                            blocked_untils = [
+                                dt
+                                for dt in (
+                                    parse_dt(item.get("blocked_until"))
+                                    for item in fresh_gate["failed"]
+                                )
+                                if dt is not None
+                            ]
+                            candidate = (
+                                min(blocked_untils)
+                                if blocked_untils
+                                else now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)
+                            )
+                            candidate = max(candidate, now)
+                            if c.ends_at is not None and candidate >= c.ends_at:
+                                # Nothing can become eligible before the campaign ends --
+                                # leave next_wave_at unset so no further ticks poll this
+                                # campaign; tick_due_auto_story_campaigns already auto-
+                                # completes it once ends_at passes (honest shortfall,
+                                # zero pointless polling in the interim).
+                                c.next_wave_at = None
+                            else:
+                                c.next_wave_at = candidate
                         db.commit()
                     retry_at_iso = (now + timedelta(minutes=FRESH_AUTH_FAILURE_BACKOFF_MINUTES)).isoformat()
                     # Durable (SystemLog row), not just structlog: precheck failure detail
