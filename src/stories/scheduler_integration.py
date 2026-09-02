@@ -17,10 +17,19 @@ _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 CONTROLLED_EXECUTION_FLAG = "CONTROLLED_STORY_EXECUTION_ENABLED"
 CONTROLLED_ACCOUNT_FLAG = "CONTROLLED_STORY_ACCOUNT_ID"
 SCHEDULER_EXECUTION_FLAG = "SCHEDULER_STORY_EXECUTION_ENABLED"
+CAMPAIGN_CREATION_FLAG = "AUTOSTORY_CAMPAIGN_CREATION_ENABLED"
 
 
 def _enabled(name: str) -> bool:
     return os.environ.get(name, "false").strip().lower() in _TRUE_VALUES
+
+
+def autostory_campaign_creation_enabled() -> bool:
+    """AutoStory product retirement freeze (2026-09-03): fail-closed, distinct
+    from scheduler/controlled execution flags -- those already gate whether a
+    campaign can ever *run*, but nothing previously gated whether a new one
+    could be *created* at all. See docs/AUTOSTORY_RETIRED_20260903.md."""
+    return _enabled(CAMPAIGN_CREATION_FLAG)
 
 
 def controlled_story_execution_enabled() -> bool:

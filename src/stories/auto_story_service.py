@@ -442,6 +442,18 @@ def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
         recurring_campaign_ends_at,
     )
 
+    from src.stories.scheduler_integration import autostory_campaign_creation_enabled
+
+    if not autostory_campaign_creation_enabled():
+        return {
+            "ok": False,
+            "error": "autostory_retired",
+            "message": (
+                "AutoStory campaign creation is disabled. AutoStory has been "
+                "retired as a product -- see docs/AUTOSTORY_RETIRED_20260903.md."
+            ),
+        }
+
     media_raw = str(payload.get("media_path") or "").strip()
     if not media_raw:
         return {"ok": False, "error": "media_path_required"}
@@ -805,6 +817,17 @@ def pause_campaign(campaign_id: int) -> dict[str, Any]:
 
 def activate_campaign(campaign_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     from src.stories.autostory_media import validate_campaign_media
+    from src.stories.scheduler_integration import autostory_campaign_creation_enabled
+
+    if not autostory_campaign_creation_enabled():
+        return {
+            "ok": False,
+            "error": "autostory_retired",
+            "message": (
+                "AutoStory campaign activation is disabled. AutoStory has been "
+                "retired as a product -- see docs/AUTOSTORY_RETIRED_20260903.md."
+            ),
+        }
 
     confirmation = str(payload.get("confirmation_token") or "").strip()
     approval = payload.get("explicit_operator_approval") is True
@@ -1118,6 +1141,20 @@ def execute_wave(
             "error": "scheduler_story_execution_disabled",
             "campaign_id": int(campaign_id),
         }
+    if operator_manual:
+        from src.stories.scheduler_integration import autostory_campaign_creation_enabled
+
+        if not autostory_campaign_creation_enabled():
+            # AutoStory retirement freeze (2026-09-03): "Run now" is operator-manual
+            # and deliberately bypasses require_scheduler_flag above by design, so it
+            # needs its own explicit block rather than relying only on the general
+            # story_mutations_enabled() gate below.
+            return {
+                "ok": False,
+                "skipped": True,
+                "error": "autostory_retired",
+                "campaign_id": int(campaign_id),
+            }
     if not story_mutations_enabled():
         return {
             "ok": False,
