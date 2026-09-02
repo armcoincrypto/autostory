@@ -200,6 +200,11 @@ def test_pause_activate_cancel_are_state_only(hard_db, monkeypatch):
     )
     from src.stories.mutation_boundary import get_provider_call_count, reset_provider_call_counter
 
+    # AutoStory retirement freeze (2026-09-03): activate_campaign now requires
+    # explicit re-enablement in production; this test still exercises the
+    # underlying state-machine behavior, which is unchanged.
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
+
     @contextmanager
     def _ctx():
         try:

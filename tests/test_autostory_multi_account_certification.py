@@ -687,6 +687,7 @@ def test_no_duplicate_account_lock_across_wave_authorization(rec_db, monkeypatch
 def test_pause_resume_large_campaign_no_repeat_of_completed_accounts(rec_db, monkeypatch):
     from src.stories.auto_story_service import activate_campaign, pause_campaign
 
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
     _cert_ok(monkeypatch)
     db = rec_db
     ids = _seed_accounts(db, 50)
@@ -890,6 +891,7 @@ def test_allow_fewer_reduces_selected_count_not_stories_per_day(rec_db, monkeypa
 def test_create_campaign_blocks_shortfall_unless_acknowledged(rec_db, monkeypatch):
     from src.stories.auto_story_service import create_campaign
 
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
     _cert_ok(monkeypatch)
     db = rec_db
     _seed_accounts(db, 47)

@@ -371,6 +371,7 @@ def test_recurring_monotonic_wave_indexes(rec_db, monkeypatch):
 def test_recurring_pause_resume_same_day(rec_db, monkeypatch):
     from src.stories.auto_story_service import activate_campaign, pause_campaign
 
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
     _cert_ok(monkeypatch)
     db = rec_db
     ids = _seed_accounts(db, 1)
@@ -405,6 +406,7 @@ def test_recurring_pause_resume_same_day(rec_db, monkeypatch):
 def test_recurring_pause_resume_next_day(rec_db, monkeypatch):
     from src.stories.auto_story_service import activate_campaign, pause_campaign
 
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
     _cert_ok(monkeypatch)
     db = rec_db
     ids = _seed_accounts(db, 1)
@@ -866,6 +868,7 @@ def test_recurring_ends_at_blocks_slot_past_final_local_day():
 def test_activate_campaign_recurring_sets_tightened_ends_at(rec_db, monkeypatch):
     from src.stories.auto_story_service import activate_campaign
 
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
     _cert_ok(monkeypatch)
     db = rec_db
     ids = _seed_accounts(db, 1)
@@ -909,6 +912,7 @@ def test_activate_campaign_legacy_keeps_wall_clock_ends_at(rec_db, monkeypatch):
     """accounts_publish_once must retain its existing ends_at semantics unchanged."""
     from src.stories.auto_story_service import activate_campaign
 
+    monkeypatch.setenv("AUTOSTORY_CAMPAIGN_CREATION_ENABLED", "true")
     _cert_ok(monkeypatch)
     db = rec_db
     ids = _seed_accounts(db, 1)
