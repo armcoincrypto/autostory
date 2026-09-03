@@ -21,6 +21,18 @@ OPERATOR_STATUSES = (
     "CHECK_REQUIRED",
 )
 
+# Owner-facing health vocabulary (PROTECTED/RESERVED present as Unavailable).
+OWNER_HEALTH_LABELS = {
+    "READY": "Ready",
+    "CERTIFIED": "Certified",
+    "NEEDS_SESSION": "Needs session",
+    "BLOCKED": "Blocked",
+    "CHECK_REQUIRED": "Check required",
+    "DISABLED": "Disabled",
+    "PROTECTED": "Unavailable",
+    "RESERVED": "Unavailable",
+}
+
 _DEFAULT_TTL_HOURS = 24
 
 _BLOCKED_CLASSIFICATIONS = frozenset(
@@ -46,6 +58,17 @@ _SESSION_REASON_MARKERS = frozenset(
     }
 )
 
+_SORT_PRIORITY = {
+    "BLOCKED": 0,
+    "NEEDS_SESSION": 1,
+    "CHECK_REQUIRED": 2,
+    "READY": 10,
+    "CERTIFIED": 11,
+    "DISABLED": 20,
+    "PROTECTED": 30,
+    "RESERVED": 31,
+}
+
 
 def _matrix_helpers():
     """Lazy import keeps this mapper free of Telegram/session certification deps."""
@@ -59,7 +82,8 @@ def _matrix_helpers():
     return load_latest_matrix, matrix_freshness, account_rows_by_id, FLEET_MATRIX_FRESH_TTL_HOURS
 
 
-def _iso_display(value: Any) -> str | None:
+def format_operator_timestamp(value: Any) -> str | None:
+    """UTC display timestamp for operator tables (no secrets)."""
     if value is None:
         return None
     text = str(value).strip()
@@ -75,6 +99,10 @@ def _iso_display(value: Any) -> str | None:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
     return f"{dt.strftime('%B')} {dt.day}, {dt.strftime('%Y %H:%M')} UTC"
+
+
+# Back-compat alias used by older call sites / tests.
+_iso_display = format_operator_timestamp
 
 
 def _role_label(role: str | None) -> str:
@@ -95,24 +123,32 @@ def _blocked_reason(row: dict[str, Any]) -> str:
     reasons = [str(r) for r in (row.get("reason_codes") or [])]
     summary = (row.get("safe_error_summary") or "").strip()
     if classification == "AUTH_FAILED":
-        return summary or "Unauthorized"
+        if summary and "not authorized" in summary.lower():
+            return "Authentication failed"
+        return summary or "Authentication failed"
     if classification == "IDENTITY_MISMATCH":
         return "Identity mismatch"
     if classification == "STORY_CAPABILITY_FAILED":
-        return "Story capability denied"
+        return "Story publishing not allowed"
     if classification == "SESSION_CONFLICT":
         return "Session conflict"
     if classification == "SESSION_CORRUPT":
         return "Session unusable"
     if classification == "FLOOD_WAIT":
-        return "Flood wait / rate limited"
+        return "Temporarily rate limited"
     if classification == "BANNED":
         return "Account banned or deactivated"
+    if classification == "COUNTER_INVALID":
+        return "Session counter invalid"
     if summary:
         return summary[:120]
     if reasons:
         return reasons[0].replace("_", " ")
     return classification.replace("_", " ").title()
+
+
+def sort_priority_for_status(display_status: str) -> int:
+    return int(_SORT_PRIORITY.get(str(display_status or ""), 50))
 
 
 def map_canonical_account(
@@ -141,8 +177,8 @@ def map_canonical_account(
     ):
         display_status = "DISABLED"
         status_label = "Disabled"
-        status_detail = "No action required"
-        authorization_label = "Not checked"
+        status_detail = "Intentionally disabled"
+        authorization_label = "Unavailable"
         required_action = "None"
         severity = "info"
         diagnostic_reason = "purpose_disabled" if str(row.get("purpose") or "").lower() == "disabled" else "account_disabled"
@@ -151,9 +187,9 @@ def map_canonical_account(
         classification == "INTENTIONALLY_EXCLUDED" and role == "PROTECTED_CONTROLLER"
     ):
         display_status = "PROTECTED"
-        status_label = "Protected"
-        status_detail = "Not available for Stories"
-        authorization_label = "Not applicable"
+        status_label = "Unavailable"
+        status_detail = "Protected — not for Stories"
+        authorization_label = "Unavailable"
         required_action = "None"
         severity = "danger"
         diagnostic_reason = "protected_controller"
@@ -162,18 +198,18 @@ def map_canonical_account(
         classification == "INTENTIONALLY_EXCLUDED" and role == "AI_OR_INFRASTRUCTURE_RESERVED"
     ):
         display_status = "RESERVED"
-        status_label = "Reserved"
-        status_detail = "Not available for Stories"
-        authorization_label = "Not applicable"
+        status_label = "Unavailable"
+        status_detail = "Reserved — not for Stories"
+        authorization_label = "Unavailable"
         required_action = "None"
         severity = "reserved"
         diagnostic_reason = "ai_or_infrastructure_reserved"
         row_action = "view_details"
     elif classification == "INTENTIONALLY_EXCLUDED":
         display_status = "PROTECTED"
-        status_label = "Protected"
-        status_detail = "Not available for Stories"
-        authorization_label = "Not applicable"
+        status_label = "Unavailable"
+        status_detail = "Excluded — not for Stories"
+        authorization_label = "Unavailable"
         required_action = "None"
         severity = "danger"
         diagnostic_reason = "intentionally_excluded"
@@ -183,8 +219,8 @@ def map_canonical_account(
     ):
         display_status = "NEEDS_SESSION"
         status_label = "Needs session"
-        status_detail = "Import or restore session"
-        authorization_label = "Not configured"
+        status_detail = "Session setup required"
+        authorization_label = "Needs login/session"
         required_action = "Import or restore session"
         severity = "warning"
         diagnostic_reason = "session_missing" if "session_missing" in reasons or row.get("session_present") is False else "config_incomplete"
@@ -194,7 +230,9 @@ def map_canonical_account(
         reason = _blocked_reason(row)
         status_label = "Blocked"
         status_detail = reason
-        authorization_label = "Unauthorized" if classification == "AUTH_FAILED" else "Not ready"
+        authorization_label = (
+            "Needs login/session" if classification in {"AUTH_FAILED", "SESSION_CORRUPT", "SESSION_CONFLICT"} else "Not ready"
+        )
         required_action = reason
         severity = "danger"
         diagnostic_reason = classification.lower()
@@ -203,9 +241,9 @@ def map_canonical_account(
         # Never present stale READY/CERTIFIED as current truth.
         display_status = "CHECK_REQUIRED"
         status_label = "Check required"
-        status_detail = "Run authorization probe"
-        authorization_label = "Probe expired"
-        required_action = "Run authorization probe"
+        status_detail = "Health check required"
+        authorization_label = "Needs check"
+        required_action = "Refresh fleet authorization"
         severity = "warning"
         diagnostic_reason = "canonical_matrix_stale"
         row_action = "view_details"
@@ -218,7 +256,7 @@ def map_canonical_account(
         display_status = "CERTIFIED"
         status_label = "Certified"
         status_detail = "Ready to use"
-        authorization_label = "Auth OK"
+        authorization_label = "Authorized"
         required_action = "None"
         severity = "success"
         diagnostic_reason = "durable_controlled_story_evidence"
@@ -232,7 +270,7 @@ def map_canonical_account(
         display_status = "READY"
         status_label = "Ready"
         status_detail = "Can run controlled Story"
-        authorization_label = "Auth OK"
+        authorization_label = "Authorized"
         required_action = "Controlled canary"
         severity = "success"
         diagnostic_reason = "ready_for_separate_controlled_canary"
@@ -240,9 +278,9 @@ def map_canonical_account(
     else:
         display_status = "CHECK_REQUIRED"
         status_label = "Check required"
-        status_detail = "Run authorization probe"
-        authorization_label = "Unknown"
-        required_action = "Run authorization probe"
+        status_detail = "Health check required"
+        authorization_label = "Needs check"
+        required_action = "Refresh fleet authorization"
         severity = "warning"
         diagnostic_reason = "unmapped_or_incomplete_probe"
         row_action = "view_details"
@@ -261,6 +299,19 @@ def map_canonical_account(
             "Previously completed controlled Story certification and passed the "
             "latest canonical authorization probe."
         )
+    elif display_status == "CHECK_REQUIRED":
+        tooltip = "Certification evidence is missing or expired — not necessarily a broken account."
+
+    filter_group = {
+        "READY": "ready",
+        "CERTIFIED": "ready",
+        "NEEDS_SESSION": "needs_attention",
+        "BLOCKED": "needs_attention",
+        "CHECK_REQUIRED": "needs_attention",
+        "DISABLED": "unavailable",
+        "PROTECTED": "unavailable",
+        "RESERVED": "unavailable",
+    }.get(display_status, "all")
 
     return {
         "account_id": aid,
@@ -279,17 +330,10 @@ def map_canonical_account(
         "diagnostic_reason": diagnostic_reason,
         "row_action": row_action,
         "tooltip": tooltip,
+        "sort_priority": sort_priority_for_status(display_status),
         "last_checked": row.get("last_auth_at") or freshness.get("source_audit_completed_at") or freshness.get("generated_at"),
-        "filter_group": {
-            "READY": "ready",
-            "CERTIFIED": "certified",
-            "NEEDS_SESSION": "needs_attention",
-            "BLOCKED": "needs_attention",
-            "CHECK_REQUIRED": "needs_attention",
-            "DISABLED": "disabled",
-            "PROTECTED": "reserved_protected",
-            "RESERVED": "reserved_protected",
-        }.get(display_status, "all"),
+        "last_story_at_matrix": row.get("last_story_at"),
+        "filter_group": filter_group,
         "canonical": {
             "classification": classification,
             "intended_operational_role": role,
@@ -309,6 +353,7 @@ def map_canonical_account(
             "required_operator_action": row.get("required_operator_action"),
             "last_auth_at": row.get("last_auth_at"),
             "last_story_at": row.get("last_story_at"),
+            "flood_wait_seconds": row.get("flood_wait_seconds"),
         },
     }
 
@@ -350,7 +395,7 @@ def summarize_operator_accounts(mapped: list[dict[str, Any]], *, freshness: dict
                 "Live fleet probe"
                 if freshness.get("label") == "FRESH_LIVE_PROBE"
                 else (
-                    "Readiness expired — run a fresh probe"
+                    "Readiness expired — health check required"
                     if not freshness.get("fresh")
                     else "Cached matrix"
                 )
@@ -393,7 +438,7 @@ def build_operator_account_views(
             except (KeyError, TypeError, ValueError):
                 continue
     mapped = [map_canonical_account(row, freshness=freshness) for row in (matrix or {}).get("accounts") or []]
-    mapped.sort(key=lambda r: int(r["account_id"]))
+    mapped.sort(key=lambda r: (sort_priority_for_status(r["display_status"]), int(r["account_id"])))
     summary = summarize_operator_accounts(mapped, freshness=freshness)
     return {
         "accounts": mapped,

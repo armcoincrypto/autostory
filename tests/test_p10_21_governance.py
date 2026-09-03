@@ -115,7 +115,7 @@ def test_accounts_main_template_has_governance_badges() -> None:
     assert "operator_summary" in text
     assert "openGovernanceModal" in text
     assert "governanceModal" in text
-    assert "Campaign governance" in text
+    assert "Govern" in text
 
 
 def test_accounts_main_page_injects_eligibility_preview_fallback(monkeypatch) -> None:

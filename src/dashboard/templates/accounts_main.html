@@ -69,9 +69,12 @@
   }
   .filter-btn.active { background: #334155; color: #fff; }
   .diag-block { color: #cbd5e1; font-size: .82rem; }
+  .diag-block h4 { color: #e2e8f0; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; margin: .85rem 0 .35rem; }
+  .diag-block h4:first-child { margin-top: 0; }
   .diag-block code { color: #e2e8f0; }
   .gov-pin { color: #fde68a; margin-right: .2rem; }
   .row-hidden { display: none !important; }
+  .stale-warn { color: #fde68a; font-weight: 700; }
 </style>
 {% endblock %}
 
@@ -85,18 +88,16 @@
       <p class="text-uppercase text-muted small fw-bold mb-2" style="letter-spacing:.16em">Operator Workspace</p>
       <h1 class="h2 mb-2"><i class="bi bi-people"></i> Accounts</h1>
       <p class="text-muted mb-0">
-        Daily account management. Advanced recovery remains in
+        Fleet health and account actions. Advanced recovery remains in
         <a class="link-light" href="/accounts-v2">Diagnostics View</a>.
       </p>
     </div>
     <div class="d-flex gap-2 flex-wrap">
-      <span class="ops-badge ops-info">{{ os.total_accounts }} total accounts</span>
-      <span class="ops-badge ops-success">{{ os.authorized }} Story-authorized</span>
+      <span class="ops-badge ops-info">{{ os.total_accounts }} total</span>
+      <span class="ops-badge ops-success">{{ os.authorized }} authorized</span>
       <span class="ops-badge ops-success">{{ os.certified }} certified</span>
-      <span class="ops-badge ops-success">{{ os.ready }} ready</span>
-      <span class="ops-badge ops-warning">{{ os.needs_session }} needs session</span>
-      <span class="ops-badge ops-info">{{ os.disabled }} disabled</span>
-      <span class="ops-badge ops-reserved">{{ os.protected + os.reserved }} reserved/protected</span>
+      <span class="ops-badge ops-warning">{{ os.needs_attention }} needs attention</span>
+      <span class="ops-badge ops-reserved">{{ os.unavailable }} unavailable</span>
       <span class="ops-badge ops-warning">Story automation locked</span>
     </div>
   </div>
@@ -104,7 +105,7 @@
 
 <div class="lock-banner mb-3" role="status">
   Automatic Story publishing is currently locked.
-  Accounts marked Ready or Certified are authorized, but publishing still requires an approved operator workflow.
+  Certified/Ready accounts are authorized, but publishing still requires an approved operator workflow on Stories.
 </div>
 
 <section class="accounts-action-panel mb-4" aria-label="Account operator actions">
@@ -154,20 +155,21 @@
 <section class="eligibility-panel" aria-label="Story account readiness">
   <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
     <div>
-      <p class="text-uppercase text-muted small fw-bold mb-1" style="letter-spacing:.14em">Story account readiness</p>
+      <p class="text-uppercase text-muted small fw-bold mb-1" style="letter-spacing:.14em">Fleet health</p>
       <h2 class="h6 mb-0">Current account readiness</h2>
     </div>
-    <span class="ops-badge ops-info">Automatic publishing: Locked</span>
+    <span class="ops-badge {% if fc.fresh %}ops-success{% else %}ops-warning{% endif %}">
+      {% if fc.fresh %}Fresh{% else %}Stale — health check required{% endif %}
+    </span>
   </div>
   <div class="d-flex flex-wrap gap-2 mb-2">
-    <span class="ops-badge ops-info">Story Accounts</span>
-    <span class="ops-badge ops-success">Authorized: {{ os.authorized }}</span>
     <span class="ops-badge ops-success">Certified: {{ os.certified }}</span>
     <span class="ops-badge ops-success">Ready: {{ os.ready }}</span>
     <span class="ops-badge ops-warning">Needs attention: {{ os.needs_attention }}</span>
+    <span class="ops-badge ops-danger">Blocked: {{ os.blocked }}</span>
     <span class="ops-badge ops-reserved">Unavailable: {{ os.unavailable }}</span>
   </div>
-  <div class="small text-muted mb-2">
+  <div class="small {% if not fc.fresh %}stale-warn{% else %}text-muted{% endif %} mb-2">
     Last verified: {{ fc.last_verified or 'Unknown' }}
     · Valid for: {{ fc.valid_for_hours }} hours
     · Source: {{ fc.source_label }}
@@ -177,8 +179,8 @@
     <div class="diag-block mt-2">
       <div>Canonical source: <code>{{ canonical_source }}</code></div>
       <div>Freshness label: {{ fc.label }} · Audit: {{ fc.source_audit_run_id or '—' }} · Generated: {{ fc.generated_at or '—' }}</div>
-      <div>Scheduler eligible preview: {{ eligibility_scheduler.summary.eligible }} · Discovery eligible preview: {{ eligibility_discovery.summary.eligible }}</div>
-      <div>Disabled {{ os.disabled }} · Protected {{ os.protected }} · Reserved {{ os.reserved }} · Blocked {{ os.blocked }} · Check required {{ os.check_required }}</div>
+      <div>Disabled {{ os.disabled }} · Protected {{ os.protected }} · Reserved {{ os.reserved }} · Check required {{ os.check_required }}</div>
+      <div>Page load Telegram calls: {{ page_perf.external_telegram_calls_on_page_load if page_perf else 0 }}</div>
     </div>
   </details>
 </section>
@@ -189,28 +191,25 @@
       {% for key, label in [
         ('all', 'All'),
         ('ready', 'Ready'),
-        ('certified', 'Certified'),
-        ('needs_attention', 'Needs Attention'),
-        ('disabled', 'Disabled'),
-        ('reserved_protected', 'Reserved / Protected')
+        ('needs_attention', 'Needs attention'),
+        ('unavailable', 'Disabled / unavailable')
       ] %}
       <button type="button" class="btn btn-outline-light filter-btn {% if default_filter == key %}active{% endif %}" data-filter="{{ key }}">{{ label }}</button>
       {% endfor %}
     </div>
-    <input id="account-search" class="form-control form-control-sm" style="max-width:280px" placeholder="Search ID, username, phone, Telegram ID">
+    <input id="account-search" class="form-control form-control-sm" style="max-width:280px" placeholder="Search account">
   </div>
   <div class="table-responsive">
     <table class="table table-hover accounts-table mb-0" id="accounts-main-table">
       <thead>
         <tr>
-          <th>ID</th>
           <th>Account</th>
-          <th>Story Status</th>
-          <th>Authorization</th>
-          <th>Role</th>
-          <th>Required Action</th>
+          <th>Health</th>
+          <th>Auth</th>
           <th>Last Checked</th>
-          <th></th>
+          <th>Last Story</th>
+          <th>Current Job</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -218,47 +217,82 @@
         <tr class="account-row"
             data-filter-group="{{ account.filter_group }}"
             data-search="{{ account.id }} {{ account.label }} {{ account.phone }} {{ account.username }} {{ account.telegram_user_id or '' }}">
-          <td class="fw-bold">{% if account.pinned %}<span class="gov-pin" title="Pinned">★</span>{% endif %}#{{ account.id }}</td>
           <td>
-            <div class="acct-primary">{{ account.label }}</div>
-            {% if account.username %}<div class="acct-secondary">@{{ account.username.lstrip('@') }}</div>{% endif %}
+            <div class="acct-primary">
+              {% if account.pinned %}<span class="gov-pin" title="Pinned">★</span>{% endif %}
+              {{ account.label }}
+              <span class="acct-secondary">#{{ account.id }}</span>
+            </div>
+            {% if account.username and account.username.lstrip('@') not in account.label %}
+            <div class="acct-secondary">@{{ account.username.lstrip('@') }}</div>
+            {% endif %}
+            {% if account.role_chip %}
+            <div class="acct-secondary">{{ account.role_chip }}</div>
+            {% endif %}
           </td>
           <td>
             <span class="ops-badge ops-{{ account.severity }}" {% if account.tooltip %}title="{{ account.tooltip }}"{% endif %}>
               {{ account.status_label }}
             </span>
+            {% if account.status_detail and account.status_detail not in ['Ready to use', 'None', 'No action required'] %}
             <div class="acct-secondary mt-1">{{ account.status_detail }}</div>
-          </td>
-          <td><span class="ops-badge ops-{{ 'success' if account.authorization_label == 'Auth OK' else ('warning' if account.authorization_label in ['Not configured','Probe expired','Unknown'] else 'info') }}">{{ account.authorization_label }}</span></td>
-          <td>{{ account.role_label }}</td>
-          <td>{{ account.required_action }}</td>
-          <td class="acct-secondary">{{ account.last_checked or '—' }}</td>
-          <td class="text-nowrap">
-            {% if account.row_action == 'import_session' %}
-            <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#accountActionModal" data-action-tab="session">Import session</button>
             {% endif %}
+          </td>
+          <td>
+            {% set auth = account.authorization_label %}
+            <span class="ops-badge ops-{{ 'success' if auth == 'Authorized' else ('warning' if auth in ['Needs login/session', 'Needs check', 'Not ready'] else 'info') }}">{{ auth }}</span>
+          </td>
+          <td class="acct-secondary {% if not matrix_fresh %}stale-warn{% endif %}">{{ account.last_checked or '—' }}</td>
+          <td class="acct-secondary">{{ account.last_story_label or 'Never' }}</td>
+          <td class="acct-secondary">{{ account.current_job_label or 'Idle' }}</td>
+          <td class="text-nowrap">
             <button class="btn btn-sm btn-outline-light" type="button" data-bs-toggle="collapse" data-bs-target="#diag-{{ account.id }}">Details</button>
+            {% if account.can_import_session and not account.is_unavailable %}
+            <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#accountActionModal" data-action-tab="session">Fix session</button>
+            {% endif %}
+            {% if account.can_open_stories %}
+            <a class="btn btn-sm btn-outline-success" href="/stories">Story</a>
+            {% endif %}
           </td>
         </tr>
         <tr class="account-diag account-row" data-filter-group="{{ account.filter_group }}" data-search="{{ account.id }} {{ account.label }} {{ account.phone }} {{ account.username }} {{ account.telegram_user_id or '' }}">
-          <td colspan="8" class="p-0 border-0">
+          <td colspan="7" class="p-0 border-0">
             <div class="collapse" id="diag-{{ account.id }}">
               <div class="diag-block p-3 border-bottom border-secondary">
-                <div><strong>Canonical classification:</strong> {{ account.canonical.classification or '—' }}</div>
-                <div><strong>Account status:</strong> {{ account.status }} · <strong>Purpose:</strong> {{ account.purpose }}</div>
-                <div><strong>Telegram user ID:</strong> {{ account.telegram_user_id or account.canonical.telegram_user_id or '—' }}</div>
-                <div><strong>Configured username:</strong> {{ account.username or '—' }}</div>
-                <div><strong>Authorization result:</strong> {{ account.canonical.auth_valid }} · identity {{ account.canonical.identity_matches }}</div>
-                <div><strong>Story capability:</strong> {{ account.canonical.story_probe_status or account.canonical.story_api_available }}</div>
-                <div><strong>Last live probe:</strong> {{ account.canonical.last_auth_at or account.last_checked or '—' }}</div>
-                <div><strong>Readiness freshness:</strong> {{ fc.label }} ({{ fc.source_label }})</div>
-                <div><strong>Scheduler eligibility:</strong> {{ 'eligible' if account.scheduler_eligible else 'blocked' }} · <strong>Discovery:</strong> {{ 'eligible' if account.discovery_eligible else 'blocked' }}</div>
-                <div><strong>Campaign governance:</strong> {{ account.modules.campaigns.label }}</div>
-                <div><strong>Execution flag status:</strong> Automatic publishing locked</div>
-                <div><strong>Disable / diagnostic reason:</strong> {{ account.diagnostic_reason }}</div>
-                <div><strong>Session source status:</strong> present={{ account.canonical.session_present }} readable={{ account.canonical.session_readable }} type={{ account.canonical.session_type or '—' }}</div>
-                <div><strong>Reason codes:</strong> {{ (account.canonical.reason_codes or [])|join(', ') or '—' }}</div>
-                <div class="mt-2">
+                <h4>Account</h4>
+                <div>ID: <code>#{{ account.id }}</code> · Label: {{ account.label }} · Username: {{ account.username or '—' }}</div>
+                <div>Role: {{ account.role_label }} · Status: {{ account.status }} · Purpose: {{ account.purpose }}</div>
+                <div>Telegram user ID: {{ account.telegram_user_id or account.canonical.telegram_user_id or '—' }}</div>
+                {% if account.safety_note %}<div>Restriction: {{ account.safety_note }}</div>{% endif %}
+
+                <h4>Authentication</h4>
+                <div>Session present: {{ account.canonical.session_present }} · readable: {{ account.canonical.session_readable }} · type: {{ account.canonical.session_type or '—' }}</div>
+                <div>Auth result: {{ account.canonical.auth_valid }} · identity: {{ account.canonical.identity_matches }}</div>
+                <div>Last auth check: {{ account.canonical.last_auth_at or account.last_checked or '—' }}</div>
+                <div>Reason: {{ account.canonical.safe_error_summary or account.status_detail or '—' }}</div>
+
+                <h4>Story readiness</h4>
+                <div>Classification: {{ account.canonical.classification or '—' }} · Certified evidence: {{ account.canonical.controlled_publish_certified }}</div>
+                <div>Story capability: {{ account.canonical.story_probe_status or account.canonical.story_api_available }}</div>
+                <div>Last successful Story: {{ account.last_story_label }} · Stories today: {{ account.stories_today }}</div>
+                <div>Readiness freshness: {{ fc.label }} ({{ fc.source_label }})</div>
+
+                <h4>Operational</h4>
+                <div>Current job: {{ account.current_job_label }}</div>
+                <div>FloodWait / rate limit: {{ account.flood_wait }}</div>
+                <div>Diagnostic code: <code>{{ account.diagnostic_reason }}</code></div>
+                <div>Reason codes: {{ (account.canonical.reason_codes or [])|join(', ') or '—' }}</div>
+
+                <h4>Proxy</h4>
+                <div>{{ account.proxy.label if account.proxy else 'Not configured' }}</div>
+
+                <div class="mt-3 d-flex flex-wrap gap-2">
+                  {% if account.can_import_session and not account.is_unavailable %}
+                  <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#accountActionModal" data-action-tab="session">Import session</button>
+                  {% endif %}
+                  {% if account.can_open_stories %}
+                  <a class="btn btn-sm btn-outline-success" href="/stories">Open Stories</a>
+                  {% endif %}
                   <button class="btn btn-sm btn-outline-light" onclick="openGovernanceModal({{ account.id }})">Govern</button>
                   <a class="btn btn-sm btn-outline-secondary" href="/accounts-v2">Diagnostics View</a>
                 </div>
@@ -273,8 +307,8 @@
 </section>
 
 <p class="text-muted small mt-3 mb-0">
-  Generated {{ generated_at }}. Opening this page does not change purpose, eligibility,
-  scheduler state, campaigns, or Telegram sessions.
+  Generated {{ generated_at }}. Opening this page does not call Telegram, change sessions,
+  scheduler state, campaigns, or publish Stories.
 </p>
 
 <div class="modal fade" id="accountActionModal" tabindex="-1" aria-hidden="true">

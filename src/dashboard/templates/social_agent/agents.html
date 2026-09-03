@@ -13,6 +13,15 @@
   <div class="row g-3">
     {% for a in agents %}
     <div class="col-md-6 col-xl-4">
+      {% if a.status == 'inactive' %}
+      <div class="sa-card h-100" style="opacity:.72;">
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+          <h2 class="h5 mb-0">{{ a.display_name }}</h2>
+          <span class="sa-status blocked">{{ a.status }}</span>
+        </div>
+        <p class="sa-muted mb-0">{{ a.description }}</p>
+      </div>
+      {% else %}
       <a href="{{ a.route }}" class="sa-card d-block text-decoration-none h-100" style="color:inherit;">
         <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
           <h2 class="h5 mb-0">{{ a.display_name }}</h2>
@@ -20,6 +29,7 @@
         </div>
         <p class="sa-muted mb-0">{{ a.description }}</p>
       </a>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

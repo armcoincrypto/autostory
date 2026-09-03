@@ -216,9 +216,7 @@
                     <a class="nav-link {% if request.path.startswith('/operator') %}active{% endif %}" href="/operator">
                         <i class="bi bi-shield-check"></i> Operator
                     </a>
-                    <a class="nav-link {% if request.path == '/ai-agent' %}active{% endif %}" href="/ai-agent">
-                        <i class="bi bi-robot"></i> AI Agent
-                    </a>
+                    {# Wave 1: AI Agent page route missing (404). Hidden until Messages/Agents restores it. #}
                     <a class="nav-link {% if request.path == '/ai-coding' %}active{% endif %}" href="/ai-coding">
                         <i class="bi bi-cpu"></i> AI Coding
                     </a>
