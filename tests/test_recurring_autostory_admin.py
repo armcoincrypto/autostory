@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -382,22 +381,9 @@ def test_preview_recurring_max_formula(monkeypatch):
     assert preview.get("mentions_off") is True
 
 
-def test_ui_primary_has_schedule_cta_no_pickup_slots_day():
-    html = Path("src/dashboard/templates/stories.html").read_text(encoding="utf-8")
-    # Primary CTA
-    assert "Schedule AutoStory" in html
-    # Must not expose old primary label
-    assert "Pickup slots / day" not in html
-    assert "Pickup slots/day" not in html
-    # Primary approve dual CTA removed
-    assert "Approve &amp; Schedule" not in html
-    assert "Approve &amp; Run" not in html
-    assert 'id="btn-auto-approve"' in html
-    assert "Stories per account per day" in html
-    assert 'id="auto-spad"' in html
-    assert 'option value="1"' in html
-    assert 'option value="2"' in html
-    assert 'option value="3"' in html
-    assert "readonly" not in html.split('id="auto-spad"', 1)[1][:400]
-    assert "Mentions stay Off" in html
-    assert "auto-mentions-locked" in html
+# test_ui_primary_has_schedule_cta_no_pickup_slots_day removed 2026-09-03:
+# checked AutoStory campaign-creation UI (Schedule AutoStory CTA, auto-spad
+# picker) that no longer exists -- AutoStory retired as a product, see
+# docs/AUTOSTORY_RETIRED_20260903.md. The backend logic these other tests in
+# this file exercise (spad clamping, campaign_mode resolution, wave caps,
+# preview formula) is untouched and still covered above.
