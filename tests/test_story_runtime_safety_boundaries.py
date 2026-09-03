@@ -132,19 +132,22 @@ def test_legacy_story_flag_authorizes_neither_execution_purpose(monkeypatch) -> 
     assert scheduler_story_execution_enabled() is False
 
 
-def test_scheduler_tick_remains_hard_disabled_when_flag_true(monkeypatch) -> None:
-    import asyncio
+def test_autostory_scheduler_tick_was_removed_not_just_gated() -> None:
+    """AutoStory retirement (2026-09-03): maybe_tick_story_rotation() -- the
+    AutoStory scheduler tick registration this test used to call and prove
+    fail-closed -- no longer exists at all, which is a stronger guarantee
+    than fail-closed. The shared scheduler loop (job generation, claim,
+    execute -- the general Scheduler product) is unaffected; it simply no
+    longer references AutoStory in any way."""
+    import inspect
 
-    from src.stories.scheduler_integration import maybe_tick_story_rotation
+    import src.scheduler.worker as worker
+    import src.stories.scheduler_integration as scheduler_integration
 
-    monkeypatch.setenv("SCHEDULER_STORY_EXECUTION_ENABLED", "true")
-    result = asyncio.run(maybe_tick_story_rotation())
-    assert result["skipped"] is True
-    # Fail-closed: mutations kill switch and/or certification gate keep tick inert.
-    assert result["reason"] in {
-        "scheduler_story_execution_not_certified",
-        "story_mutations_disabled",
-    }
+    assert not hasattr(scheduler_integration, "maybe_tick_story_rotation")
+    loop_source = inspect.getsource(worker.run_scheduler_loop)
+    assert "maybe_tick_story_rotation" not in loop_source
+    assert "auto_story" not in loop_source.lower()
 
 
 class _FakeLock:
