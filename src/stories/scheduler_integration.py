@@ -126,21 +126,7 @@ def build_story_scheduler_integration_map() -> dict[str, Any]:
     }
 
 
-async def maybe_tick_story_rotation() -> dict[str, Any]:
-    """Tick due Auto Story campaigns when scheduler Story execution is enabled."""
-    integration = build_story_scheduler_integration_map()
-    if not integration["story_execution_enabled"]:
-        return {
-            "skipped": True,
-            "reason": "scheduler_story_execution_disabled",
-            "integration": integration,
-        }
-    from src.stories.auto_story_service import tick_due_auto_story_campaigns
-
-    tick = tick_due_auto_story_campaigns()
-    return {
-        "skipped": bool(tick.get("skipped")),
-        "reason": tick.get("reason"),
-        "integration": integration,
-        "auto_story": tick,
-    }
+# maybe_tick_story_rotation() -- the AutoStory scheduler tick registration --
+# was removed 2026-09-03 as part of the AutoStory product retirement. The
+# shared scheduler loop (src/scheduler/worker.py) no longer calls it or
+# anything in auto_story_service.py. See docs/AUTOSTORY_RETIRED_20260903.md.

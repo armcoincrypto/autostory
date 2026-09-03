@@ -10,7 +10,7 @@ from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
 from .generator import generate_jobs_for_date
 from .executor import execute_job
 from .job_claim import claim_due_job
-from src.stories.scheduler_integration import maybe_tick_story_rotation, story_execution_enabled
+from src.stories.scheduler_integration import story_execution_enabled
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -79,9 +79,10 @@ async def run_scheduler_loop():
                     logger.error("Job execution failed", job_id=jid, error=str(e))
                 await asyncio.sleep(2)
 
-            # P10.18: keep Story Rotation integration visible but disabled until
-            # explicit operator approval sets STORY_EXECUTION_ENABLED=true.
-            await maybe_tick_story_rotation()
+            # AutoStory retirement (2026-09-03): this loop no longer ticks Auto
+            # Story campaigns at all -- see docs/AUTOSTORY_RETIRED_20260903.md.
+            # Everything above (job generation, claim, execute) is the general
+            # Scheduler product and is unaffected.
 
         except Exception as e:
             logger.error("Scheduler loop error", error=str(e))
