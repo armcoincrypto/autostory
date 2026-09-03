@@ -10,7 +10,9 @@
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
     <h2 class="mb-0"><i class="bi bi-speedometer2"></i> Dashboard</h2>
     <div class="d-flex flex-wrap gap-2">
-        <a href="/scheduler" class="btn btn-primary"><i class="bi bi-calendar-week"></i> Go to Scheduler</a>
+        <a href="/accounts" class="btn btn-outline-light"><i class="bi bi-people"></i> Accounts</a>
+        <a href="/stories" class="btn btn-outline-light"><i class="bi bi-collection-play"></i> Stories</a>
+        <a href="/scheduler" class="btn btn-primary"><i class="bi bi-calendar-week"></i> Scheduler</a>
         <button class="btn btn-outline-secondary" type="button" onclick="refreshStats()">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
@@ -46,7 +48,8 @@
     <div class="col-md-3">
         <div class="card stat-card text-white">
             <div class="card-body">
-                <h6 class="card-subtitle mb-2 opacity-75">Active Campaigns</h6>
+                {# Wave 4: marketing campaigns table is unused — keep counter, avoid product language #}
+                <h6 class="card-subtitle mb-2 opacity-75">Legacy campaign records</h6>
                 <div class="stat-value" id="stat-campaigns">-</div>
             </div>
         </div>
@@ -62,16 +65,20 @@
             </div>
             <div class="card-body">
                 <div class="d-grid gap-2 mb-3">
+                    <a class="btn btn-outline-light" href="/accounts"><i class="bi bi-people"></i> Accounts</a>
+                    <a class="btn btn-outline-light" href="/stories"><i class="bi bi-collection-play"></i> Stories</a>
+                    <a class="btn btn-outline-light" href="/scheduler"><i class="bi bi-calendar-week"></i> Scheduler</a>
+                    <a class="btn btn-outline-light" href="/broadcast"><i class="bi bi-megaphone-fill"></i> Broadcast</a>
+                    <a class="btn btn-outline-light" href="/agents"><i class="bi bi-grid-3x3-gap"></i> Agents</a>
                     <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
                         <i class="bi bi-plus-circle"></i> Add New Account
                     </button>
                 </div>
-                <div class="text-muted small text-uppercase mb-2" style="letter-spacing:.04em;">Advanced — server paths &amp; power tools</div>
-                <p class="small text-muted mb-2">Prefer <a href="/stories">Stories</a> or <a href="/scheduler">Scheduler</a> for routine publishing and campaigns.</p>
                 <div class="alert alert-secondary py-2 px-3 small mb-2 mb-0">
                     <i class="bi bi-lock-fill me-1"></i> Live publishing is locked. Use <a href="/stories">Stories</a> dry-run first.
                 </div>
                 <div class="d-grid gap-2 mt-2">
+                    <a class="btn btn-outline-secondary btn-sm" href="/advanced"><i class="bi bi-tools"></i> Advanced tools</a>
                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#scanChannelModal">
                         <i class="bi bi-search"></i> Scan Channel
                     </button>

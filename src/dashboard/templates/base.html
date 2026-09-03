@@ -192,6 +192,7 @@
                     <i class="bi bi-broadcast"></i> STORYFLEET
                 </div>
                 <nav class="nav flex-column">
+                    {# Wave 4: owner nav = working products only. Technical tools live under Advanced. #}
                     <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">
                         <i class="bi bi-speedometer2"></i> Dashboard
                     </a>
@@ -202,33 +203,18 @@
                         <i class="bi bi-collection-play"></i> Stories
                     </a>
                     {# Wave 3: Fleet Readiness owner page removed — health lives on /accounts. Backend matrix/API kept. #}
-                    <a class="nav-link {% if request.path == '/discovery' %}active{% endif %}" href="/discovery">
-                        <i class="bi bi-search"></i> Discovery
-                    </a>
-                    <a class="nav-link {% if request.path == '/campaigns' %}active{% endif %}" href="/campaigns">
-                        <i class="bi bi-megaphone"></i> Campaigns
-                    </a>
+                    {# Wave 4: Campaigns / Discovery / Operator / AI Coding / Social Agent / Dexpert removed from top-level. #}
                     <a class="nav-link {% if request.path == '/scheduler' %}active{% endif %}" href="/scheduler">
                         <i class="bi bi-calendar-week"></i> Scheduler
-                    </a>
-                    <a class="nav-link {% if request.path.startswith('/operator') %}active{% endif %}" href="/operator">
-                        <i class="bi bi-shield-check"></i> Operator
-                    </a>
-                    {# Wave 1: AI Agent page route missing (404). Hidden until Messages/Agents restores it. #}
-                    <a class="nav-link {% if request.path == '/ai-coding' %}active{% endif %}" href="/ai-coding">
-                        <i class="bi bi-cpu"></i> AI Coding
                     </a>
                     <a class="nav-link {% if request.path == '/broadcast' %}active{% endif %}" href="/broadcast">
                         <i class="bi bi-megaphone-fill"></i> Broadcast
                     </a>
-                    <a class="nav-link {% if request.path == '/agents' or request.path.startswith('/social-agent') %}active{% endif %}" href="/agents">
+                    <a class="nav-link {% if request.path == '/agents' or request.path.startswith('/social-agent') or request.path.startswith('/ai-agent') %}active{% endif %}" href="/agents">
                         <i class="bi bi-grid-3x3-gap"></i> Agents
                     </a>
-                    <a class="nav-link {% if request.path.startswith('/social-agent') %}active{% endif %}" href="/social-agent">
-                        <i class="bi bi-share"></i> Social Agent
-                    </a>
-                    <a class="nav-link {% if request.path == '/dexpert' %}active{% endif %}" href="/dexpert">
-                        <i class="bi bi-shield-check"></i> Dexpert
+                    <a class="nav-link {% if request.path == '/advanced' or request.path.startswith('/operator') or request.path == '/discovery' or request.path.startswith('/ai-coding') or request.path == '/dexpert' %}active{% endif %}" href="/advanced">
+                        <i class="bi bi-tools"></i> Advanced
                     </a>
                     <a class="nav-link mt-3" href="/logout" style="color:#94a3b8;">
                         <i class="bi bi-box-arrow-right"></i> Log out

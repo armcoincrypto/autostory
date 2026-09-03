@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Advanced - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h2 class="mb-1"><i class="bi bi-tools"></i> Advanced</h2>
+    <p class="text-muted mb-0">Technical and operator tools. Day-to-day account health, Stories, Scheduler, Broadcast, and Agents live in the main sidebar.</p>
+</div>
+
+<div class="row g-3">
+    <div class="col-md-6">
+        <a href="/operator" class="card text-decoration-none h-100" style="color:inherit;">
+            <div class="card-body">
+                <h5 class="card-title mb-2"><i class="bi bi-shield-check"></i> Operator</h5>
+                <p class="card-text text-muted mb-0">Targets, bindings, jobs, gateway, deliveries, and system safety.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6">
+        <a href="/discovery" class="card text-decoration-none h-100" style="color:inherit;">
+            <div class="card-body">
+                <h5 class="card-title mb-2"><i class="bi bi-search"></i> Discovery</h5>
+                <p class="card-text text-muted mb-0">User discovery tooling for channel scans and known users.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6">
+        <a href="/ai-coding" class="card text-decoration-none h-100" style="color:inherit;">
+            <div class="card-body">
+                <h5 class="card-title mb-2"><i class="bi bi-cpu"></i> AI Coding</h5>
+                <p class="card-text text-muted mb-0">Developer factory reviews, builds, and release tooling.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6">
+        <a href="/dexpert" class="card text-decoration-none h-100" style="color:inherit;">
+            <div class="card-body">
+                <h5 class="card-title mb-2"><i class="bi bi-clipboard-data"></i> Dexpert</h5>
+                <p class="card-text text-muted mb-0">Internal diagnostics and audit surfaces.</p>
+            </div>
+        </a>
+    </div>
+</div>
+{% endblock %}

@@ -2229,8 +2229,15 @@ def discovery_page():
 @web.route('/campaigns')
 @login_required
 def campaigns_page():
-    """Campaigns page"""
+    """Legacy marketing Campaigns CRUD — owner nav removed (Wave 4)."""
     return render_template('campaigns.html')
+
+
+@web.route('/advanced')
+@login_required
+def advanced_page():
+    """Owner landing for technical/operator tools (Wave 4 navigation)."""
+    return render_template('advanced.html')
 
 
 @web.route('/scheduler')
