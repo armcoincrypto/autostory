@@ -198,12 +198,10 @@
                     <a class="nav-link {% if request.path == '/accounts' %}active{% endif %}" href="/accounts">
                         <i class="bi bi-people"></i> Accounts
                     </a>
-                    <a class="nav-link {% if request.path == '/stories' or request.path == '/stories/fleet-readiness' %}active{% endif %}" href="/stories">
+                    <a class="nav-link {% if request.path == '/stories' %}active{% endif %}" href="/stories">
                         <i class="bi bi-collection-play"></i> Stories
                     </a>
-                    <a class="nav-link {% if request.path == '/stories/fleet-readiness' %}active{% endif %}" href="/stories/fleet-readiness">
-                        <i class="bi bi-clipboard-check"></i> Fleet Readiness
-                    </a>
+                    {# Wave 3: Fleet Readiness owner page removed — health lives on /accounts. Backend matrix/API kept. #}
                     <a class="nav-link {% if request.path == '/discovery' %}active{% endif %}" href="/discovery">
                         <i class="bi bi-search"></i> Discovery
                     </a>

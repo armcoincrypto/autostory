@@ -390,6 +390,17 @@
 {% block extra_js %}
 <script>
 const DEFAULT_FILTER = {{ default_filter|tojson }};
+const ALLOWED_FILTERS = new Set(['all', 'ready', 'needs_attention', 'unavailable']);
+function requestedFilter() {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('filter') || '';
+    // Accept legacy hyphenated alias from Fleet Readiness redirect.
+    const normalized = raw === 'needs-attention' ? 'needs_attention' : raw;
+    return ALLOWED_FILTERS.has(normalized) ? normalized : null;
+  } catch (_) {
+    return null;
+  }
+}
 function applyAccountFilters() {
   const active = document.querySelector('.filter-btn.active')?.dataset.filter || DEFAULT_FILTER;
   const q = (document.getElementById('account-search')?.value || '').trim().toLowerCase();
@@ -409,7 +420,13 @@ document.querySelectorAll('.filter-btn').forEach((btn) => {
   });
 });
 document.getElementById('account-search')?.addEventListener('input', applyAccountFilters);
-applyAccountFilters();
+(function initAccountFilterFromUrl() {
+  const wanted = requestedFilter() || DEFAULT_FILTER;
+  const match = Array.from(document.querySelectorAll('.filter-btn')).find((b) => b.dataset.filter === wanted);
+  document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+  (match || document.querySelector('.filter-btn'))?.classList.add('active');
+  applyAccountFilters();
+})();
 
 let _govAccountId = null;
 function openGovernanceModal(accountId) {

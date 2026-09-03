@@ -1,11 +1,11 @@
-"""Read-only fleet Story readiness matrix for operators.
+"""Fleet readiness routes.
 
-Uses the shared operator presentation mapper and the canonical
-``/opt/autostory/data/fleet-readiness/latest.json`` artifact.
+Wave 3: the owner HTML page redirects to `/accounts` (canonical health UI).
+The JSON API and matrix backend remain for operators/automation.
 """
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, jsonify, redirect
 from flask_login import login_required
 
 from src.stories.fleet_readiness_matrix import load_latest_matrix, matrix_freshness
@@ -17,21 +17,9 @@ fleet_readiness_bp = Blueprint("fleet_readiness", __name__)
 @fleet_readiness_bp.route("/stories/fleet-readiness")
 @login_required
 def fleet_readiness_page():
-    matrix = load_latest_matrix()
-    freshness = matrix_freshness(matrix)
-    views = build_operator_account_views(matrix, freshness=freshness)
-    if matrix is not None:
-        matrix = {**matrix, "freshness": {**(matrix.get("freshness") or {}), **freshness}}
-    return render_template(
-        "fleet_readiness.html",
-        matrix=matrix,
-        totals=(matrix or {}).get("totals") or {},
-        accounts=(matrix or {}).get("accounts") or [],
-        operator_accounts=views["accounts"],
-        operator_summary=views["summary"],
-        freshness=freshness,
-        freshness_compact=views["summary"]["freshness_compact"],
-    )
+    """Owner HTML page retired — send operators to canonical Accounts health."""
+    # Hard path avoids depending on which endpoint name currently owns /accounts.
+    return redirect("/accounts?filter=needs_attention", code=302)
 
 
 @fleet_readiness_bp.route("/api/stories/fleet-readiness")
