@@ -204,7 +204,7 @@
                     </a>
                     {# Wave 3: Fleet Readiness owner page removed — health lives on /accounts. Backend matrix/API kept. #}
                     {# Wave 4: Campaigns / Discovery / Operator / AI Coding / Social Agent / Dexpert removed from top-level. #}
-                    <a class="nav-link {% if request.path == '/scheduler' %}active{% endif %}" href="/scheduler">
+                    <a class="nav-link {% if request.path == '/scheduler' or request.path.startswith('/scheduler/') %}active{% endif %}" href="/scheduler">
                         <i class="bi bi-calendar-week"></i> Scheduler
                     </a>
                     <a class="nav-link {% if request.path == '/broadcast' %}active{% endif %}" href="/broadcast">

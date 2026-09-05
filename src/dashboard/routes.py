@@ -2243,8 +2243,23 @@ def advanced_page():
 @web.route('/scheduler')
 @login_required
 def scheduler_page():
-    """Scheduler configuration page"""
-    return render_template('scheduler.html')
+    """Owner-facing Scheduler: upcoming + recent jobs (Wave 5)."""
+    from flask import request as flask_request
+
+    from src.core.database import get_db_context
+    from src.dashboard.scheduler_owner_presentation import build_owner_scheduler_view
+
+    filt = (flask_request.args.get("filter") or "all").strip().lower()
+    with get_db_context() as db:
+        view = build_owner_scheduler_view(db, filter_key=filt)
+    return render_template("scheduler.html", view=view)
+
+
+@web.route('/scheduler/setup')
+@login_required
+def scheduler_setup_page():
+    """Technical schedule setup (targets/bindings/templates) — not primary owner IA."""
+    return render_template('scheduler_setup.html')
 
 
 # ============================================

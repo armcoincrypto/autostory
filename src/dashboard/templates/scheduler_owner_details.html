@@ -1,0 +1,56 @@
+{# Shared Details collapse body for scheduler owner rows. Expects ``row``. #}
+<div class="p-3">
+  <div class="row g-3">
+    <div class="col-md-6">
+      <h6 class="text-muted text-uppercase small">Task</h6>
+      <ul class="list-unstyled mb-0">
+        <li>Job ID: {{ row.job_id }}</li>
+        <li>Type: {{ row.type_label }} <span class="text-muted">({{ row.type_raw }})</span></li>
+        <li>Scheduled: {{ row.scheduled_at }}</li>
+        <li>Created: {{ row.created_at }}</li>
+        <li>Status: {{ row.status_label }} <span class="text-muted">({{ row.status_raw }})</span></li>
+        {% if row.short_reason %}<li>Reason: {{ row.short_reason }}</li>{% endif %}
+      </ul>
+    </div>
+    <div class="col-md-6">
+      <h6 class="text-muted text-uppercase small">Account</h6>
+      <ul class="list-unstyled mb-3">
+        <li>{{ row.account_label }}</li>
+        <li class="text-muted">ID {{ row.account_id }}</li>
+      </ul>
+      <h6 class="text-muted text-uppercase small">Target</h6>
+      <ul class="list-unstyled mb-0">
+        <li>{{ row.target_label }}</li>
+        <li class="text-muted">ID {{ row.target_id }}{% if row.target_chat_type %} · {{ row.target_chat_type }}{% endif %}</li>
+      </ul>
+    </div>
+    <div class="col-md-6">
+      <h6 class="text-muted text-uppercase small">Delivery</h6>
+      {% if row.delivery %}
+      <ul class="list-unstyled mb-0">
+        <li>Status: {{ row.delivery.status or '—' }}</li>
+        <li>Sent: {{ row.delivery.sent_at }}</li>
+        {% if row.delivery.error_code %}<li>Error code: {{ row.delivery.error_code }}</li>{% endif %}
+        {% if row.delivery.error_message %}<li>Error: {{ row.delivery.error_message }}</li>{% endif %}
+      </ul>
+      {% else %}
+      <p class="text-muted mb-0">No delivery record for this task.</p>
+      {% endif %}
+    </div>
+    <div class="col-md-6">
+      <details>
+        <summary class="text-muted small user-select-none" style="cursor:pointer;">Scheduler diagnostics</summary>
+        <ul class="list-unstyled small mt-2 mb-0">
+          <li>Raw status: {{ row.diagnostics.raw_status }}</li>
+          <li>Attempts: {{ row.attempts }}</li>
+          <li>Lease until: {{ row.diagnostics.lease_until }}</li>
+          <li>Lease owner: {{ row.diagnostics.lease_owner or '—' }}</li>
+          <li>Template ID: {{ row.diagnostics.template_id or '—' }}</li>
+          {% if row.diagnostics.last_error_raw %}
+          <li>Raw error: <code class="text-break">{{ row.diagnostics.last_error_raw }}</code></li>
+          {% endif %}
+        </ul>
+      </details>
+    </div>
+  </div>
+</div>
