@@ -924,6 +924,9 @@ def create_app() -> Flask:
         app, "src.dashboard.broadcast_routes", ("broadcast_bp", "broadcast_api")
     )
     optional_blueprints += _load_optional_blueprints(
+        app, "src.dashboard.messages_routes", ("messages_bp", "messages_api")
+    )
+    optional_blueprints += _load_optional_blueprints(
         app, "src.dashboard.ai_coding_routes", ("ai_coding_bp", "ai_coding_api")
     )
     optional_blueprints += _load_optional_blueprints(

@@ -202,6 +202,9 @@
                     <a class="nav-link {% if request.path == '/stories' %}active{% endif %}" href="/stories">
                         <i class="bi bi-collection-play"></i> Stories
                     </a>
+                    <a class="nav-link {% if request.path == '/messages' %}active{% endif %}" href="/messages">
+                        <i class="bi bi-chat-dots"></i> Messages
+                    </a>
                     {# Wave 3: Fleet Readiness owner page removed — health lives on /accounts. Backend matrix/API kept. #}
                     {# Wave 4: Campaigns / Discovery / Operator / AI Coding / Social Agent / Dexpert removed from top-level. #}
                     <a class="nav-link {% if request.path == '/scheduler' or request.path.startswith('/scheduler/') %}active{% endif %}" href="/scheduler">

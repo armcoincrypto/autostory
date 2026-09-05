@@ -494,9 +494,12 @@ def test_messages_flag_default_false():
 
 
 def test_no_owner_messages_ui():
+    """Wave 7: Messages page lives in messages_routes, not legacy routes.py."""
     routes = (ROOT / "src/dashboard/routes.py").read_text(encoding="utf-8")
     assert "@web.route('/messages')" not in routes
-    assert "OwnerDirectMessageService" not in routes  # no production route wiring yet
+    msg = (ROOT / "src/dashboard/messages_routes.py").read_text(encoding="utf-8")
+    assert "OwnerDirectMessageService" in msg
+    assert '@messages_bp.route("/messages")' in msg
 
 
 def test_scheduler_still_has_no_dm_job_type():

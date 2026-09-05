@@ -134,7 +134,18 @@ def test_ai_agent_messages_store_full_body():
 
 
 def test_no_messages_owner_ui_route_yet():
+    """Wave 7 superseded: Messages UI now exists. Keep safety tripwires."""
     routes = (ROOT / "src/dashboard/routes.py").read_text(encoding="utf-8")
+    # Legacy routes.py still must not own /messages; Wave 7 uses messages_routes.
     assert "@web.route('/messages')" not in routes
     base = (ROOT / "src/dashboard/templates/base.html").read_text(encoding="utf-8")
-    assert "> Messages<" not in base and ">Messages<" not in base
+    assert 'href="/messages"' in base
+    assert "bi-chat-dots" in base
+    assert "Messages" in base
+    msg_routes = (ROOT / "src/dashboard/messages_routes.py").read_text(encoding="utf-8")
+    assert '@messages_bp.route("/messages")' in msg_routes
+    assert "OwnerDirectMessageService" in msg_routes
+    assert "dashboard_api_authorized" in msg_routes
+    # Scheduled DM still absent
+    models = (ROOT / "src/core/scheduler_models.py").read_text(encoding="utf-8")
+    assert 'DM = "DM"' not in models

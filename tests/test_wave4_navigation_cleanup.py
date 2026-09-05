@@ -32,6 +32,7 @@ def test_owner_sidebar_target_products_only():
         "/",
         "/accounts",
         "/stories",
+        "/messages",
         "/scheduler",
         "/broadcast",
         "/agents",
@@ -49,9 +50,10 @@ def test_owner_nav_hides_misleading_products():
         "Social Agent",
         "Dexpert",
         "AI Agent",
-        "Messages",
     ):
         assert f"> {label}<" not in BASE and f">{label}<" not in BASE
+    # Wave 7: Messages is an intentional owner product.
+    assert 'href="/messages"' in BASE
     for path in (
         "/campaigns",
         "/stories/fleet-readiness",
