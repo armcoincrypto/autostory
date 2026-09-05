@@ -5,13 +5,13 @@ Routes only authenticate, parse, call, and normalize responses.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Optional
 
 import structlog
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 from flask_login import login_required
 
+from src.clients.telethon_runtime import run as telethon_run
 from src.core.database import get_db_context
 from src.core.models import Account
 from src.dashboard.auth_access import dashboard_api_authorized
@@ -28,11 +28,8 @@ messages_api = Blueprint("messages_api", __name__, url_prefix="/api/messages")
 
 
 def _run_async(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    """Same Telethon runtime as dialogs (routes.run_async) — Wave 7A."""
+    return telethon_run(coro)
 
 
 def _deny_unauthorized():
@@ -175,16 +172,33 @@ def messages_history():
     try:
         raw = _run_async(transport.fetch_recent_messages_async(int(account_id), peer, lim))
     except Exception as e:
-        logger.exception("messages_history_failed", account_id=account_id)
-        return jsonify({"ok": False, "error": "UNKNOWN", "message": "Could not load messages."}), 500
-
-    if not raw.get("ok"):
+        logger.exception("messages_history_failed", account_id=account_id, error=str(e))
         return (
             jsonify(
                 {
                     "ok": False,
-                    "error": raw.get("error_code") or "UNKNOWN",
-                    "message": raw.get("error_message") or "History fetch failed",
+                    "error": "HISTORY_UNAVAILABLE",
+                    "message": "Unable to load conversation history.",
+                    "messages": [],
+                }
+            ),
+            500,
+        )
+
+    if not raw.get("ok"):
+        # Never surface raw Telethon/asyncio loop affinity text to the owner UI.
+        err = str(raw.get("error_code") or "UNKNOWN")
+        msg = str(raw.get("error_message") or "")
+        if "event loop" in msg.lower() or err == "UNKNOWN":
+            msg = "Unable to load conversation history."
+            if err == "UNKNOWN":
+                err = "HISTORY_UNAVAILABLE"
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": err,
+                    "message": msg or "Unable to load conversation history.",
                     "messages": [],
                 }
             ),

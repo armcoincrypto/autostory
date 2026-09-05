@@ -345,12 +345,14 @@ def _proxy_api_to_server():
 
 
 def run_async(coro):
-    """Run async function in sync context"""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    """Run async work on the process-local Telethon event loop.
+
+    Wave 7A: must not create a fresh asyncio loop per request — cached Telethon
+    clients in ClientManager are loop-bound.
+    """
+    from src.clients.telethon_runtime import run as telethon_run
+
+    return telethon_run(coro)
 
 
 # ============================================

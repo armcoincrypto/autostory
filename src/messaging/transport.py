@@ -42,6 +42,39 @@ async def _resolve_peer(client: Any, target: str) -> Any:
     return await client.get_entity(raw)
 
 
+async def _resolve_peer_with_dialog_warm(
+    account_id: int, client: Any, target: str
+) -> Any:
+    """
+    Resolve a peer for history.
+
+    Cold numeric IDs often lack Telethon entity cache / access_hash. Warming via
+    server-side get_dialogs (never exposing access_hash to the browser) populates
+    the in-process entity cache on this client, then resolve retries.
+    """
+    try:
+        return await _resolve_peer(client, target)
+    except Exception as first:
+        raw = (target or "").strip()
+        # Username resolves online; still warm once if get_entity failed transiently.
+        logger.info(
+            "dm_peer_resolve_warm_dialogs",
+            account_id=int(account_id),
+            peer_kind=("username" if raw.startswith("@") or not raw.lstrip("-").isdigit() else "numeric"),
+            error=str(first)[:160],
+        )
+        try:
+            await client_manager.get_dialogs(int(account_id), limit=200)
+        except Exception as warm_err:
+            logger.warning(
+                "dm_peer_warm_dialogs_failed",
+                account_id=int(account_id),
+                error=str(warm_err)[:160],
+            )
+            raise first
+        return await _resolve_peer(client, target)
+
+
 class TelegramDmTransport:
     """In-process Telethon send/fetch without product allowlists."""
 
@@ -81,9 +114,16 @@ class TelegramDmTransport:
                 }
 
         try:
-            entity = await _resolve_peer(wrapper.client, target)
+            entity = await _resolve_peer_with_dialog_warm(
+                int(account_id), wrapper.client, target
+            )
         except Exception as e:
             code, msg, _ = map_dm_error(e)
+            # Owner-safe wording for common cold-entity misses
+            if "entity" in str(e).lower() or code in {"PEER_INVALID", "USERNAME_NOT_FOUND", "UNKNOWN"}:
+                if code == "UNKNOWN":
+                    code = "PEER_INVALID"
+                msg = "Unable to resolve this conversation. Re-open dialogs and try again."
             return {"ok": False, "messages": [], "error_code": code, "error_message": msg}
 
         out: list[dict[str, Any]] = []
