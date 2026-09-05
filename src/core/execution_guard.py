@@ -23,6 +23,7 @@ ACTION_DISCOVERY_SCAN = "discovery_scan"
 ACTION_DISCOVERY_JOIN = "discovery_join"
 ACTION_ACCOUNT_MUTATION = "account_mutation"
 ACTION_AI_CODING_EXECUTE = "ai_coding_execute"
+ACTION_OWNER_DM_SEND = "owner_dm_send"
 
 ACTION_TYPES = frozenset(
     {
@@ -34,6 +35,7 @@ ACTION_TYPES = frozenset(
         ACTION_DISCOVERY_JOIN,
         ACTION_ACCOUNT_MUTATION,
         ACTION_AI_CODING_EXECUTE,
+        ACTION_OWNER_DM_SEND,
     }
 )
 
@@ -642,6 +644,25 @@ def can_execute_action(
                 )
             else:
                 decision = _allow(action, "telegram_send_ok", "Send permitted.", audit=audit_base)
+
+    elif action == ACTION_OWNER_DM_SEND:
+        # Owner Messages kill switch — independent of SCHEDULER_MUTATIONS_ENABLED.
+        from src.messaging.flags import messages_execution_enabled
+
+        if not messages_execution_enabled():
+            decision = _deny(
+                action,
+                "messages_execution_disabled",
+                "MESSAGES_EXECUTION_ENABLED is false; owner DM live send blocked.",
+                audit={**audit_base, "messages_execution_enabled": False},
+            )
+        else:
+            decision = _allow(
+                action,
+                "owner_dm_send_ok",
+                "Owner DM send permitted by messages execution flag.",
+                audit={**audit_base, "messages_execution_enabled": True},
+            )
 
     elif action == ACTION_TELEGRAM_JOIN:
         from src.dashboard.scheduler_mutations import scheduler_mutations_enabled

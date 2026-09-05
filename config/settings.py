@@ -173,6 +173,14 @@ class Settings(BaseSettings):
             "Env: SCHEDULER_MUTATIONS_ENABLED."
         ),
     )
+    messages_execution_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), owner direct-message live sends are denied. "
+            "Independent of SCHEDULER_MUTATIONS_ENABLED. Dry-run remains allowed. "
+            "Env: MESSAGES_EXECUTION_ENABLED."
+        ),
+    )
     scheduler_mutation_account_allowlist: str = Field(
         default="",
         description=(

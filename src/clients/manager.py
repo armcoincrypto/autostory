@@ -18,7 +18,7 @@ from typing import Dict, Optional, List, Callable, Any, Union, Tuple
 from telethon import TelegramClient
 from telethon.sessions import StringSession, SQLiteSession
 from telethon.tl import functions, types
-from telethon.tl.types import Channel, Chat
+from telethon.tl.types import Channel, Chat, User
 from telethon.errors import (
     FloodWaitError,
     AuthKeyError,
@@ -891,8 +891,19 @@ class ClientManager:
         )
         return wrapper, None
 
-    async def get_dialogs(self, account_id: int, limit: int = 200) -> List[Dict[str, Any]]:
-        """Fetch groups/channels the account is in. Returns list of {id, title, username, chat_type}."""
+    async def get_dialogs(
+        self,
+        account_id: int,
+        limit: int = 200,
+        *,
+        dialog_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch dialogs for one account (private users, bots, groups, channels).
+
+        Safe normalized fields only — no access_hash, phone, session, or raw TL.
+        Optional ``dialog_type`` filters to private|bot|group|supergroup|channel.
+        """
         with get_db_context() as db:
             account = db.query(Account).filter(Account.id == account_id).first()
             if not account or not account.session_string:
@@ -907,24 +918,68 @@ class ClientManager:
             await wrapper.connect()
         if not wrapper.is_connected:
             return []
+        type_filter = (dialog_type or "").strip().lower() or None
+        if type_filter in {"user", "dm"}:
+            type_filter = "private"
         try:
             dialogs = await wrapper.client.get_dialogs(limit=limit)
-            result = []
+            result: List[Dict[str, Any]] = []
             for d in dialogs:
                 e = d.entity
-                if isinstance(e, Chat):
-                    result.append({
-                        "id": e.id, "title": getattr(e, "title", None) or str(e.id),
-                        "username": getattr(e, "username", None), "chat_type": "group",
-                    })
+                unread = int(getattr(d, "unread_count", 0) or 0)
+                last_date = getattr(d, "date", None)
+                last_message_at = None
+                if last_date is not None and hasattr(last_date, "isoformat"):
+                    last_message_at = last_date.isoformat()
+                row: Optional[Dict[str, Any]] = None
+                if isinstance(e, User):
+                    first = (getattr(e, "first_name", None) or "").strip()
+                    last = (getattr(e, "last_name", None) or "").strip()
+                    display = " ".join(x for x in (first, last) if x) or (
+                        f"@{e.username}" if getattr(e, "username", None) else str(e.id)
+                    )
+                    dt = "bot" if bool(getattr(e, "bot", False)) else "private"
+                    row = {
+                        "id": int(e.id),
+                        "display_name": display,
+                        "title": display,  # back-compat with older clients
+                        "username": getattr(e, "username", None),
+                        "dialog_type": dt,
+                        "chat_type": dt,  # back-compat
+                        "unread_count": unread,
+                        "last_message_at": last_message_at,
+                    }
+                elif isinstance(e, Chat):
+                    title = getattr(e, "title", None) or str(e.id)
+                    row = {
+                        "id": int(e.id),
+                        "display_name": title,
+                        "title": title,
+                        "username": getattr(e, "username", None),
+                        "dialog_type": "group",
+                        "chat_type": "group",
+                        "unread_count": unread,
+                        "last_message_at": last_message_at,
+                    }
                 elif isinstance(e, Channel):
                     title = getattr(e, "title", None) or str(e.id)
                     username = getattr(e, "username", None)
                     ct = "channel" if getattr(e, "broadcast", False) else "supergroup"
-                    result.append({
-                        "id": e.id, "title": title, "username": username,
+                    row = {
+                        "id": int(e.id),
+                        "display_name": title,
+                        "title": title,
+                        "username": username,
+                        "dialog_type": ct,
                         "chat_type": ct,
-                    })
+                        "unread_count": unread,
+                        "last_message_at": last_message_at,
+                    }
+                if row is None:
+                    continue
+                if type_filter and row.get("dialog_type") != type_filter:
+                    continue
+                result.append(row)
             return result
         except Exception as e:
             logger.error("get_dialogs failed", account_id=account_id, error=str(e))

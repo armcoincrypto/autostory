@@ -92,7 +92,13 @@ async def _resolve_dm_entity(client: Any, target: str) -> Any:
 
 class TelegramDirectTransport:
     """
-    In-process Telethon via ClientManager (gateway worker or direct fallback).
+    In-process Telethon via ClientManager (gateway worker or AI Agent direct fallback).
+
+    Product policy notes (Wave 6A):
+    - Does NOT enforce AI Agent allowlisting — that stays on ``TelegramSingleSender``.
+    - Does enforce ``ACTION_TELEGRAM_SEND`` (scheduler mutations / certification scopes).
+    - Owner Messages must use ``src.messaging.transport.TelegramDmTransport`` +
+      ``OwnerDirectMessageService`` (MESSAGES_EXECUTION_ENABLED), not this class.
     """
 
     async def fetch_recent_messages_async(
@@ -388,6 +394,9 @@ class TelegramDirectTransport:
 class TelegramSingleSender:
     """
     Public entry for AI Agent: gateway queue (default) or direct Telethon.
+
+    AI Agent account allowlisting is enforced HERE (policy layer), not inside
+    ``TelegramDirectTransport`` / common Telethon primitives.
 
     When ``AI_AGENT_USE_TELEGRAM_GATEWAY`` is true, Telethon is never used from
     this class: only ``TelegramGatewayClient`` enqueue + wait.

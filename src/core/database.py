@@ -218,6 +218,7 @@ def init_db() -> None:
     _import_optional_model_module("src.core.campaign_governance_models")
     _import_optional_model_module("src.governance.models")
     _import_optional_model_module("src.social_agent.models")
+    _import_optional_model_module("src.messaging.models")
     from sqlalchemy import text
     Base.metadata.create_all(bind=engine)
     _ensure_account_governance_tables()

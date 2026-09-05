@@ -577,12 +577,34 @@ def update_account_status(account_id):
 
 @api.route('/accounts/<int:account_id>/dialogs', methods=['GET'])
 def account_dialogs(account_id):
-    """Fetch groups/channels the account is in (from Telegram)."""
+    """Fetch dialogs for one account (includes private users). Operator-auth required."""
+    if not _admin_api_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
     from src.clients.manager import client_manager
     limit = request.args.get("limit", 200, type=int)
+    dialog_type = (request.args.get("type") or request.args.get("dialog_type") or "").strip() or None
     try:
-        dialogs = run_async(client_manager.get_dialogs(account_id, limit=min(500, limit)))
-        return jsonify(dialogs)
+        dialogs = run_async(
+            client_manager.get_dialogs(
+                account_id,
+                limit=min(500, limit),
+                dialog_type=dialog_type,
+            )
+        )
+        # Strip any accidental secret-ish keys if a future caller adds them
+        safe = []
+        for d in dialogs or []:
+            safe.append(
+                {
+                    "id": d.get("id"),
+                    "display_name": d.get("display_name") or d.get("title"),
+                    "username": d.get("username"),
+                    "dialog_type": d.get("dialog_type") or d.get("chat_type"),
+                    "unread_count": d.get("unread_count", 0),
+                    "last_message_at": d.get("last_message_at"),
+                }
+            )
+        return jsonify(safe)
     except Exception as e:
         logger.exception("Failed to fetch dialogs")
         return jsonify({"error": str(e)}), 500
