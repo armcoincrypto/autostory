@@ -129,11 +129,18 @@
       <div class="text-muted small p-2">Select a private dialog to load recent messages.</div>
     </div>
     <div class="composer">
+      <div id="claude-draft-label" class="small text-info mb-1 d-none">Claude draft — review before sending</div>
       <textarea id="composer-text" class="form-control mb-2" rows="3" maxlength="4096"
         placeholder="Type a message…" disabled></textarea>
+      <div class="mb-2">
+        <input type="text" id="claude-instruction" class="form-control form-control-sm"
+          maxlength="1000" placeholder="Optional instruction for Claude (e.g. Reply briefly in Russian)"
+          disabled>
+      </div>
       <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span class="small text-muted"><span id="char-count">0</span> / 4096</span>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 flex-wrap">
+          <button type="button" class="btn btn-outline-info btn-sm" id="btn-claude-draft" disabled>Draft with Claude</button>
           <button type="button" class="btn btn-outline-light btn-sm" id="btn-check" disabled>Check message</button>
           <button type="button" class="btn btn-primary btn-sm" id="btn-review" disabled>Review &amp; Send</button>
         </div>
@@ -204,6 +211,7 @@
     dialogs: [],
     dialog: null,
     messagesEnabled: false,
+    claudeDraftAvailable: false,
     inFlight: false,
     idempotencyKey: null,
   };
@@ -217,7 +225,10 @@
   const elThread = document.getElementById('thread');
   const elThreadLabel = document.getElementById('thread-label');
   const elComposer = document.getElementById('composer-text');
+  const elClaudeInstruction = document.getElementById('claude-instruction');
+  const elClaudeLabel = document.getElementById('claude-draft-label');
   const elCount = document.getElementById('char-count');
+  const btnClaudeDraft = document.getElementById('btn-claude-draft');
   const btnCheck = document.getElementById('btn-check');
   const btnReview = document.getElementById('btn-review');
   const btnConfirm = document.getElementById('btn-confirm-send');
@@ -243,8 +254,12 @@
 
   function setComposerEnabled(on) {
     elComposer.disabled = !on;
+    if (elClaudeInstruction) elClaudeInstruction.disabled = !on;
     btnCheck.disabled = !on;
     btnReview.disabled = !on;
+    if (btnClaudeDraft) {
+      btnClaudeDraft.disabled = !(on && state.claudeDraftAvailable && state.dialog);
+    }
   }
 
   function esc(s) {
@@ -256,11 +271,15 @@
   async function loadStatus() {
     const data = await dashboardFetchJson('/api/messages/status');
     state.messagesEnabled = !!data.messages_execution_enabled;
+    state.claudeDraftAvailable = !!data.claude_draft_available;
     if (data.banner) {
       elBanner.textContent = data.banner;
       elBanner.classList.remove('d-none');
     } else {
       elBanner.classList.add('d-none');
+    }
+    if (btnClaudeDraft && !state.claudeDraftAvailable) {
+      btnClaudeDraft.title = 'Claude drafting is currently unavailable';
     }
   }
 
@@ -355,6 +374,7 @@
     clearAlert();
     state.dialog = dialog;
     state.idempotencyKey = null;
+    if (elClaudeLabel) elClaudeLabel.classList.add('d-none');
     elThreadLabel.textContent = dialog.display_name || dialog.peer;
     setComposerEnabled(true);
     elThread.innerHTML = '<div class="text-muted small p-2">Loading conversation…</div>';
@@ -386,6 +406,61 @@
   elComposer.addEventListener('input', () => {
     elCount.textContent = String(elComposer.value.length);
   });
+
+  async function draftWithClaude() {
+    if (!state.accountId || !state.dialog) {
+      showAlert('warning', 'Select an account and conversation first.');
+      return;
+    }
+    if (!state.claudeDraftAvailable) {
+      showAlert('warning', 'Claude drafting is currently unavailable.');
+      return;
+    }
+    const existing = (elComposer.value || '').trim();
+    if (existing) {
+      const ok = window.confirm('Replace the current composer text with a Claude draft?');
+      if (!ok) return;
+    }
+    const prevLabel = btnClaudeDraft ? btnClaudeDraft.textContent : '';
+    if (btnClaudeDraft) {
+      btnClaudeDraft.disabled = true;
+      btnClaudeDraft.textContent = 'Drafting…';
+    }
+    clearAlert();
+    try {
+      const data = await dashboardFetchJson('/api/messages/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: state.accountId,
+          peer: state.dialog.peer,
+          operator_instruction: (elClaudeInstruction && elClaudeInstruction.value) || '',
+        }),
+      });
+      if (!data.ok || !data.draft) {
+        throw new Error(data.error_message || data.message || 'Could not generate a draft.');
+      }
+      elComposer.value = data.draft;
+      elCount.textContent = String(elComposer.value.length);
+      if (elClaudeLabel) {
+        elClaudeLabel.textContent = data.label || 'Claude draft — review before sending';
+        elClaudeLabel.classList.remove('d-none');
+      }
+      showAlert('info', 'Claude draft inserted — review and edit before sending. Nothing was sent.');
+    } catch (e) {
+      const msg = (e.data && (e.data.error_message || e.data.message)) || e.message || String(e);
+      showAlert('warning', msg + ' Your message was not sent.');
+    } finally {
+      if (btnClaudeDraft) {
+        btnClaudeDraft.textContent = prevLabel || 'Draft with Claude';
+        setComposerEnabled(!!state.dialog);
+      }
+    }
+  }
+
+  if (btnClaudeDraft) {
+    btnClaudeDraft.addEventListener('click', () => draftWithClaude());
+  }
 
   function ensureIdempotencyKey() {
     if (!state.idempotencyKey) {

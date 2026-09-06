@@ -181,6 +181,49 @@ class Settings(BaseSettings):
             "Env: MESSAGES_EXECUTION_ENABLED."
         ),
     )
+    # -------------------------------------------------------------------------
+    # Owner Messages — Claude draft assistant (Wave 7E; draft only, never send)
+    # -------------------------------------------------------------------------
+    claude_draft_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), Draft with Claude is denied. Independent of "
+            "MESSAGES_EXECUTION_ENABLED. Env: CLAUDE_DRAFT_ENABLED."
+        ),
+    )
+    anthropic_api_key: str = Field(
+        default="",
+        repr=False,
+        description="Anthropic API key from env ANTHROPIC_API_KEY (never logged or returned).",
+    )
+    claude_draft_model: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Anthropic model id for owner Messages drafting (env CLAUDE_DRAFT_MODEL).",
+    )
+    claude_draft_timeout_sec: int = Field(
+        default=20,
+        ge=1,
+        le=120,
+        description="HTTP timeout seconds for Claude draft calls (env CLAUDE_DRAFT_TIMEOUT_SEC).",
+    )
+    claude_draft_max_output_tokens: int = Field(
+        default=512,
+        ge=64,
+        le=4096,
+        description="Max output tokens for Claude drafts (env CLAUDE_DRAFT_MAX_OUTPUT_TOKENS).",
+    )
+    claude_draft_max_context_messages: int = Field(
+        default=20,
+        ge=1,
+        le=50,
+        description="Max recent messages sent to Claude as context (env CLAUDE_DRAFT_MAX_CONTEXT_MESSAGES).",
+    )
+    claude_draft_max_input_chars: int = Field(
+        default=12000,
+        ge=500,
+        le=100000,
+        description="Max total conversation text chars for Claude context (env CLAUDE_DRAFT_MAX_INPUT_CHARS).",
+    )
     scheduler_mutation_account_allowlist: str = Field(
         default="",
         description=(

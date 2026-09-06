@@ -15,6 +15,8 @@ from src.clients.telethon_runtime import run as telethon_run
 from src.core.database import get_db_context
 from src.core.models import Account
 from src.dashboard.auth_access import dashboard_api_authorized
+from src.messaging.claude_draft_flags import claude_draft_enabled
+from src.messaging.claude_draft_service import ClaudeDraftService
 from src.messaging.eligibility import evaluate_dm_account_eligibility
 from src.messaging.flags import messages_execution_enabled
 from src.messaging.models import OwnerDmIntent
@@ -122,6 +124,7 @@ def messages_status():
             "messages_execution_enabled": messages_execution_enabled(),
             "send_now_available": messages_execution_enabled(),
             "dry_run_available": True,
+            "claude_draft_available": claude_draft_enabled(),
             "banner": (
                 None
                 if messages_execution_enabled()
@@ -237,6 +240,45 @@ def messages_history():
             }
         )
     return jsonify({"ok": True, "account_id": int(account_id), "peer": peer, "messages": messages})
+
+
+@messages_api.route("/draft", methods=["POST"])
+def messages_draft():
+    """Claude draft assistant — returns suggested text only (never sends)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        account_id = int(data.get("account_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_id required"}), 400
+    peer = (data.get("peer") or data.get("peer_id") or "").strip()
+    instruction = data.get("operator_instruction") or data.get("instruction") or ""
+    if not peer:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "peer required"}), 400
+
+    svc = ClaudeDraftService()
+    with get_db_context() as db:
+        result = _run_async(
+            svc.draft_reply_async(
+                db,
+                account_id=account_id,
+                peer=peer,
+                operator_instruction=str(instruction) if instruction is not None else None,
+            )
+        )
+
+    if not result.get("ok"):
+        code = result.get("error_code") or "CLAUDE_PROVIDER_ERROR"
+        status = 503
+        if code == "CLAUDE_DISABLED":
+            status = 423
+        elif code in {"ACCOUNT_INELIGIBLE", "PEER_INVALID", "NO_CONVERSATION_CONTEXT"}:
+            status = 400
+        elif code == "CLAUDE_NOT_CONFIGURED":
+            status = 503
+        elif code == "CLAUDE_RATE_LIMITED":
+            status = 429
+        return jsonify(result), status
+    return jsonify(result)
 
 
 @messages_api.route("/dry-run", methods=["POST"])
