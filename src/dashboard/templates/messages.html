@@ -62,6 +62,35 @@
     border-radius: 12px;
     padding: .75rem 1rem;
   }
+  .recent-panel {
+    margin-top: 1.25rem;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .recent-panel .recent-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: .85rem 1rem;
+    border-bottom: 1px solid var(--panel-border);
+    font-weight: 600;
+  }
+  .recent-panel table { margin: 0; }
+  .recent-panel td, .recent-panel th { font-size: .85rem; vertical-align: middle; }
+  .status-pill {
+    display: inline-block;
+    padding: .15rem .5rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    font-weight: 600;
+  }
+  .status-SENT { background: rgba(34,197,94,.2); color: #86efac; }
+  .status-FAILED { background: rgba(239,68,68,.2); color: #fca5a5; }
+  .status-UNCERTAIN { background: rgba(245,158,11,.2); color: #fcd34d; }
+  .status-SENDING { background: rgba(59,130,246,.2); color: #93c5fd; }
+  .status-CREATED { background: rgba(148,163,184,.15); color: #cbd5e1; }
 </style>
 {% endblock %}
 
@@ -113,6 +142,29 @@
   </section>
 </div>
 
+<section class="recent-panel" aria-label="Recent Messages">
+  <div class="recent-head">
+    <span>Recent Messages</span>
+    <button type="button" class="btn btn-outline-light btn-sm" id="btn-refresh-recent">Refresh</button>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-dark table-sm mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Time</th>
+          <th scope="col">Account</th>
+          <th scope="col">Recipient</th>
+          <th scope="col">Status</th>
+          <th scope="col">Details</th>
+        </tr>
+      </thead>
+      <tbody id="recent-intents-body">
+        <tr><td colspan="5" class="text-muted small px-3 py-3">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <!-- Dry-run result + confirm modal -->
 <div class="modal fade" id="confirmSendModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -158,6 +210,8 @@
 
   const elAlert = document.getElementById('msg-alert');
   const elBanner = document.getElementById('msg-exec-banner');
+  const elRecentBody = document.getElementById('recent-intents-body');
+  const btnRefreshRecent = document.getElementById('btn-refresh-recent');
   const elAccounts = document.getElementById('account-list');
   const elDialogs = document.getElementById('dialog-list');
   const elThread = document.getElementById('thread');
@@ -168,6 +222,14 @@
   const btnReview = document.getElementById('btn-review');
   const btnConfirm = document.getElementById('btn-confirm-send');
   const confirmModal = new bootstrap.Modal(document.getElementById('confirmSendModal'));
+
+  const STATUS_LABELS = {
+    SENT: 'Sent',
+    FAILED: 'Failed',
+    UNCERTAIN: 'Uncertain',
+    SENDING: 'Sending',
+    CREATED: 'Created',
+  };
 
   function showAlert(kind, text) {
     elAlert.className = 'alert alert-' + kind;
@@ -421,6 +483,7 @@
       showAlert('success', 'Message sent.');
       state.idempotencyKey = null;
       if (state.dialog) selectDialog(state.dialog);
+      loadRecentIntents();
       return;
     }
     if (status === 'UNCERTAIN') {
@@ -428,17 +491,71 @@
         'warning',
         'Delivery could not be confirmed. Do not resend automatically. Check conversation before trying again.'
       );
+      loadRecentIntents();
       return;
     }
     if (status === 'SENDING') {
       showAlert('info', 'Message is already being processed.');
       return;
     }
-    if (status === 'DENIED' || result.error_code === 'MESSAGES_DISABLED') {
+    const code = result.error_code || '';
+    if (code === 'MESSAGES_DISABLED') {
       showAlert('warning', result.error_message || 'Message sending is currently disabled.');
       return;
     }
+    if (
+      code === 'ACCOUNT_PROTECTED' ||
+      code === 'ACCOUNT_RESERVED' ||
+      code === 'ACCOUNT_DISABLED' ||
+      code === 'AUTH_REQUIRED' ||
+      code === 'ACCOUNT_INELIGIBLE' ||
+      status === 'DENIED'
+    ) {
+      showAlert('warning', result.error_message || 'This account cannot send Messages.');
+      return;
+    }
     showAlert('danger', result.error_message || result.error_code || 'Send failed.');
+    if (status === 'FAILED') loadRecentIntents();
+  }
+
+  async function loadRecentIntents() {
+    if (!elRecentBody) return;
+    try {
+      const data = await dashboardFetchJson('/api/messages/intents?limit=20');
+      const rows = data.intents || [];
+      if (!rows.length) {
+        elRecentBody.innerHTML =
+          '<tr><td colspan="5" class="text-muted small px-3 py-3">No recent Messages sends yet.</td></tr>';
+        return;
+      }
+      elRecentBody.innerHTML = rows
+        .map((row) => {
+          const when = row.sent_at || row.created_at || '—';
+          const st = row.status || '';
+          const label = STATUS_LABELS[st] || st || '—';
+          const details = [];
+          if (row.telegram_message_id != null) details.push('TG #' + row.telegram_message_id);
+          if (row.error_code) details.push(row.error_code);
+          if (row.intent_id != null) details.push('intent #' + row.intent_id);
+          return (
+            '<tr>' +
+            `<td class="text-nowrap">${esc(when)}</td>` +
+            `<td>${esc(row.account_label || ('#' + row.account_id))}</td>` +
+            `<td>${esc(row.peer_display || row.peer || '—')}</td>` +
+            `<td><span class="status-pill status-${esc(st)}">${esc(label)}</span></td>` +
+            `<td class="small text-muted">${esc(details.join(' · ') || '—')}</td>` +
+            '</tr>'
+          );
+        })
+        .join('');
+    } catch (e) {
+      elRecentBody.innerHTML =
+        `<tr><td colspan="5" class="text-danger small px-3 py-3">${esc(e.message || e)}</td></tr>`;
+    }
+  }
+
+  if (btnRefreshRecent) {
+    btnRefreshRecent.addEventListener('click', () => loadRecentIntents());
   }
 
   btnConfirm.addEventListener('click', async () => {
@@ -477,11 +594,12 @@
     }
   });
 
-  // Initial load: accounts + status only (Telegram calls = 0)
+  // Initial load: accounts + status + recent intents only (Telegram calls = 0)
   (async function init() {
     try {
       await loadStatus();
       await loadAccounts();
+      await loadRecentIntents();
     } catch (e) {
       showAlert('danger', e.message || String(e));
       elAccounts.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;

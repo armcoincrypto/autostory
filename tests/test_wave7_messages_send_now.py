@@ -217,6 +217,7 @@ def test_flask_api_auth_anonymous(monkeypatch):
         ("/api/messages/history?account_id=1&peer=2", "get"),
         ("/api/messages/dry-run", "post"),
         ("/api/messages/send-now", "post"),
+        ("/api/messages/intents", "get"),
         ("/api/messages/intents/1", "get"),
     ]:
         if method == "get":

@@ -76,6 +76,67 @@ def validate_peer(peer_id: str, peer_type: str = "private") -> tuple[bool, str, 
     return True, "OK", "ok"
 
 
+# Owner-facing denial codes (Wave 7D). MESSAGES_DISABLED only for kill switch.
+_OWNER_ELIGIBILITY_MESSAGES = {
+    "PROTECTED": (
+        "ACCOUNT_PROTECTED",
+        "This account is protected and cannot be used for Messages.",
+    ),
+    "RESERVED": (
+        "ACCOUNT_RESERVED",
+        "This account is reserved for another workflow.",
+    ),
+    "DISABLED": (
+        "ACCOUNT_DISABLED",
+        "This account is disabled and cannot be used for Messages.",
+    ),
+    "AUTH_FAILED": (
+        "AUTH_REQUIRED",
+        "This account needs authentication before sending.",
+    ),
+    "NEEDS_SESSION": (
+        "AUTH_REQUIRED",
+        "This account needs authentication before sending.",
+    ),
+}
+
+
+def owner_message_for_eligibility(code: str, fallback_reason: str = "") -> tuple[str, str]:
+    """Map eligibility.code → (owner error_code, owner message)."""
+    mapped = _OWNER_ELIGIBILITY_MESSAGES.get((code or "").strip().upper())
+    if mapped:
+        return mapped
+    return (
+        "ACCOUNT_INELIGIBLE",
+        (fallback_reason or "This account cannot be used for Messages.").strip(),
+    )
+
+
+def owner_message_for_guard_deny(blocked: Any) -> tuple[str, str]:
+    """Map execution-guard DENY → owner codes. Kill switch only → MESSAGES_DISABLED."""
+    reason = str(getattr(blocked, "reason_code", "") or "")
+    blockers = {str(b) for b in (getattr(blocked, "blockers", None) or [])}
+    if reason == "messages_execution_disabled":
+        return "MESSAGES_DISABLED", "Message sending is currently disabled."
+    if "account_protected" in blockers:
+        return (
+            "ACCOUNT_PROTECTED",
+            "This account is protected and cannot be used for Messages.",
+        )
+    if "account_ai_reserved" in blockers:
+        return (
+            "ACCOUNT_RESERVED",
+            "This account is reserved for another workflow.",
+        )
+    if "account_held" in blockers:
+        return (
+            "ACCOUNT_DISABLED",
+            "This account is on hold and cannot be used for Messages.",
+        )
+    detail = str(getattr(blocked, "message", "") or reason or "Send denied.")
+    return "ACCOUNT_INELIGIBLE", detail
+
+
 class OwnerDirectMessageService:
     def __init__(self, transport: Optional[DmTransport] = None) -> None:
         self.transport: DmTransport = transport or TelegramDmTransport()
@@ -248,18 +309,6 @@ class OwnerDirectMessageService:
         if existing is not None:
             return self._intent_result(existing, replay=True)
 
-        blocked = require_execution_allowed(
-            ACTION_OWNER_DM_SEND, account_id=int(account_id)
-        )
-        if blocked is not None:
-            return {
-                "ok": False,
-                "status": "DENIED",
-                "error_code": "MESSAGES_DISABLED",
-                "error_message": blocked.message or blocked.reason_code,
-                "idempotency_key": idempotency_key,
-            }
-
         ok_msg, msg_code, msg_reason = validate_dm_message(text)
         if not ok_msg:
             return {
@@ -279,14 +328,31 @@ class OwnerDirectMessageService:
                 "idempotency_key": idempotency_key,
             }
 
+        # Eligibility is the product policy owner (Wave 7D: clear codes before guard).
         eligibility = evaluate_dm_account_eligibility(db, int(account_id))
         if not eligibility.eligible:
+            err_code, err_msg = owner_message_for_eligibility(
+                eligibility.code, eligibility.reason
+            )
             return {
                 "ok": False,
                 "status": "FAILED",
-                "error_code": "ACCOUNT_INELIGIBLE",
-                "error_message": eligibility.reason,
+                "error_code": err_code,
+                "error_message": err_msg,
                 "eligibility": eligibility.to_dict(),
+                "idempotency_key": idempotency_key,
+            }
+
+        blocked = require_execution_allowed(
+            ACTION_OWNER_DM_SEND, account_id=int(account_id)
+        )
+        if blocked is not None:
+            err_code, err_msg = owner_message_for_guard_deny(blocked)
+            return {
+                "ok": False,
+                "status": "DENIED",
+                "error_code": err_code,
+                "error_message": err_msg,
                 "idempotency_key": idempotency_key,
             }
 

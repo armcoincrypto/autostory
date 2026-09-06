@@ -62,14 +62,21 @@ def _dt_iso(value) -> Optional[str]:
     return str(value)
 
 
-def _intent_owner_safe(intent: OwnerDmIntent) -> dict[str, Any]:
-    return {
-        "ok": True,
+def _intent_owner_safe(
+    intent: OwnerDmIntent,
+    *,
+    account_label: Optional[str] = None,
+    include_ok: bool = True,
+) -> dict[str, Any]:
+    peer_display = (intent.peer_username and f"@{intent.peer_username}") or intent.peer_id
+    row = {
         "intent_id": intent.id,
         "idempotency_key": intent.idempotency_key,
         "status": intent.status,
         "account_id": intent.account_id,
+        "account_label": account_label or f"Account #{intent.account_id}",
         "peer": intent.peer_id,
+        "peer_display": peer_display,
         "peer_type": intent.peer_type,
         "created_at": _dt_iso(intent.created_at),
         "attempted_at": _dt_iso(intent.attempt_started_at),
@@ -80,6 +87,20 @@ def _intent_owner_safe(intent: OwnerDmIntent) -> dict[str, Any]:
         "message_preview": intent.message_preview,
         "retry_after": None,
     }
+    if include_ok:
+        row["ok"] = True
+    return row
+
+
+_ACCOUNT_DENY_CODES = frozenset(
+    {
+        "ACCOUNT_PROTECTED",
+        "ACCOUNT_RESERVED",
+        "ACCOUNT_DISABLED",
+        "ACCOUNT_INELIGIBLE",
+        "AUTH_REQUIRED",
+    }
+)
 
 
 @messages_bp.route("/messages")
@@ -282,11 +303,45 @@ def messages_send_now():
             )
         )
     status_code = 200
-    if result.get("error_code") == "MESSAGES_DISABLED":
+    err = result.get("error_code")
+    if err == "MESSAGES_DISABLED":
         status_code = 423
+    elif err in _ACCOUNT_DENY_CODES:
+        status_code = 403
     elif result.get("status") == "FAILED" and not result.get("replay"):
         status_code = 400
     return jsonify(result), status_code
+
+
+@messages_api.route("/intents", methods=["GET"])
+def messages_intents_recent():
+    """Recent owner DM intents from owner_dm_intents (no Telegram calls)."""
+    limit = request.args.get("limit", 20, type=int)
+    lim = max(1, min(int(limit or 20), 50))
+    with get_db_context() as db:
+        intents = (
+            db.query(OwnerDmIntent)
+            .order_by(OwnerDmIntent.id.desc())
+            .limit(lim)
+            .all()
+        )
+        account_ids = {int(i.account_id) for i in intents}
+        labels: dict[int, str] = {}
+        if account_ids:
+            for a in db.query(Account).filter(Account.id.in_(account_ids)).all():
+                labels[int(a.id)] = (
+                    (a.username and f"@{a.username}")
+                    or (a.first_name or f"Account #{a.id}")
+                )
+        rows = [
+            _intent_owner_safe(
+                intent,
+                account_label=labels.get(int(intent.account_id)),
+                include_ok=False,
+            )
+            for intent in intents
+        ]
+    return jsonify({"ok": True, "intents": rows, "limit": lim})
 
 
 @messages_api.route("/intents/<int:intent_id>", methods=["GET"])
@@ -295,7 +350,14 @@ def messages_intent_by_id(intent_id: int):
         intent = db.query(OwnerDmIntent).filter(OwnerDmIntent.id == int(intent_id)).first()
         if not intent:
             return jsonify({"ok": False, "error": "NOT_FOUND", "message": "Intent not found"}), 404
-        return jsonify(_intent_owner_safe(intent))
+        account = db.query(Account).filter(Account.id == int(intent.account_id)).first()
+        label = None
+        if account:
+            label = (
+                (account.username and f"@{account.username}")
+                or (account.first_name or f"Account #{account.id}")
+            )
+        return jsonify(_intent_owner_safe(intent, account_label=label))
 
 
 @messages_api.route("/intents/by-key/<idempotency_key>", methods=["GET"])
