@@ -1,0 +1,35 @@
+[Unit]
+Description=STORYFLEET fleet readiness matrix refresh (read-only oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Use the deploy-managed current symlink so immutable releases stay pinned without
+# a separate override.conf for this timer.
+WorkingDirectory=/opt/autostory-releases/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/autostory-releases/current
+# Shared secrets for Telethon session decrypt / API ids (never logged by refresh).
+EnvironmentFile=-/opt/autostory/.env
+EnvironmentFile=-/etc/autostory/telegram-session-keys.env
+# Fail-closed for THIS oneshot only. Do not disable production Messages globally.
+Environment=STORY_EXECUTION_ENABLED=false
+Environment=CONTROLLED_STORY_EXECUTION_ENABLED=false
+Environment=SCHEDULER_STORY_EXECUTION_ENABLED=false
+Environment=SCHEDULER_MUTATIONS_ENABLED=false
+Environment=CAMPAIGN_EXECUTION_ENABLED=false
+Environment=DISCOVERY_EXECUTION_ENABLED=false
+Environment=BROADCAST_EXECUTION_ENABLED=false
+Environment=TELEGRAM_STORIES_LIVE_ENABLED=false
+Environment=STORY_MUTATIONS_ENABLED=false
+Environment=MESSAGES_EXECUTION_ENABLED=false
+Environment=MESSAGES_AI_DRAFT_ENABLED=false
+Environment=AI_AGENT_AUTO_LOOP_ENABLED=false
+# Nice/IO: keep refresh below interactive web.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Cap runaway probes (full fleet is typically ~2–3 minutes).
+TimeoutStartSec=15min
+ExecStart=/opt/autostory/venv/bin/python -m src.stories.refresh_fleet_matrix --timeout-seconds 15

@@ -1,0 +1,13 @@
+[Unit]
+Description=STORYFLEET fleet readiness matrix refresh timer (keep under 24h TTL)
+
+[Timer]
+# Recover after reboot; then every 6h while active (margin under 24h TTL).
+OnBootSec=10min
+OnUnitActiveSec=6h
+AccuracySec=5min
+Persistent=true
+Unit=autostory-fleet-matrix-refresh.service
+
+[Install]
+WantedBy=timers.target
