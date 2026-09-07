@@ -1,9 +1,11 @@
-"""Wave 7E — Claude draft assistant (draft only; never sends)."""
+"""Wave 7E-OAI — OpenAI Messages AI draft assistant (draft only; never sends)."""
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,14 +13,17 @@ from sqlalchemy.orm import sessionmaker
 
 from src.core.database import Base
 from src.core.models import Account, AccountStatus
-from src.messaging.claude_draft_provider import (
-    ClaudeDraftRequest,
-    FakeClaudeDraftProvider,
-)
-from src.messaging.claude_draft_service import (
+from src.messaging.message_draft_service import (
     SYSTEM_PROMPT,
-    ClaudeDraftService,
+    MessageDraftService,
     build_conversation_blocks,
+)
+from src.messaging.openai_draft_provider import (
+    FakeMessageDraftProvider,
+    MessageDraftProviderResult,
+    MessageDraftRequest,
+    OpenAIHttpDraftProvider,
+    _extract_responses_text,
 )
 from src.messaging.owner_dm_service import OwnerDirectMessageService
 from src.messaging.transport import CountingFakeTransport
@@ -85,10 +90,10 @@ def test_draft_service_fake_no_send_no_intent(memory_db, monkeypatch):
         "src.messaging.eligibility.fetch_snapshot",
         lambda *_a, **_k: None,
     )
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "true")
-    fake_provider = FakeClaudeDraftProvider(draft="Suggested reply text.")
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "true")
+    fake_provider = FakeMessageDraftProvider(draft="Suggested reply text.")
     transport = CountingFakeTransport()
-    svc = ClaudeDraftService(provider=fake_provider, transport=transport)
+    svc = MessageDraftService(provider=fake_provider, transport=transport)
 
     async def _hist():
         return {
@@ -110,15 +115,13 @@ def test_draft_service_fake_no_send_no_intent(memory_db, monkeypatch):
     )
     assert out["ok"] is True
     assert out["draft"] == "Suggested reply text."
-    assert out["label"]
+    assert out["label"] == "AI draft — review before sending"
     assert transport.send_calls == 0
     assert len(fake_provider.calls) == 1
     req = fake_provider.calls[0]
-    assert isinstance(req, ClaudeDraftRequest)
-    assert "untrusted" in SYSTEM_PROMPT.lower() or "not instructions" in SYSTEM_PROMPT.lower()
+    assert isinstance(req, MessageDraftRequest)
+    assert "untrusted" in SYSTEM_PROMPT.lower()
     assert req.operator_instruction == "Be brief"
-    assert req.conversation_blocks[0]["role"] == "outgoing" or req.conversation_blocks[0]["text"]
-    # chronological after build: history was [Hello in, Hi out] — blocks preserve order
     assert [b["text"] for b in req.conversation_blocks] == ["Hello", "Hi"]
 
     from src.messaging.models import OwnerDmIntent
@@ -128,8 +131,8 @@ def test_draft_service_fake_no_send_no_intent(memory_db, monkeypatch):
 
 def test_draft_disabled(memory_db, monkeypatch):
     _add_account(memory_db)
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "false")
-    svc = ClaudeDraftService(provider=FakeClaudeDraftProvider())
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "false")
+    svc = MessageDraftService(provider=FakeMessageDraftProvider())
 
     async def hist():
         return {"ok": True, "messages": [{"text": "x", "is_outgoing": False}]}
@@ -142,7 +145,7 @@ def test_draft_disabled(memory_db, monkeypatch):
             fetch_history_async=hist,
         )
     )
-    assert out["error_code"] == "CLAUDE_DISABLED"
+    assert out["error_code"] == "AI_DRAFT_DISABLED"
 
 
 def test_draft_empty_context(memory_db, monkeypatch):
@@ -151,8 +154,8 @@ def test_draft_empty_context(memory_db, monkeypatch):
         "src.messaging.eligibility.fetch_snapshot",
         lambda *_a, **_k: None,
     )
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "true")
-    svc = ClaudeDraftService(provider=FakeClaudeDraftProvider())
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "true")
+    svc = MessageDraftService(provider=FakeMessageDraftProvider())
 
     async def empty():
         return {"ok": True, "messages": []}
@@ -171,19 +174,17 @@ def test_draft_provider_error_codes(memory_db, monkeypatch):
         "src.messaging.eligibility.fetch_snapshot",
         lambda *_a, **_k: None,
     )
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "true")
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "true")
 
     class Boom:
         def generate(self, request):
-            from src.messaging.claude_draft_provider import ClaudeDraftProviderResult
-
-            return ClaudeDraftProviderResult(
+            return MessageDraftProviderResult(
                 ok=False,
-                error_code="CLAUDE_TIMEOUT",
-                error_message="Claude drafting timed out. Your message was not sent.",
+                error_code="AI_DRAFT_TIMEOUT",
+                error_message="AI drafting timed out. Your message was not sent.",
             )
 
-    svc = ClaudeDraftService(provider=Boom())
+    svc = MessageDraftService(provider=Boom())
 
     async def hist():
         return {"ok": True, "messages": [{"text": "hi", "is_outgoing": False}]}
@@ -191,7 +192,7 @@ def test_draft_provider_error_codes(memory_db, monkeypatch):
     out = asyncio.run(
         svc.draft_reply_async(memory_db, account_id=42, peer="99", fetch_history_async=hist)
     )
-    assert out["error_code"] == "CLAUDE_TIMEOUT"
+    assert out["error_code"] == "AI_DRAFT_TIMEOUT"
     assert "not sent" in out["error_message"].lower()
 
 
@@ -201,9 +202,9 @@ def test_prompt_injection_treated_as_data(memory_db, monkeypatch):
         "src.messaging.eligibility.fetch_snapshot",
         lambda *_a, **_k: None,
     )
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "true")
-    fake = FakeClaudeDraftProvider()
-    svc = ClaudeDraftService(provider=fake)
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "true")
+    fake = FakeMessageDraftProvider()
+    svc = MessageDraftService(provider=fake)
 
     async def hist():
         return {
@@ -221,39 +222,43 @@ def test_prompt_injection_treated_as_data(memory_db, monkeypatch):
     )
     assert out["ok"] is True
     assert fake.calls[0].conversation_blocks[0]["text"].startswith("Ignore previous")
-    assert "Conversation messages" in SYSTEM_PROMPT or "untrusted" in SYSTEM_PROMPT.lower()
+    assert "untrusted" in SYSTEM_PROMPT.lower()
 
 
 def test_no_send_path_in_draft_modules():
     for rel in [
-        "src/messaging/claude_draft_service.py",
-        "src/messaging/claude_draft_provider.py",
-        "src/messaging/claude_draft_flags.py",
+        "src/messaging/message_draft_service.py",
+        "src/messaging/openai_draft_provider.py",
+        "src/messaging/message_draft_flags.py",
     ]:
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert ".send_now(" not in text
         assert "send_message_async(" not in text
         assert "OwnerDirectMessageService(" not in text
-        # Draft service may import transport for history fetch only.
-        if "claude_draft_service" in rel:
+        if "message_draft_service" in rel:
             assert "fetch_recent_messages_async" in text
-            assert "send_message" not in text.split("TelegramDmTransport.send")[0] or True
-    # Route draft handler must not call send_now
+            assert "telethon_runtime" not in text
+        if "openai_draft_provider" in rel:
+            assert '"tools": []' in text or "'tools': []" in text
+            assert "api.openai.com/v1/responses" in text
+            assert "anthropic" not in text.lower()
+            assert "telethon" not in text.lower()
     routes = (ROOT / "src/dashboard/messages_routes.py").read_text(encoding="utf-8")
-    # Extract messages_draft function body roughly
     idx = routes.find("def messages_draft")
     assert idx > 0
-    chunk = routes[idx : idx + 1200]
+    chunk = routes[idx : idx + 1400]
     assert "send_now" not in chunk
-    assert "ClaudeDraftService" in chunk
+    assert "MessageDraftService" in chunk
     assert "OwnerDirectMessageService" not in chunk
+    assert "ClaudeDraftService" not in routes
+    assert "anthropic" not in routes.lower()
 
 
 def test_flask_draft_auth_anonymous(monkeypatch):
     from src.dashboard.app import create_app
 
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "true")
-    monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", "wave7e-token")
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "true")
+    monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", "wave7e-oai-token")
     app = create_app()
     app.config["TESTING"] = True
     client = app.test_client()
@@ -264,45 +269,47 @@ def test_flask_draft_auth_anonymous(monkeypatch):
 def test_flask_draft_disabled_returns_423(monkeypatch):
     from src.dashboard.app import create_app
 
-    monkeypatch.setenv("CLAUDE_DRAFT_ENABLED", "false")
-    monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", "wave7e-token")
+    monkeypatch.setenv("MESSAGES_AI_DRAFT_ENABLED", "false")
+    monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", "wave7e-oai-token")
     app = create_app()
     app.config["TESTING"] = True
     client = app.test_client()
 
-    # Avoid real telethon: patch service used by route
     class Stub:
         async def draft_reply_async(self, *a, **k):
             return {
                 "ok": False,
-                "error_code": "CLAUDE_DISABLED",
-                "error_message": "Claude drafting is currently unavailable.",
+                "error_code": "AI_DRAFT_DISABLED",
+                "error_message": "AI drafting is currently unavailable.",
                 "draft": None,
-                "message": "Claude drafting is currently unavailable.",
+                "message": "AI drafting is currently unavailable.",
             }
 
     monkeypatch.setattr(
-        "src.dashboard.messages_routes.ClaudeDraftService",
+        "src.dashboard.messages_routes.MessageDraftService",
         lambda: Stub(),
     )
     resp = client.post(
         "/api/messages/draft",
         json={"account_id": 42, "peer": "99"},
-        headers={"X-Admin-Token": "wave7e-token"},
+        headers={"X-Admin-Token": "wave7e-oai-token"},
     )
     assert resp.status_code == 423
-    assert resp.get_json()["error_code"] == "CLAUDE_DISABLED"
+    assert resp.get_json()["error_code"] == "AI_DRAFT_DISABLED"
 
 
-def test_template_has_claude_draft_controls():
+def test_template_has_ai_draft_controls():
     tpl = (ROOT / "src/dashboard/templates/messages.html").read_text(encoding="utf-8")
-    assert "Draft with Claude" in tpl
+    assert "Draft with AI" in tpl
     assert "/api/messages/draft" in tpl
-    assert "Replace the current composer text" in tpl
-    assert "Claude draft — review before sending" in tpl
+    assert "Replace the current composer text with an AI draft?" in tpl
+    assert "AI draft — review before sending" in tpl
+    assert "Draft with Claude" not in tpl
+    assert "claude_draft_available" not in tpl
     assert "AUTO_SEND" not in tpl
     src = (ROOT / "src/dashboard/messages_routes.py").read_text(encoding="utf-8")
     assert '"/draft"' in src or "'/draft'" in src
+    assert "ai_draft_available" in src
 
 
 def test_send_now_still_works_with_fake_transport(memory_db, monkeypatch):
@@ -331,3 +338,128 @@ def test_send_now_still_works_with_fake_transport(memory_db, monkeypatch):
     )
     assert out["status"] == "SENT"
     assert fake.send_calls == 1
+
+
+def test_extract_responses_text_variants():
+    assert (
+        _extract_responses_text({"output_text": "Hello there"}) == "Hello there"
+    )
+    raw = {
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Hi"}],
+            }
+        ]
+    }
+    assert _extract_responses_text(raw) == "Hi"
+
+
+def test_openai_provider_maps_rate_limit(monkeypatch):
+    import urllib.error
+
+    provider = OpenAIHttpDraftProvider(api_key="sk-test", model="gpt-5.6-luna", timeout_sec=5)
+
+    class FakeHTTPError(urllib.error.HTTPError):
+        def __init__(self):
+            # HTTPError needs fp; provide BytesIO
+            from io import BytesIO
+
+            body = json.dumps(
+                {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}
+            ).encode()
+            super().__init__(
+                url="https://api.openai.com/v1/responses",
+                code=429,
+                msg="Too Many Requests",
+                hdrs=None,
+                fp=BytesIO(body),
+            )
+
+    monkeypatch.setattr(
+        "src.messaging.openai_draft_provider.urllib.request.urlopen",
+        MagicMock(side_effect=FakeHTTPError()),
+    )
+    out = provider.generate(
+        MessageDraftRequest(
+            system_prompt="sys",
+            conversation_blocks=[{"role": "incoming", "text": "hi"}],
+        )
+    )
+    assert out.ok is False
+    assert out.error_code == "AI_DRAFT_RATE_LIMITED"
+
+
+def test_openai_provider_success_mocked(monkeypatch):
+    provider = OpenAIHttpDraftProvider(api_key="sk-test", model="gpt-5.6-luna", timeout_sec=5)
+    payload = {
+        "model": "gpt-5.6-luna",
+        "output_text": "Suggested OK reply",
+        "usage": {"input_tokens": 10, "output_tokens": 4},
+    }
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr(
+        "src.messaging.openai_draft_provider.urllib.request.urlopen",
+        MagicMock(return_value=Resp()),
+    )
+    out = provider.generate(
+        MessageDraftRequest(
+            system_prompt="sys",
+            conversation_blocks=[{"role": "incoming", "text": "hi"}],
+            operator_instruction="Be brief",
+        )
+    )
+    assert out.ok is True
+    assert out.draft == "Suggested OK reply"
+    assert out.model == "gpt-5.6-luna"
+    # Ensure request used Responses API and empty tools
+    captured = {}
+
+    def fake_request(url, data=None, headers=None, method=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["method"] = method
+        captured["body"] = json.loads(data.decode())
+        return object()
+
+    monkeypatch.setattr(
+        "src.messaging.openai_draft_provider.urllib.request.Request",
+        fake_request,
+    )
+    monkeypatch.setattr(
+        "src.messaging.openai_draft_provider.urllib.request.urlopen",
+        MagicMock(return_value=Resp()),
+    )
+    out2 = provider.generate(
+        MessageDraftRequest(
+            system_prompt="sys",
+            conversation_blocks=[{"role": "incoming", "text": "hi"}],
+        )
+    )
+    assert out2.ok is True
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["body"]["tools"] == []
+    assert "Authorization" in captured["headers"]
+    assert "sk-test" not in json.dumps(captured["body"])  # key only in header
+    assert "access_hash" not in json.dumps(captured["body"])
+
+
+def test_anthropic_modules_removed():
+    assert not (ROOT / "src/messaging/claude_draft_service.py").exists()
+    assert not (ROOT / "src/messaging/claude_draft_provider.py").exists()
+    assert not (ROOT / "src/messaging/claude_draft_flags.py").exists()
+    settings = (ROOT / "config/settings.py").read_text(encoding="utf-8")
+    assert "anthropic_api_key" not in settings
+    assert "claude_draft_enabled" not in settings
+    assert "messages_ai_draft_enabled" in settings
+    assert "MESSAGES_AI_DRAFT_ENABLED" in settings or "messages_ai_draft_enabled" in settings

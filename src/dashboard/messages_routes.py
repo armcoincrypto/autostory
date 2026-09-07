@@ -15,8 +15,8 @@ from src.clients.telethon_runtime import run as telethon_run
 from src.core.database import get_db_context
 from src.core.models import Account
 from src.dashboard.auth_access import dashboard_api_authorized
-from src.messaging.claude_draft_flags import claude_draft_enabled
-from src.messaging.claude_draft_service import ClaudeDraftService
+from src.messaging.message_draft_flags import messages_ai_draft_enabled
+from src.messaging.message_draft_service import MessageDraftService
 from src.messaging.eligibility import evaluate_dm_account_eligibility
 from src.messaging.flags import messages_execution_enabled
 from src.messaging.models import OwnerDmIntent
@@ -124,7 +124,7 @@ def messages_status():
             "messages_execution_enabled": messages_execution_enabled(),
             "send_now_available": messages_execution_enabled(),
             "dry_run_available": True,
-            "claude_draft_available": claude_draft_enabled(),
+            "ai_draft_available": messages_ai_draft_enabled(),
             "banner": (
                 None
                 if messages_execution_enabled()
@@ -244,7 +244,7 @@ def messages_history():
 
 @messages_api.route("/draft", methods=["POST"])
 def messages_draft():
-    """Claude draft assistant — returns suggested text only (never sends)."""
+    """AI draft assistant — returns suggested text only (never sends)."""
     data = request.get_json(silent=True) or {}
     try:
         account_id = int(data.get("account_id"))
@@ -255,7 +255,7 @@ def messages_draft():
     if not peer:
         return jsonify({"ok": False, "error": "PEER_INVALID", "message": "peer required"}), 400
 
-    svc = ClaudeDraftService()
+    svc = MessageDraftService()
     with get_db_context() as db:
         result = _run_async(
             svc.draft_reply_async(
@@ -267,16 +267,18 @@ def messages_draft():
         )
 
     if not result.get("ok"):
-        code = result.get("error_code") or "CLAUDE_PROVIDER_ERROR"
+        code = result.get("error_code") or "AI_DRAFT_PROVIDER_ERROR"
         status = 503
-        if code == "CLAUDE_DISABLED":
+        if code == "AI_DRAFT_DISABLED":
             status = 423
         elif code in {"ACCOUNT_INELIGIBLE", "PEER_INVALID", "NO_CONVERSATION_CONTEXT"}:
             status = 400
-        elif code == "CLAUDE_NOT_CONFIGURED":
+        elif code == "AI_DRAFT_NOT_CONFIGURED":
             status = 503
-        elif code == "CLAUDE_RATE_LIMITED":
+        elif code == "AI_DRAFT_RATE_LIMITED":
             status = 429
+        elif code == "AI_DRAFT_TIMEOUT":
+            status = 504
         return jsonify(result), status
     return jsonify(result)
 
