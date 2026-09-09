@@ -105,13 +105,23 @@ def _configure_reverse_proxy_and_session(app: Flask) -> None:
     ``WTF_CSRF_SSL_STRICT`` is disabled: Cloudflare/privacy browsers often omit
     Referer on POST, which falsely fails login CSRF while the session token is valid.
     """
+    from datetime import timedelta
+
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["REMEMBER_COOKIE_HTTPONLY"] = True
+    app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
+    # Owner sessions: 14-day remember + 12h idle permanent session (conservative).
+    app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=14)
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=12)
     app.config["WTF_CSRF_SSL_STRICT"] = False
+    # Media upload hard ceiling (Wave B); route also enforces 50 MiB streaming cap.
+    app.config["MAX_CONTENT_LENGTH"] = 52 * 1024 * 1024
     if _production_environment():
         app.config["PREFERRED_URL_SCHEME"] = "https"
         app.config["SESSION_COOKIE_SECURE"] = True
+        app.config["REMEMBER_COOKIE_SECURE"] = True
 
 
 def _ensure_operational_state_p9_handler(app: Flask) -> None:

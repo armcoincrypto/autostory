@@ -1377,10 +1377,16 @@ _ALLOWED_MEDIA = {'.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov'}
 
 @api.route('/media/upload', methods=['POST'])
 def upload_media():
-    """Upload a media file for story publishing."""
+    """Upload a media file for story publishing (auth + size + MIME hardened)."""
     import time
+    import uuid
     from pathlib import Path
-    from werkzeug.utils import secure_filename
+
+    from src.dashboard.security_hardening import (
+        ALLOWED_MEDIA_EXTENSIONS,
+        MEDIA_MAX_BYTES,
+        sniff_media_kind,
+    )
 
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -1389,25 +1395,62 @@ def upload_media():
         return jsonify({'error': 'Empty filename'}), 400
 
     ext = Path(f.filename).suffix.lower()
-    if ext not in _ALLOWED_MEDIA:
+    if ext not in ALLOWED_MEDIA_EXTENSIONS:
         return jsonify({'error': f'Type {ext} not allowed. Use: jpg, png, webp, mp4, mov'}), 400
+
+    # Content-Length hint (Flask MAX_CONTENT_LENGTH is the hard ceiling).
+    content_length = request.content_length
+    if content_length is not None and content_length > MEDIA_MAX_BYTES + (1024 * 1024):
+        return jsonify({'error': 'File too large (max 50 MiB).'}), 413
 
     media_dir = Path(settings.storage.media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
-
-    base = secure_filename(f.filename)
+    # Non-executable storage: owner-controlled name; never trust client path segments.
+    base = f"upload_{uuid.uuid4().hex}{ext}"
     dest = media_dir / base
     if dest.exists():
-        base = f"{Path(base).stem}_{int(time.time())}{ext}"
+        base = f"upload_{uuid.uuid4().hex}_{int(time.time())}{ext}"
         dest = media_dir / base
 
-    f.save(str(dest))
+    # Stream to disk with a hard size cap (path traversal impossible: dest under media_dir).
+    written = 0
+    try:
+        with dest.open('wb') as out:
+            while True:
+                chunk = f.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MEDIA_MAX_BYTES:
+                    out.close()
+                    dest.unlink(missing_ok=True)
+                    return jsonify({'error': 'File too large (max 50 MiB).'}), 413
+                out.write(chunk)
+    except OSError:
+        dest.unlink(missing_ok=True)
+        return jsonify({'error': 'Upload failed.'}), 500
+
+    if written == 0:
+        dest.unlink(missing_ok=True)
+        return jsonify({'error': 'Empty file.'}), 400
+
+    ok, kind, err = sniff_media_kind(dest, ext)
+    if not ok:
+        dest.unlink(missing_ok=True)
+        return jsonify({'error': err or 'Invalid media content.'}), 400
+
+    # Ensure file is not executable.
+    try:
+        dest.chmod(0o644)
+    except OSError:
+        pass
+
     return jsonify({
         'success': True,
         'filename': base,
         'path': str(dest),
-        'size': dest.stat().st_size,
-        'type': 'video' if ext in {'.mp4', '.mov'} else 'photo',
+        'size': written,
+        'type': kind,
     })
 
 

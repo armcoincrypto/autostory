@@ -219,9 +219,12 @@
                     <a class="nav-link {% if request.path == '/advanced' or request.path.startswith('/operator') or request.path == '/discovery' or request.path.startswith('/ai-coding') or request.path == '/dexpert' %}active{% endif %}" href="/advanced">
                         <i class="bi bi-tools"></i> Advanced
                     </a>
-                    <a class="nav-link mt-3" href="/logout" style="color:#94a3b8;">
-                        <i class="bi bi-box-arrow-right"></i> Log out
-                    </a>
+                    <form method="post" action="{{ url_for('auth.logout') }}" class="mt-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="nav-link border-0 bg-transparent p-0 text-start w-100" style="color:#94a3b8;">
+                            <i class="bi bi-box-arrow-right"></i> Log out
+                        </button>
+                    </form>
                 </nav>
             </div>
 
