@@ -1,0 +1,12 @@
+[Unit]
+Description=Storyfleet off-host backup freshness check
+After=storyfleet-offhost-backup.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/autostory-releases/current/scripts/ops/storyfleet_backup_age_check.sh
+
+[Install]
+WantedBy=multi-user.target

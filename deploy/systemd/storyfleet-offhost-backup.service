@@ -1,0 +1,17 @@
+[Unit]
+Description=Storyfleet encrypted off-host DR backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/autostory/offsite-backup.env
+ExecStart=/opt/autostory-releases/current/scripts/ops/storyfleet_offhost_backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target
