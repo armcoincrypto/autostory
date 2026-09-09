@@ -360,6 +360,9 @@ def run_async(coro):
 # ============================================
 api = Blueprint('api', __name__, url_prefix='/api')
 
+# Wave A — only GET /api/health remains anonymously reachable (liveness).
+_LEGACY_API_PUBLIC_GET_PATHS = frozenset({"/api/health"})
+
 
 @api.before_request
 def maybe_proxy_api():
@@ -367,6 +370,23 @@ def maybe_proxy_api():
     rv = _proxy_api_to_server()
     if rv is not None:
         return rv
+
+
+@api.before_request
+def require_legacy_api_authorization():
+    """Wave A: fail-closed auth for the legacy ``/api`` blueprint.
+
+    Uses the same ``dashboard_api_authorized`` contract as Messages/Stories
+    (session admin or ``X-Admin-Token``). Does not introduce a second auth system.
+    """
+    if request.method == "OPTIONS":
+        return None
+    path = (request.path or "").rstrip("/") or "/"
+    if request.method == "GET" and path in _LEGACY_API_PUBLIC_GET_PATHS:
+        return None
+    if not _admin_api_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    return None
 
 
 @api.route('/health', methods=['GET'])
