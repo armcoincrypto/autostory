@@ -513,9 +513,12 @@ def list_accounts():
                     "health_status": getattr(a, "health_status", None),
                     "health_checked_at": hc_at.isoformat() if hc_at else None,
                     "health_check_stale": _is_health_stale(hc_at),
-                    **_general_health_fields_for_api(a),
-                    **_derive_publish_story_fields(a),
                 }
+                entry.update(_general_health_fields_for_api(a))
+                entry.update(_derive_publish_story_fields(a))
+                from src.dashboard.accounts_owner_health import attach_owner_health
+
+                attach_owner_health(entry)
                 result.append(entry)
             except Exception as e:
                 logger.warning("Skipping account in list due to error",
@@ -532,7 +535,9 @@ def get_account(account_id):
             return jsonify({"error": "Account not found"}), 404
 
         health_checked_at = getattr(account, "health_checked_at", None)
-        return jsonify({
+        from src.dashboard.accounts_owner_health import attach_owner_health
+
+        payload = {
             "id": account.id,
             "phone_number": account.phone_number,
             "user_id": account.user_id,
@@ -546,14 +551,15 @@ def get_account(account_id):
             "stories_today": account.stories_today,
             "actions_today": account.actions_today,
             "created_at": account.created_at.isoformat(),
-            # Health fields
+            # Legacy/internal Telegram healthcheck fields (not owner Health badge).
             "health_status": getattr(account, "health_status", None),
             "health_reason": getattr(account, "health_reason", None),
             "health_checked_at": health_checked_at.isoformat() if health_checked_at else None,
             "health_check_stale": _is_health_stale(health_checked_at),
             **_general_health_fields_for_api(account),
             **_derive_publish_story_fields(account),
-        })
+        }
+        return jsonify(attach_owner_health(payload))
 
 
 @api.route('/accounts/<int:account_id>/status', methods=['PUT'])

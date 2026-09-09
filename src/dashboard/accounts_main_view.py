@@ -276,6 +276,10 @@ def build_accounts_main_context(db: Session) -> dict[str, Any]:
                 "flood_wait": flood,
                 "filter_group": presentation.get("filter_group") or "all",
                 "sort_priority": int(presentation.get("sort_priority") or sort_priority_for_status(display_status)),
+                # Wave E: explicit owner health contract (matrix-backed; not ORM health_status).
+                "owner_health": display_status,
+                "owner_health_label": presentation["status_label"],
+                "owner_health_source": "canonical_fleet_matrix",
                 "canonical": canonical,
                 "can_import_session": presentation.get("row_action") == "import_session" or display_status in {"NEEDS_SESSION", "BLOCKED"},
                 "can_open_stories": _can_open_stories(display_status),

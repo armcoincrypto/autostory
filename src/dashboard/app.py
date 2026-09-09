@@ -301,11 +301,18 @@ def _ensure_p10_17_accounts_api(app: Flask) -> None:
         from src.core.safety_policy import get_account_risk_level, get_story_safety_decision
         from src.ai_agent.account_allowlist import RESERVED_AI_AGENT_ACCOUNT_IDS
 
-        limit = min(500, max(1, request.args.get("limit", 100, type=int)))
+        limit = min(500, max(1, request.args.get("limit", 500, type=int)))
         purpose_filter = (request.args.get("purpose") or "").strip().lower()
         want_summary = request.args.get("summary", "").strip().lower() in ("1", "true", "yes")
         canonical_exists = get_existing_canonical_account_ids()
         rows: list[dict[str, Any]] = []
+        from src.dashboard.accounts_owner_health import (
+            attach_owner_health,
+            build_owner_health_index,
+            owner_summary_from_index,
+        )
+
+        owner_index = build_owner_health_index()
         with get_db_context() as db:
             accounts = db.query(Account).order_by(Account.id).limit(limit).all()
             for account in accounts:
@@ -422,9 +429,12 @@ def _ensure_p10_17_accounts_api(app: Flask) -> None:
                     row["publish_story_operator_action"] = "Review account"
                     row["publish_story_reason_code"] = "story_safety_error"
                 row.update(_p10_17_general_health(SimpleNamespace(**row)))
+                attach_owner_health(row, index=owner_index)
                 rows.append(row)
         if want_summary:
-            return jsonify({"accounts": rows, "summary": _p10_17_accounts_summary(rows)})
+            summary = _p10_17_accounts_summary(rows)
+            summary.update(owner_summary_from_index(owner_index))
+            return jsonify({"accounts": rows, "summary": summary})
         return jsonify(rows)
 
     list_accounts_guarded._p10_17_guarded = True
