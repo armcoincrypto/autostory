@@ -11,9 +11,16 @@ for listed account IDs while global mutations remain disabled.
 P9.66 — ``SCHEDULER_MUTATION_SCOPE=campaign_pilot_5`` additionally requires
 ``SCHEDULER_MUTATION_TARGET_ALLOWLIST`` (exactly five target IDs for five accounts).
 Join, bulk, membership mutations remain blocked.
+
+Wave D — Job-type mutation scope:
+``SCHEDULER_PROMO_MUTATIONS_ENABLED`` / ``SCHEDULER_INFO_MUTATIONS_ENABLED``
+further restrict PROMO/INFO creates even when the global switch is on.
+Scheduled DM uses ``SCHEDULED_DM_ENABLED`` only (Messages API), not this module's
+global switch.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from flask import Response, jsonify, request
@@ -27,6 +34,7 @@ BLOCKED_MESSAGE = (
     "No DB writes, queue enqueue, or Telegram actions will run. "
     "Enable only in an explicit approved phase."
 )
+JOB_TYPE_BLOCKED_CODE = "scheduler_job_type_mutations_disabled"
 SCOPED_SEND_TEST_SCOPE = "send_test_only"
 SCOPED_CAMPAIGN_PILOT_SCOPE = "campaign_pilot_5"
 MAX_CAMPAIGN_PILOT_ACCOUNTS = 5
@@ -38,6 +46,90 @@ MEMBERSHIP_CHECK_PATH_SUFFIX = "/targets/membership-check"
 
 def scheduler_mutations_enabled() -> bool:
     return bool(getattr(settings, "scheduler_mutations_enabled", False))
+
+
+def _env_bool_flag(env_name: str, settings_attr: str) -> bool:
+    """Fail-closed bool: explicit env wins; otherwise settings field (default false)."""
+    env = (os.environ.get(env_name) or "").strip().lower()
+    if env:
+        return env in {"1", "true", "yes", "on"}
+    return bool(getattr(settings, settings_attr, False))
+
+
+def scheduler_promo_mutations_enabled() -> bool:
+    """Product flag for PROMO job-type mutations (Wave D)."""
+    return _env_bool_flag(
+        "SCHEDULER_PROMO_MUTATIONS_ENABLED",
+        "scheduler_promo_mutations_enabled",
+    )
+
+
+def scheduler_info_mutations_enabled() -> bool:
+    """Product flag for INFO job-type mutations (Wave D)."""
+    return _env_bool_flag(
+        "SCHEDULER_INFO_MUTATIONS_ENABLED",
+        "scheduler_info_mutations_enabled",
+    )
+
+
+def scheduler_promo_mutations_allowed() -> bool:
+    """PROMO creates require global scheduler mutations AND the PROMO type flag."""
+    return scheduler_mutations_enabled() and scheduler_promo_mutations_enabled()
+
+
+def scheduler_info_mutations_allowed() -> bool:
+    """INFO creates require global scheduler mutations AND the INFO type flag."""
+    return scheduler_mutations_enabled() and scheduler_info_mutations_enabled()
+
+
+def job_type_scheduler_mutation_allowed(job_type: str) -> bool:
+    """Whether creating/enqueuing a scheduler job of this type is allowed."""
+    jt = (job_type or "").strip().upper()
+    if jt == "PROMO":
+        return scheduler_promo_mutations_allowed()
+    if jt == "INFO":
+        return scheduler_info_mutations_allowed()
+    if jt == "DM":
+        # DM create is owned by Messages / SCHEDULED_DM_ENABLED — not /api/v1.
+        from src.messaging.scheduled_dm_flags import scheduled_dm_create_allowed
+
+        return scheduled_dm_create_allowed()
+    return False
+
+
+def job_type_mutation_block_payload(job_type: str) -> dict[str, Any]:
+    jt = (job_type or "").strip().upper() or "UNKNOWN"
+    return {
+        "ok": False,
+        "error": (
+            f"Scheduler mutations for job type {jt} are disabled. "
+            "PROMO requires SCHEDULER_MUTATIONS_ENABLED and SCHEDULER_PROMO_MUTATIONS_ENABLED; "
+            "INFO requires SCHEDULER_MUTATIONS_ENABLED and SCHEDULER_INFO_MUTATIONS_ENABLED; "
+            "DM requires SCHEDULED_DM_ENABLED only."
+        ),
+        "code": JOB_TYPE_BLOCKED_CODE,
+        "error_code": JOB_TYPE_BLOCKED_CODE,
+        "job_type": jt,
+        "scheduler_mutations_enabled": scheduler_mutations_enabled(),
+        "scheduler_promo_mutations_enabled": scheduler_promo_mutations_enabled(),
+        "scheduler_info_mutations_enabled": scheduler_info_mutations_enabled(),
+        "scheduler_promo_mutations_allowed": scheduler_promo_mutations_allowed(),
+        "scheduler_info_mutations_allowed": scheduler_info_mutations_allowed(),
+    }
+
+
+def check_job_type_mutation_allowed(job_type: str) -> Optional[Response]:
+    """Return 423 when this job type may not be created under Wave D type flags.
+
+    When the global scheduler mutation switch is off, the blueprint ``before_request``
+    guard (and scoped allowlists) already decided; do not double-block scoped pilots.
+    When global is on, PROMO/INFO still require their per-type flags.
+    """
+    if not scheduler_mutations_enabled():
+        return None
+    if job_type_scheduler_mutation_allowed(job_type):
+        return None
+    return jsonify(job_type_mutation_block_payload(job_type)), BLOCKED_STATUS
 
 
 def scheduler_mutation_account_allowlist_ids() -> frozenset[int]:

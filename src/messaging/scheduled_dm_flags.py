@@ -1,8 +1,10 @@
-"""Scheduled DM product flags (Wave 10).
+"""Scheduled DM product flags (Wave 10 + Wave D scoping).
 
-Creation/cancel require BOTH:
+Creation/cancel require:
 - SCHEDULED_DM_ENABLED (product rail)
-- SCHEDULER_MUTATIONS_ENABLED (queue write kill switch)
+
+Wave D: scheduled DM is independent of SCHEDULER_MUTATIONS_ENABLED so a DM
+canary does not unlock PROMO/INFO mutation paths.
 
 Execution of already-PENDING DM jobs is independent (worker + Owner DM
 MESSAGES_EXECUTION_ENABLED still apply at send time).
@@ -12,7 +14,6 @@ from __future__ import annotations
 import os
 
 from config.settings import settings
-from src.dashboard.scheduler_mutations import scheduler_mutations_enabled
 
 
 def scheduled_dm_enabled() -> bool:
@@ -24,19 +25,28 @@ def scheduled_dm_enabled() -> bool:
 
 
 def scheduled_dm_create_allowed() -> bool:
-    """True only when both product and scheduler-mutation gates are open."""
-    return scheduled_dm_enabled() and scheduler_mutations_enabled()
+    """True when the scheduled-DM product rail is open (Wave D: not tied to global scheduler mutations)."""
+    return scheduled_dm_enabled()
 
 
 def scheduled_dm_deny_payload() -> dict:
+    from src.dashboard.scheduler_mutations import (
+        scheduler_info_mutations_allowed,
+        scheduler_mutations_enabled,
+        scheduler_promo_mutations_allowed,
+    )
+
     return {
         "ok": False,
         "error": "SCHEDULED_DM_DISABLED",
         "error_code": "SCHEDULED_DM_DISABLED",
         "message": (
             "Scheduled direct messages are disabled. "
-            "Require SCHEDULED_DM_ENABLED=true and SCHEDULER_MUTATIONS_ENABLED=true."
+            "Require SCHEDULED_DM_ENABLED=true "
+            "(independent of SCHEDULER_MUTATIONS_ENABLED / PROMO / INFO flags)."
         ),
         "scheduled_dm_enabled": scheduled_dm_enabled(),
         "scheduler_mutations_enabled": scheduler_mutations_enabled(),
+        "scheduler_promo_mutations_allowed": scheduler_promo_mutations_allowed(),
+        "scheduler_info_mutations_allowed": scheduler_info_mutations_allowed(),
     }

@@ -185,8 +185,22 @@ class Settings(BaseSettings):
         default=False,
         description=(
             "When false (default), creating/cancelling scheduled owner DMs is denied. "
-            "Also requires SCHEDULER_MUTATIONS_ENABLED for create/cancel. "
+            "Independent of SCHEDULER_MUTATIONS_ENABLED (Wave D). "
             "Env: SCHEDULED_DM_ENABLED."
+        ),
+    )
+    scheduler_promo_mutations_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), PROMO job creates/run-now are denied even if "
+            "SCHEDULER_MUTATIONS_ENABLED is true. Env: SCHEDULER_PROMO_MUTATIONS_ENABLED."
+        ),
+    )
+    scheduler_info_mutations_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), INFO job creates/run-now are denied even if "
+            "SCHEDULER_MUTATIONS_ENABLED is true. Env: SCHEDULER_INFO_MUTATIONS_ENABLED."
         ),
     )
     # -------------------------------------------------------------------------

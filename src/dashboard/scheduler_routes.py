@@ -1786,6 +1786,11 @@ def run_job_now():
         return jsonify({"error": "account_id, target_id, type required"}), 400
     if msg_type not in ("PROMO", "INFO"):
         return jsonify({"error": "type must be PROMO or INFO"}), 400
+    from src.dashboard.scheduler_mutations import check_job_type_mutation_allowed
+
+    type_blocked = check_job_type_mutation_allowed(str(msg_type))
+    if type_blocked is not None:
+        return type_blocked
     with get_db_context() as db:
         account = db.query(Account).filter(Account.id == int(account_id)).first()
         if not account:

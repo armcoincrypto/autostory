@@ -59,7 +59,6 @@ def _enable_schedule_flags():
     return patch.multiple(
         "src.messaging.scheduled_dm_flags",
         scheduled_dm_enabled=lambda: True,
-        scheduler_mutations_enabled=lambda: True,
     )
 
 
@@ -111,23 +110,46 @@ def test_fail_closed_without_flags(memory_db):
     _add_account(memory_db)
     svc = ScheduledDirectMessageService()
     with patch("src.messaging.scheduled_dm_flags.scheduled_dm_enabled", return_value=False):
+        assert scheduled_dm_create_allowed() is False
+        r = svc.schedule(
+            memory_db,
+            account_id=106,
+            peer_id="8531893204",
+            message="hello",
+            local_date="2026-09-10",
+            local_time="15:00",
+            timezone="Asia/Yerevan",
+        )
+        assert r.status_code == 423
+        assert r.payload["error_code"] == "SCHEDULED_DM_DISABLED"
+        assert memory_db.query(ScheduledJob).count() == 0
+
+
+def test_wave_d_dm_allowed_without_global_scheduler_mutations(memory_db):
+    """Wave D: SCHEDULED_DM_ENABLED alone is enough for DM create."""
+    _add_account(memory_db)
+    svc = ScheduledDirectMessageService()
+    with patch("src.messaging.scheduled_dm_flags.scheduled_dm_enabled", return_value=True):
         with patch(
-            "src.messaging.scheduled_dm_flags.scheduler_mutations_enabled",
+            "src.dashboard.scheduler_mutations.scheduler_mutations_enabled",
             return_value=False,
         ):
-            assert scheduled_dm_create_allowed() is False
-            r = svc.schedule(
-                memory_db,
-                account_id=106,
-                peer_id="8531893204",
-                message="hello",
-                local_date="2026-09-10",
-                local_time="15:00",
-                timezone="Asia/Yerevan",
-            )
-            assert r.status_code == 423
-            assert r.payload["error_code"] == "SCHEDULED_DM_DISABLED"
-            assert memory_db.query(ScheduledJob).count() == 0
+            assert scheduled_dm_create_allowed() is True
+            with patch(
+                "src.messaging.scheduled_dm_service.evaluate_dm_account_eligibility",
+                return_value=_elig_ok(),
+            ):
+                r = svc.schedule(
+                    memory_db,
+                    account_id=106,
+                    peer_id="8531893204",
+                    message="wave-d-canary",
+                    local_date="2026-09-10",
+                    local_time="15:00",
+                    timezone="Asia/Yerevan",
+                )
+            assert r.status_code == 200
+            assert memory_db.query(ScheduledJob).filter(ScheduledJob.type == "DM").count() == 1
 
 
 def test_yerevan_local_to_utc_and_create_pending(memory_db):
