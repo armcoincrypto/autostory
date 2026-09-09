@@ -25,7 +25,9 @@ from src.scheduler.generation_eligibility import (
     log_generation_allowed,
 )
 
-DEFAULT_TIMEZONE = "Europe/Moscow"
+from src.scheduler.timezone import DEFAULT_OWNER_TIMEZONE, SchedulerTimezoneError, local_to_utc_naive
+
+DEFAULT_TIMEZONE = DEFAULT_OWNER_TIMEZONE
 
 
 def generate_jobs_for_date(target_date: Optional[date] = None) -> int:
@@ -88,11 +90,11 @@ def generate_jobs_for_date(target_date: Optional[date] = None) -> int:
                         )
                         continue
 
-                    # Fixed time format HH:MM
+                    # Fixed time format HH:MM (local wall clock in profile TZ → UTC)
                     try:
                         h, m = map(int, time_str.split(":"))
-                        run_at = datetime(local_day.year, local_day.month, local_day.day, h, m, tzinfo=tz)
-                        run_at = run_at.astimezone(timezone.utc).replace(tzinfo=None)
+                        local_naive = datetime(local_day.year, local_day.month, local_day.day, h, m)
+                        run_at = local_to_utc_naive(local_naive, tz_str)
 
                         quiet_start, quiet_end = _parse_quiet_hours(profile.quiet_hours_json)
                         if quiet_start and quiet_end:
@@ -118,7 +120,7 @@ def generate_jobs_for_date(target_date: Optional[date] = None) -> int:
                             ):
                                 continue
                             created += 1
-                    except (ValueError, IndexError):
+                    except (ValueError, IndexError, SchedulerTimezoneError):
                         continue
 
     return created

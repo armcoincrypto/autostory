@@ -360,8 +360,8 @@ class Settings(BaseSettings):
     # Scheduler defaults (flat fields — env keys sched_default_* / SCHED_DEFAULT_*)
     # -------------------------------------------------------------------------
     sched_default_timezone: str = Field(
-        default="Europe/Moscow",
-        description="Default IANA timezone for new schedule profiles / UI",
+        default="Asia/Yerevan",
+        description="Default IANA timezone for new schedule profiles / UI (env SCHED_DEFAULT_TIMEZONE).",
     )
     sched_default_min_interval_sec: int = Field(default=300, ge=0)
     sched_default_daily_total: int = Field(default=20, ge=0)

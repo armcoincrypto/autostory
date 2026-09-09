@@ -2,14 +2,20 @@
 UTC wall-clock helpers for API + DB comparisons.
 
 Contract (scheduler / deliveries):
-- ORM ``DateTime`` columns are **naive** and represent **UTC** (written via ``datetime.utcnow()``
-  or ``datetime.now(timezone.utc).replace(tzinfo=None)``).
+- ORM ``DateTime`` columns are **naive** and represent **UTC**
+  (written via ``utc_now_naive()`` / ``datetime.now(timezone.utc).replace(tzinfo=None)``).
 - JSON must expose timestamps as ISO-8601 **with a trailing ``Z``** so browsers parse as UTC.
+- Owner local wall-clock conversion lives in ``src.scheduler.timezone`` (Wave 9).
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Tuple
+
+
+def utc_now_naive() -> datetime:
+    """Current UTC instant as naive datetime (canonical DB/worker clock)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def utc_day_bounds_naive(now: Optional[datetime] = None) -> Tuple[datetime, datetime]:

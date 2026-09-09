@@ -289,7 +289,7 @@
                     </div>
                     <details class="small text-muted mt-1">
                         <summary class="user-select-none" style="cursor:pointer;">Time help</summary>
-                        <span class="d-block mt-1">Simple save uses timezone <strong>Europe/Moscow</strong>. Sends stay inside this window.</span>
+                        <span class="d-block mt-1">Simple save uses timezone <strong>Asia/Yerevan</strong> (canonical owner default). Sends stay inside this window.</span>
                     </details>
                 </div>
                 <div class="col-md-3">
@@ -2234,7 +2234,7 @@ async function simpleSave(e) {
             body: JSON.stringify({
                 ...profileRes,
                 is_enabled: true,
-                timezone: 'Europe/Moscow',
+                timezone: 'Asia/Yerevan',
                 min_interval_sec: 60,
                 daily_cap_total: 999,
                 daily_cap_promo: 500,
@@ -2750,7 +2750,7 @@ async function saveProfile(e) {
     const id = document.getElementById('profile-account').value;
     if (!id) return;
     try {
-        await apiFetch(API + '/schedule/profile/' + id, { method: 'PUT', body: JSON.stringify({ is_enabled: document.getElementById('profile-enabled').checked, daily_cap_total: parseInt(document.getElementById('profile-cap-total').value) || 6, min_interval_sec: parseInt(document.getElementById('profile-min-interval').value) || 900, timezone: 'Europe/Moscow', jitter_sec: 0, quiet_hours_json: '{"start":"21:00","end":"10:00"}' }) });
+        await apiFetch(API + '/schedule/profile/' + id, { method: 'PUT', body: JSON.stringify({ is_enabled: document.getElementById('profile-enabled').checked, daily_cap_total: parseInt(document.getElementById('profile-cap-total').value) || 6, min_interval_sec: parseInt(document.getElementById('profile-min-interval').value) || 900, timezone: 'Asia/Yerevan', jitter_sec: 0, quiet_hours_json: '{"start":"21:00","end":"10:00"}' }) });
         showToast('Profile saved');
     } catch (e) { showToast(e.message, 'error'); }
 }

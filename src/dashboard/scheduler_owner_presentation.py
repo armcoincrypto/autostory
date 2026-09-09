@@ -17,10 +17,12 @@ from src.core.scheduler_models import (
     JobStatus,
     MessageDelivery,
     MessageType,
+    ScheduleProfile,
     ScheduledJob,
 )
 from src.dashboard.scheduler_mutations import scheduler_mutations_enabled
 from src.scheduler.generation_eligibility import promo_generation_mode
+from src.scheduler.timezone import DEFAULT_OWNER_TIMEZONE, owner_schedule_fields
 
 STATUS_OWNER_LABELS: dict[str, str] = {
     JobStatus.PENDING.value: "Scheduled",
@@ -196,12 +198,28 @@ def _batch_latest_deliveries(db: Session, job_ids: Iterable[int]) -> dict[int, M
     return out
 
 
+def _batch_profile_timezones(db: Session, account_ids: Iterable[int]) -> dict[int, str]:
+    uniq = sorted({int(i) for i in account_ids if i is not None})
+    if not uniq:
+        return {}
+    rows = (
+        db.query(ScheduleProfile.account_id, ScheduleProfile.timezone)
+        .filter(ScheduleProfile.account_id.in_(uniq))
+        .all()
+    )
+    return {
+        int(aid): (tz or DEFAULT_OWNER_TIMEZONE)
+        for aid, tz in rows
+    }
+
+
 def present_job(
     job: ScheduledJob,
     *,
     accounts: dict[int, dict[str, Any]],
     targets: dict[int, dict[str, Any]],
     deliveries: dict[int, MessageDelivery],
+    profile_timezones: Optional[dict[int, str]] = None,
 ) -> dict[str, Any]:
     status = map_job_status(getattr(job, "status", None))
     jtype = map_job_type(getattr(job, "type", None))
@@ -214,10 +232,17 @@ def present_job(
     if not reason and delivery is not None:
         reason = owner_short_reason(getattr(delivery, "error_message", None))
 
+    tz_name = (profile_timezones or {}).get(aid) or DEFAULT_OWNER_TIMEZONE
+    schedule_fields = owner_schedule_fields(job.run_at, tz_name)
+    # Primary owner display: local wall clock + timezone (Wave 9).
+    # Keep scheduled_at_iso / scheduled_at_utc for technical consumers.
     return {
         "job_id": int(job.id),
-        "scheduled_at": format_display_utc(job.run_at),
-        "scheduled_at_iso": to_utc_iso_z(job.run_at),
+        "scheduled_at": schedule_fields["scheduled_at_local"] or format_display_utc(job.run_at),
+        "scheduled_at_iso": schedule_fields["scheduled_at_utc"] or to_utc_iso_z(job.run_at),
+        "scheduled_at_utc": schedule_fields["scheduled_at_utc"],
+        "scheduled_at_local": schedule_fields["scheduled_at_local"],
+        "timezone": schedule_fields["timezone"],
         "created_at": format_display_utc(getattr(job, "created_at", None)),
         "created_at_iso": to_utc_iso_z(getattr(job, "created_at", None)),
         "updated_at": format_display_utc(getattr(job, "updated_at", None)),
@@ -259,9 +284,17 @@ def _present_many(
     accounts: dict[int, dict[str, Any]],
     targets: dict[int, dict[str, Any]],
     deliveries: dict[int, MessageDelivery],
+    profile_timezones: Optional[dict[int, str]] = None,
 ) -> list[dict[str, Any]]:
     return [
-        present_job(j, accounts=accounts, targets=targets, deliveries=deliveries) for j in jobs
+        present_job(
+            j,
+            accounts=accounts,
+            targets=targets,
+            deliveries=deliveries,
+            profile_timezones=profile_timezones,
+        )
+        for j in jobs
     ]
 
 
@@ -353,11 +386,18 @@ def build_owner_scheduler_view(
     accounts = _batch_accounts(db, account_ids)
     targets = _batch_targets(db, target_ids)
     deliveries = _batch_latest_deliveries(db, job_ids)
+    profile_timezones = _batch_profile_timezones(db, account_ids)
 
     mutations = bool(scheduler_mutations_enabled())
     gen_mode = (promo_generation_mode() or "disabled").strip().lower()
     generation_on = gen_mode not in {"", "disabled", "planning_only"}
 
+    present_kw = dict(
+        accounts=accounts,
+        targets=targets,
+        deliveries=deliveries,
+        profile_timezones=profile_timezones,
+    )
     return {
         "filter": filt,
         "filters": list(OWNER_FILTERS),
@@ -371,22 +411,15 @@ def build_owner_scheduler_view(
             "running": int(running_n),
             "failed_recent": int(failed_recent_n),
         },
-        "upcoming": _present_many(
-            upcoming_jobs, accounts=accounts, targets=targets, deliveries=deliveries
-        ),
-        "recent": _present_many(
-            recent_jobs, accounts=accounts, targets=targets, deliveries=deliveries
-        ),
-        "failed": _present_many(
-            failed_jobs, accounts=accounts, targets=targets, deliveries=deliveries
-        ),
-        "filtered": _present_many(
-            filtered_jobs, accounts=accounts, targets=targets, deliveries=deliveries
-        ),
+        "upcoming": _present_many(upcoming_jobs, **present_kw),
+        "recent": _present_many(recent_jobs, **present_kw),
+        "failed": _present_many(failed_jobs, **present_kw),
+        "filtered": _present_many(filtered_jobs, **present_kw),
         "timezone_note": (
-            "Times are shown in UTC. Jobs are stored as naive UTC instants; "
-            "profile timezones (Asia/Yerevan default / Europe/Moscow in setup UI) "
-            "affect generation only and are not changed in Wave 5."
+            f"Times are shown in each account's schedule timezone "
+            f"(default {DEFAULT_OWNER_TIMEZONE}). "
+            "Jobs are stored and executed as UTC instants."
         ),
+        "default_timezone": DEFAULT_OWNER_TIMEZONE,
         "external_telegram_calls_on_page_load": 0,
     }

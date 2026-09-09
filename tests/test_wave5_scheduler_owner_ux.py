@@ -117,7 +117,10 @@ def test_present_job_shape_and_diagnostics():
     assert row["type_label"] == "Promotional message"
     assert row["account_label"] == "@Krystal"
     assert row["target_label"] == "Crypto Group"
-    assert row["scheduled_at"] == "2026-05-19 12:27 UTC"
+    # Wave 9: primary display is owner-local (default Asia/Yerevan = UTC+4)
+    assert row["scheduled_at"] == "19 May 2026, 16:27 Asia/Yerevan"
+    assert row["scheduled_at_utc"] == "2026-05-19T12:27:29Z"
+    assert row["timezone"] == "Asia/Yerevan"
     assert row["short_reason"] == "Failed to connect to Telegram"
     assert "lease_owner" in row["diagnostics"]
 

@@ -9,6 +9,8 @@ import os
 import random
 import uuid
 from datetime import datetime, timedelta
+
+from src.core.datetime_utc import utc_now_naive
 from typing import Any, Optional, Tuple
 
 import structlog
@@ -179,7 +181,7 @@ def _reconcile_job_if_sent_delivery_exists(job_id: int) -> bool:
         job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
         if job and str(job.status) in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
             job.status = JobStatus.SENT.value
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utc_now_naive()
             job.lease_until = None
             job.lease_owner = None
         logger.info(
@@ -249,7 +251,7 @@ def _preflight_delivery_intent(job_id: int) -> Optional[str]:
                 extra.error_code = "DUPLICATE_SENDING"
                 extra.error_message = "Superseded send-intent row"
         latest = sending_rows[-1]
-        now = datetime.utcnow()
+        now = utc_now_naive()
         lu = job.lease_until
         if str(job.status) == JobStatus.RUNNING.value and lu is not None and lu > now:
             return "already_sending"
@@ -270,7 +272,7 @@ def _fail_job_for_uncertain_block(job_id: int) -> None:
         job.status = JobStatus.FAILED.value
         job.attempts = (job.attempts or 0) + 1
         job.last_error = "UNCERTAIN prior delivery — operator review required"
-        job.updated_at = datetime.utcnow()
+        job.updated_at = utc_now_naive()
         job.lease_until = None
         job.lease_owner = None
         _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="uncertain_block")
@@ -285,7 +287,7 @@ def _create_sending_delivery(
 ) -> int:
     key = uuid.uuid4().hex[:32]
     with get_db_context() as db:
-        now = datetime.utcnow()
+        now = utc_now_naive()
         d = MessageDelivery(
             job_id=int(job_id),
             account_id=int(account_id),
@@ -340,14 +342,14 @@ def _finalize_delivery_sent(
         if d:
             d.status = DeliveryStatus.SENT.value
             d.tg_message_id = tg_message_id
-            d.sent_at = datetime.utcnow()
+            d.sent_at = utc_now_naive()
             if not d.rendered_body and rendered:
                 d.rendered_body = rendered[:500]
         job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
         if job:
             prev_lo, prev_lu = job.lease_owner, job.lease_until
             job.status = JobStatus.SENT.value
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utc_now_naive()
             job.lease_until = None
             job.lease_owner = None
             _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_sent")
@@ -378,7 +380,7 @@ def _finalize_delivery_failed(
             job.status = JobStatus.FAILED.value
             job.attempts = (job.attempts or 0) + 1
             job.last_error = error
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utc_now_naive()
             job.lease_until = None
             job.lease_owner = None
             _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_failed")
@@ -409,7 +411,7 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
             job.status = JobStatus.FAILED.value
             job.attempts = (job.attempts or 0) + 1
             job.last_error = reason
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utc_now_naive()
             job.lease_until = None
             job.lease_owner = None
             _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_missing_binding")
@@ -505,7 +507,7 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         )
         if gate.get("action") == "defer_temp_lock":
             prev_lo, prev_lu = job.lease_owner, job.lease_until
-            now = datetime.utcnow()
+            now = utc_now_naive()
             defer_sec = int(os.environ.get("SCHEDULER_TEMP_LOCK_DEFER_SEC", "90"))
             job.run_at = max(job.run_at or now, now) + timedelta(seconds=max(10, defer_sec))
             job.status = JobStatus.PENDING.value
@@ -565,7 +567,7 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         ):
             effective_send_test = True
             job.last_error = None
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utc_now_naive()
 
         if not effective_send_test:
             from src.scheduler.pacing import get_send_pacing_decision, defer_scheduled_job_for_pacing
@@ -948,7 +950,7 @@ def _mark_job_sent(job_id: int, tg_message_id: int, rendered: str) -> None:
             return
         prev_lo, prev_lu = job.lease_owner, job.lease_until
         job.status = JobStatus.SENT.value
-        job.updated_at = datetime.utcnow()
+        job.updated_at = utc_now_naive()
         job.lease_until = None
         job.lease_owner = None
         _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_sent")
@@ -958,7 +960,7 @@ def _mark_job_sent(job_id: int, tg_message_id: int, rendered: str) -> None:
             target_id=job.target_id,
             type=job.type,
             status=DeliveryStatus.SENT,
-            sent_at=datetime.utcnow(),
+            sent_at=utc_now_naive(),
             tg_message_id=tg_message_id,
             rendered_body=rendered[:500] if rendered else None,
         )
@@ -974,7 +976,7 @@ def _mark_job_failed(job_id: int, error: str, *, error_code: Optional[str] = Non
         job.status = JobStatus.FAILED.value
         job.attempts = (job.attempts or 0) + 1
         job.last_error = error
-        job.updated_at = datetime.utcnow()
+        job.updated_at = utc_now_naive()
         job.lease_until = None
         job.lease_owner = None
         _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_failed")
@@ -997,7 +999,7 @@ def _mark_job_skipped(job_id: int, reason: str) -> None:
             prev_lo, prev_lu = job.lease_owner, job.lease_until
             job.status = JobStatus.SKIPPED.value
             job.last_error = reason
-            job.updated_at = datetime.utcnow()
+            job.updated_at = utc_now_naive()
             job.lease_until = None
             job.lease_owner = None
             _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_skipped")

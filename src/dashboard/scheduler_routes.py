@@ -12,6 +12,7 @@ from src.dashboard.auth_access import dashboard_api_authorized
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from src.core.datetime_utc import utc_now_naive
 from src.core.database import get_db_context
 from src.core.models import Account, AccountStatus
 from src.core.datetime_utc import to_utc_iso_z, utc_day_bounds_naive
@@ -1861,7 +1862,7 @@ def run_job_now():
             account_id=int(account_id),
             target_id=int(target_id),
             type=msg_type,
-            run_at=datetime.utcnow(),
+            run_at=utc_now_naive(),
             status=JobStatus.PENDING,
             last_error=job_marker,
         )
