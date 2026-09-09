@@ -53,11 +53,12 @@ def test_scheduler_setup_preserved_at_dedicated_route():
 def test_status_and_type_owner_mapping():
     expected = {
         "PENDING": "Scheduled",
-        "RUNNING": "In progress",
+        "RUNNING": "Sending",
         "SENT": "Sent",
         "FAILED": "Failed",
         "SKIPPED": "Skipped",
         "CANCELLED": "Cancelled",
+        "UNCERTAIN": "Uncertain",
     }
     assert STATUS_OWNER_LABELS == expected
     for raw, label in expected.items():
@@ -70,7 +71,9 @@ def test_status_and_type_owner_mapping():
     assert unk["raw"] == "WEIRD"
     assert map_job_type("PROMO")["label"] == "Promotional message"
     assert map_job_type("INFO")["label"] == "Information message"
+    assert map_job_type("DM")["label"] == "Direct message"
     assert TYPE_OWNER_LABELS["PROMO"] == "Promotional message"
+    assert TYPE_OWNER_LABELS["DM"] == "Direct message"
 
 
 def test_utc_display_does_not_shift_naive_instant():
@@ -104,6 +107,8 @@ def test_present_job_shape_and_diagnostics():
     job.lease_until = None
     job.lease_owner = None
     job.template_id = 3
+    job.schedule_timezone = None
+    job.peer_id = None
 
     row = present_job(
         job,

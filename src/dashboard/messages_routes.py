@@ -21,7 +21,13 @@ from src.messaging.eligibility import evaluate_dm_account_eligibility
 from src.messaging.flags import messages_execution_enabled
 from src.messaging.models import OwnerDmIntent
 from src.messaging.owner_dm_service import OwnerDirectMessageService
+from src.messaging.scheduled_dm_flags import (
+    scheduled_dm_create_allowed,
+    scheduled_dm_enabled,
+)
+from src.messaging.scheduled_dm_service import ScheduledDirectMessageService
 from src.messaging.transport import TelegramDmTransport
+from src.scheduler.timezone import DEFAULT_OWNER_TIMEZONE
 
 logger = structlog.get_logger(__name__)
 
@@ -125,6 +131,9 @@ def messages_status():
             "send_now_available": messages_execution_enabled(),
             "dry_run_available": True,
             "ai_draft_available": messages_ai_draft_enabled(),
+            "scheduled_dm_enabled": scheduled_dm_enabled(),
+            "schedule_available": scheduled_dm_create_allowed(),
+            "default_timezone": DEFAULT_OWNER_TIMEZONE,
             "banner": (
                 None
                 if messages_execution_enabled()
@@ -418,3 +427,69 @@ def messages_intent_by_key(idempotency_key: str):
         if not intent:
             return jsonify({"ok": False, "error": "NOT_FOUND", "message": "Intent not found"}), 404
         return jsonify(_intent_owner_safe(intent))
+
+
+@messages_api.route("/schedule", methods=["POST"])
+def messages_schedule():
+    """Create a PENDING scheduled DM job (fail-closed unless both DM + mutation flags)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        account_id = int(data.get("account_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_id required"}), 400
+    peer = (data.get("peer") or data.get("peer_id") or "").strip()
+    message = data.get("message") if data.get("message") is not None else data.get("text")
+    peer_type = (data.get("peer_type") or "private").strip().lower()
+    local_date = data.get("local_date") or data.get("date")
+    local_time = data.get("local_time") or data.get("time")
+    timezone = data.get("timezone")
+    dry_run_only = bool(data.get("dry_run"))
+    if not peer:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "peer required"}), 400
+    if message is None:
+        return jsonify({"ok": False, "error": "EMPTY_MESSAGE", "message": "message required"}), 400
+
+    svc = ScheduledDirectMessageService()
+    with get_db_context() as db:
+        result = svc.schedule(
+            db,
+            account_id=account_id,
+            peer_id=peer,
+            message=str(message),
+            local_date=str(local_date) if local_date is not None else None,
+            local_time=str(local_time) if local_time is not None else None,
+            timezone=str(timezone) if timezone is not None else None,
+            peer_type=peer_type,
+            dry_run_only=dry_run_only,
+        )
+    return jsonify(result.payload), result.status_code
+
+
+@messages_api.route("/scheduled", methods=["GET"])
+def messages_scheduled_list():
+    """List scheduled DM jobs (read-only; no mutation gate)."""
+    limit = request.args.get("limit", 20, type=int)
+    account_id = request.args.get("account_id", type=int)
+    svc = ScheduledDirectMessageService()
+    with get_db_context() as db:
+        rows = svc.list_jobs(db, limit=limit, account_id=account_id)
+        account_ids = {int(r["account_id"]) for r in rows}
+        labels: dict[int, str] = {}
+        if account_ids:
+            for a in db.query(Account).filter(Account.id.in_(account_ids)).all():
+                labels[int(a.id)] = (
+                    (a.username and f"@{a.username}")
+                    or (a.first_name or f"Account #{a.id}")
+                )
+        for r in rows:
+            r["account_label"] = labels.get(int(r["account_id"]), f"Account #{r['account_id']}")
+    return jsonify({"ok": True, "jobs": rows, "schedule_available": scheduled_dm_create_allowed()})
+
+
+@messages_api.route("/scheduled/<int:job_id>/cancel", methods=["POST"])
+def messages_scheduled_cancel(job_id: int):
+    """Cancel a PENDING scheduled DM only."""
+    svc = ScheduledDirectMessageService()
+    with get_db_context() as db:
+        result = svc.cancel(db, job_id=int(job_id))
+    return jsonify(result.payload), result.status_code

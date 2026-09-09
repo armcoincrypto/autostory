@@ -58,9 +58,9 @@ def test_messages_nav_and_template_contracts():
     assert "confirmSendModal" in tpl
     assert "Delivery could not be confirmed" in tpl
     assert "idempotencyKey" in tpl
-    assert "No scheduling" in tpl
+    assert "Schedule" in tpl  # Wave 10 — schedule action on composer
     assert "Check message" in tpl
-    assert "Review &amp; Send" in tpl or "Review & Send" in tpl
+    assert "Send now" in tpl or "Review &amp; Send" in tpl or "Review & Send" in tpl
 
 
 def test_messages_routes_auth_and_thin_wiring():
@@ -277,6 +277,9 @@ def test_history_normalization_via_fake_transport():
     assert "access_hash" not in str(out)
 
 
-def test_scheduler_still_no_dm_type():
+def test_scheduler_dm_type_additive_wave10():
+    """Wave 10 adds DM job type; PROMO/INFO remain."""
     models = (ROOT / "src/core/scheduler_models.py").read_text(encoding="utf-8")
-    assert 'DM = "DM"' not in models
+    assert 'PROMO = "PROMO"' in models
+    assert 'INFO = "INFO"' in models
+    assert 'DM = "DM"' in models

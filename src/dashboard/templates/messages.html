@@ -98,7 +98,7 @@
 <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
   <div>
     <h2 class="mb-1"><i class="bi bi-chat-dots"></i> Messages</h2>
-    <p class="text-muted mb-0">Send Now to one private conversation. No scheduling.</p>
+    <p class="text-muted mb-0">Send now or schedule one private conversation.</p>
   </div>
 </div>
 
@@ -142,12 +142,36 @@
         <div class="d-flex gap-2 flex-wrap">
           <button type="button" class="btn btn-outline-info btn-sm" id="btn-ai-draft" disabled>Draft with AI</button>
           <button type="button" class="btn btn-outline-light btn-sm" id="btn-check" disabled>Check message</button>
-          <button type="button" class="btn btn-primary btn-sm" id="btn-review" disabled>Review &amp; Send</button>
+          <button type="button" class="btn btn-outline-primary btn-sm" id="btn-schedule" disabled>Schedule</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-review" disabled>Send now</button>
         </div>
       </div>
     </div>
   </section>
 </div>
+
+<section class="recent-panel" aria-label="Scheduled Messages">
+  <div class="recent-head">
+    <span>Scheduled</span>
+    <button type="button" class="btn btn-outline-light btn-sm" id="btn-refresh-scheduled">Refresh</button>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-dark table-sm mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Time</th>
+          <th scope="col">Account</th>
+          <th scope="col">Recipient</th>
+          <th scope="col">Status</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="scheduled-jobs-body">
+        <tr><td colspan="5" class="text-muted small px-3 py-3">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
 
 <section class="recent-panel" aria-label="Recent Messages">
   <div class="recent-head">
@@ -171,6 +195,49 @@
     </table>
   </div>
 </section>
+
+<!-- Schedule modal -->
+<div class="modal fade" id="scheduleModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:#111827;color:#f8fafc;border:1px solid rgba(148,163,184,.3);">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title">Schedule message</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="schedule-summary" class="small mb-3"></div>
+        <div class="row g-2 mb-2">
+          <div class="col-6">
+            <label class="form-label small text-muted" for="schedule-date">Date</label>
+            <input type="date" class="form-control form-control-sm" id="schedule-date">
+          </div>
+          <div class="col-6">
+            <label class="form-label small text-muted" for="schedule-time">Time</label>
+            <input type="time" class="form-control form-control-sm" id="schedule-time">
+          </div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label small text-muted" for="schedule-tz">Timezone</label>
+          <input type="text" class="form-control form-control-sm" id="schedule-tz" value="Asia/Yerevan">
+        </div>
+        <dl class="row mb-0 small">
+          <dt class="col-4 text-muted">From</dt>
+          <dd class="col-8" id="schedule-from">—</dd>
+          <dt class="col-4 text-muted">To</dt>
+          <dd class="col-8" id="schedule-to">—</dd>
+          <dt class="col-4 text-muted">Message</dt>
+          <dd class="col-8"><pre id="schedule-preview" class="mb-0" style="white-space:pre-wrap;font-size:.9rem;"></pre></dd>
+        </dl>
+        <div id="schedule-warn" class="alert alert-warning py-2 mt-3 mb-0 d-none small"></div>
+      </div>
+      <div class="modal-footer border-secondary">
+        <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-outline-info" id="btn-schedule-review">Review schedule</button>
+        <button type="button" class="btn btn-primary" id="btn-schedule-confirm" disabled>Confirm schedule</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Dry-run result + confirm modal -->
 <div class="modal fade" id="confirmSendModal" tabindex="-1" aria-hidden="true">
@@ -212,14 +279,19 @@
     dialog: null,
     messagesEnabled: false,
     aiDraftAvailable: false,
+    scheduleAvailable: false,
+    defaultTimezone: 'Asia/Yerevan',
     inFlight: false,
     idempotencyKey: null,
+    scheduleReviewed: false,
   };
 
   const elAlert = document.getElementById('msg-alert');
   const elBanner = document.getElementById('msg-exec-banner');
   const elRecentBody = document.getElementById('recent-intents-body');
+  const elScheduledBody = document.getElementById('scheduled-jobs-body');
   const btnRefreshRecent = document.getElementById('btn-refresh-recent');
+  const btnRefreshScheduled = document.getElementById('btn-refresh-scheduled');
   const elAccounts = document.getElementById('account-list');
   const elDialogs = document.getElementById('dialog-list');
   const elThread = document.getElementById('thread');
@@ -230,9 +302,13 @@
   const elCount = document.getElementById('char-count');
   const btnAiDraft = document.getElementById('btn-ai-draft');
   const btnCheck = document.getElementById('btn-check');
+  const btnSchedule = document.getElementById('btn-schedule');
   const btnReview = document.getElementById('btn-review');
   const btnConfirm = document.getElementById('btn-confirm-send');
+  const btnScheduleReview = document.getElementById('btn-schedule-review');
+  const btnScheduleConfirm = document.getElementById('btn-schedule-confirm');
   const confirmModal = new bootstrap.Modal(document.getElementById('confirmSendModal'));
+  const scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
 
   const STATUS_LABELS = {
     SENT: 'Sent',
@@ -257,6 +333,12 @@
     if (elAiInstruction) elAiInstruction.disabled = !on;
     btnCheck.disabled = !on;
     btnReview.disabled = !on;
+    if (btnSchedule) {
+      btnSchedule.disabled = !(on && state.dialog);
+      btnSchedule.title = state.scheduleAvailable
+        ? ''
+        : 'Scheduling is currently disabled (flags off)';
+    }
     if (btnAiDraft) {
       btnAiDraft.disabled = !(on && state.aiDraftAvailable && state.dialog);
     }
@@ -272,6 +354,8 @@
     const data = await dashboardFetchJson('/api/messages/status');
     state.messagesEnabled = !!data.messages_execution_enabled;
     state.aiDraftAvailable = !!data.ai_draft_available;
+    state.scheduleAvailable = !!data.schedule_available;
+    state.defaultTimezone = data.default_timezone || 'Asia/Yerevan';
     if (data.banner) {
       elBanner.textContent = data.banner;
       elBanner.classList.remove('d-none');
@@ -633,6 +717,185 @@
     btnRefreshRecent.addEventListener('click', () => loadRecentIntents());
   }
 
+  async function loadScheduledJobs() {
+    if (!elScheduledBody) return;
+    try {
+      const data = await dashboardFetchJson('/api/messages/scheduled?limit=20');
+      const rows = data.jobs || [];
+      if (!rows.length) {
+        elScheduledBody.innerHTML =
+          '<tr><td colspan="5" class="text-muted small px-3 py-3">No scheduled messages.</td></tr>';
+        return;
+      }
+      elScheduledBody.innerHTML = rows
+        .map((row) => {
+          const when = row.scheduled_at_local || row.scheduled_at_utc || '—';
+          const st = row.status || '';
+          const label = row.status_label || st || '—';
+          const canCancel = st === 'PENDING' && state.scheduleAvailable;
+          const actions = canCancel
+            ? `<button type="button" class="btn btn-outline-warning btn-sm btn-cancel-sched" data-job-id="${row.job_id}">Cancel</button>`
+            : '—';
+          return (
+            '<tr>' +
+            `<td class="text-nowrap">${esc(when)}</td>` +
+            `<td>${esc(row.account_label || ('#' + row.account_id))}</td>` +
+            `<td>${esc(row.peer || '—')}</td>` +
+            `<td><span class="status-pill status-${esc(st)}">${esc(label)}</span></td>` +
+            `<td>${actions}</td>` +
+            '</tr>'
+          );
+        })
+        .join('');
+      elScheduledBody.querySelectorAll('.btn-cancel-sched').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const jid = Number(btn.dataset.jobId);
+          try {
+            await dashboardFetchJson('/api/messages/scheduled/' + jid + '/cancel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}',
+            });
+            showAlert('success', 'Scheduled message cancelled.');
+            loadScheduledJobs();
+          } catch (e) {
+            const data = e.data || {};
+            showAlert('warning', data.message || e.message || String(e));
+          }
+        });
+      });
+    } catch (e) {
+      elScheduledBody.innerHTML =
+        `<tr><td colspan="5" class="text-danger small px-3 py-3">${esc(e.message || e)}</td></tr>`;
+    }
+  }
+
+  if (btnRefreshScheduled) {
+    btnRefreshScheduled.addEventListener('click', () => loadScheduledJobs());
+  }
+
+  function defaultScheduleInputs() {
+    const tzEl = document.getElementById('schedule-tz');
+    if (tzEl) tzEl.value = state.defaultTimezone || 'Asia/Yerevan';
+    const now = new Date();
+    // Suggest ~10 minutes ahead in local browser time as a starting point;
+    // backend still converts using the chosen IANA timezone.
+    const soon = new Date(now.getTime() + 10 * 60 * 1000);
+    const yyyy = soon.getFullYear();
+    const mm = String(soon.getMonth() + 1).padStart(2, '0');
+    const dd = String(soon.getDate()).padStart(2, '0');
+    const hh = String(soon.getHours()).padStart(2, '0');
+    const mi = String(soon.getMinutes()).padStart(2, '0');
+    document.getElementById('schedule-date').value = `${yyyy}-${mm}-${dd}`;
+    document.getElementById('schedule-time').value = `${hh}:${mi}`;
+  }
+
+  if (btnSchedule) {
+    btnSchedule.addEventListener('click', () => {
+      clearAlert();
+      if (!state.accountId || !state.dialog) {
+        showAlert('warning', 'Select an account and conversation first.');
+        return;
+      }
+      if (!elComposer.value.trim()) {
+        showAlert('warning', 'Message is empty.');
+        return;
+      }
+      state.scheduleReviewed = false;
+      if (btnScheduleConfirm) btnScheduleConfirm.disabled = true;
+      defaultScheduleInputs();
+      document.getElementById('schedule-from').textContent = state.accountLabel;
+      document.getElementById('schedule-to').textContent =
+        state.dialog.display_name || state.dialog.peer;
+      document.getElementById('schedule-preview').textContent = elComposer.value;
+      document.getElementById('schedule-summary').innerHTML = '';
+      const warn = document.getElementById('schedule-warn');
+      warn.classList.add('d-none');
+      if (!state.scheduleAvailable) {
+        warn.textContent =
+          'Scheduling is disabled (SCHEDULED_DM_ENABLED / SCHEDULER_MUTATIONS_ENABLED). Confirm will be blocked.';
+        warn.classList.remove('d-none');
+      }
+      scheduleModal.show();
+    });
+  }
+
+  if (btnScheduleReview) {
+    btnScheduleReview.addEventListener('click', async () => {
+      const warn = document.getElementById('schedule-warn');
+      warn.classList.add('d-none');
+      try {
+        const data = await dashboardFetchJson('/api/messages/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_id: state.accountId,
+            peer: state.dialog.peer,
+            message: elComposer.value,
+            peer_type: 'private',
+            local_date: document.getElementById('schedule-date').value,
+            local_time: document.getElementById('schedule-time').value,
+            timezone: document.getElementById('schedule-tz').value,
+            dry_run: true,
+          }),
+        });
+        const lines = [
+          `UTC: ${data.scheduled_at_utc || '—'}`,
+          `Local: ${data.scheduled_at_local || '—'}`,
+          `Timezone: ${data.timezone || '—'}`,
+        ];
+        document.getElementById('schedule-summary').innerHTML =
+          lines.map((l) => `<div>${esc(l)}</div>`).join('');
+        state.scheduleReviewed = true;
+        if (btnScheduleConfirm) btnScheduleConfirm.disabled = false;
+      } catch (e) {
+        const data = e.data || {};
+        warn.textContent = data.message || data.error_message || e.message || String(e);
+        warn.classList.remove('d-none');
+        state.scheduleReviewed = false;
+        if (btnScheduleConfirm) btnScheduleConfirm.disabled = true;
+      }
+    });
+  }
+
+  if (btnScheduleConfirm) {
+    btnScheduleConfirm.addEventListener('click', async () => {
+      if (!state.scheduleReviewed || state.inFlight) return;
+      state.inFlight = true;
+      btnScheduleConfirm.disabled = true;
+      try {
+        const data = await dashboardFetchJson('/api/messages/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_id: state.accountId,
+            peer: state.dialog.peer,
+            message: elComposer.value,
+            peer_type: 'private',
+            local_date: document.getElementById('schedule-date').value,
+            local_time: document.getElementById('schedule-time').value,
+            timezone: document.getElementById('schedule-tz').value,
+            dry_run: false,
+          }),
+        });
+        scheduleModal.hide();
+        showAlert(
+          'success',
+          `Scheduled for ${data.scheduled_at_local || data.scheduled_at_utc || 'later'} (job #${data.job_id}).`
+        );
+        loadScheduledJobs();
+      } catch (e) {
+        const data = e.data || {};
+        const warn = document.getElementById('schedule-warn');
+        warn.textContent = data.message || data.error_message || e.message || String(e);
+        warn.classList.remove('d-none');
+      } finally {
+        state.inFlight = false;
+        btnScheduleConfirm.disabled = false;
+      }
+    });
+  }
+
   btnConfirm.addEventListener('click', async () => {
     if (state.inFlight) return;
     state.inFlight = true;
@@ -675,6 +938,7 @@
       await loadStatus();
       await loadAccounts();
       await loadRecentIntents();
+      await loadScheduledJobs();
     } catch (e) {
       showAlert('danger', e.message || String(e));
       elAccounts.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;

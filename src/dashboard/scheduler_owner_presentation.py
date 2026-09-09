@@ -26,16 +26,18 @@ from src.scheduler.timezone import DEFAULT_OWNER_TIMEZONE, owner_schedule_fields
 
 STATUS_OWNER_LABELS: dict[str, str] = {
     JobStatus.PENDING.value: "Scheduled",
-    JobStatus.RUNNING.value: "In progress",
+    JobStatus.RUNNING.value: "Sending",
     JobStatus.SENT.value: "Sent",
     JobStatus.FAILED.value: "Failed",
     JobStatus.SKIPPED.value: "Skipped",
     JobStatus.CANCELLED.value: "Cancelled",
+    JobStatus.UNCERTAIN.value: "Uncertain",
 }
 
 TYPE_OWNER_LABELS: dict[str, str] = {
     MessageType.PROMO.value: "Promotional message",
     MessageType.INFO.value: "Information message",
+    MessageType.DM.value: "Direct message",
 }
 
 UPCOMING_STATUSES = (JobStatus.PENDING.value, JobStatus.RUNNING.value)
@@ -44,6 +46,7 @@ TERMINAL_STATUSES = (
     JobStatus.FAILED.value,
     JobStatus.SKIPPED.value,
     JobStatus.CANCELLED.value,
+    JobStatus.UNCERTAIN.value,
 )
 
 OWNER_FILTERS = ("all", "upcoming", "sent", "failed", "cancelled", "skipped")
@@ -224,16 +227,29 @@ def present_job(
     status = map_job_status(getattr(job, "status", None))
     jtype = map_job_type(getattr(job, "type", None))
     aid = int(job.account_id)
-    tid = int(job.target_id)
+    raw_tid = getattr(job, "target_id", None)
+    tid = int(raw_tid) if raw_tid is not None else None
     account = accounts.get(aid)
-    target = targets.get(tid)
+    target = targets.get(tid) if tid is not None else None
     delivery = deliveries.get(int(job.id))
     reason = owner_short_reason(getattr(job, "last_error", None), status=status["raw"])
     if not reason and delivery is not None:
         reason = owner_short_reason(getattr(delivery, "error_message", None))
 
-    tz_name = (profile_timezones or {}).get(aid) or DEFAULT_OWNER_TIMEZONE
+    # Wave 10 DM: prefer job.schedule_timezone, then profile, then default.
+    raw_job_tz = getattr(job, "schedule_timezone", None)
+    job_tz = raw_job_tz.strip() if isinstance(raw_job_tz, str) else ""
+    tz_name = job_tz or (profile_timezones or {}).get(aid) or DEFAULT_OWNER_TIMEZONE
     schedule_fields = owner_schedule_fields(job.run_at, tz_name)
+
+    if jtype["raw"] == MessageType.DM.value:
+        peer = (getattr(job, "peer_id", None) or "").strip()
+        target_label = peer or "Private recipient"
+        target_chat_type = "private"
+    else:
+        target_label = _target_label(target, tid if tid is not None else 0)
+        target_chat_type = (target or {}).get("chat_type")
+
     # Primary owner display: local wall clock + timezone (Wave 9).
     # Keep scheduled_at_iso / scheduled_at_utc for technical consumers.
     return {
@@ -251,8 +267,9 @@ def present_job(
         "type_raw": jtype["raw"],
         "type_label": jtype["label"],
         "target_id": tid,
-        "target_label": _target_label(target, tid),
-        "target_chat_type": (target or {}).get("chat_type"),
+        "target_label": target_label,
+        "target_chat_type": target_chat_type,
+        "peer_id": getattr(job, "peer_id", None),
         "status_raw": status["raw"],
         "status_label": status["label"],
         "status_known": status["known"] == "true",

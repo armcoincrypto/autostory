@@ -181,6 +181,14 @@ class Settings(BaseSettings):
             "Env: MESSAGES_EXECUTION_ENABLED."
         ),
     )
+    scheduled_dm_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), creating/cancelling scheduled owner DMs is denied. "
+            "Also requires SCHEDULER_MUTATIONS_ENABLED for create/cancel. "
+            "Env: SCHEDULED_DM_ENABLED."
+        ),
+    )
     # -------------------------------------------------------------------------
     # Owner Messages — AI draft assistant (Wave 7E-OAI; draft only, never send)
     # -------------------------------------------------------------------------

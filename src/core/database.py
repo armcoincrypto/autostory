@@ -234,6 +234,7 @@ def init_db() -> None:
     _ensure_account_risk_events_table()
     _ensure_discovered_users_source_username_column()
     _ensure_scheduled_jobs_lease_columns()
+    _ensure_scheduled_jobs_dm_columns()
     _ensure_message_deliveries_send_intent_columns()
     _ensure_story_runs_mention_plan_column()
     _ensure_social_connections_meta_columns()
@@ -420,6 +421,141 @@ def _ensure_scheduled_jobs_lease_columns() -> None:
                 name,
                 error=str(e),
             )
+
+
+def _ensure_scheduled_jobs_dm_columns() -> None:
+    """Wave 10: DM peer/body columns + nullable target_id for private peers.
+
+    SQLite cannot DROP NOT NULL; when ``target_id`` is still NOT NULL we rebuild
+    the table once (copy all rows) so PROMO/INFO history is preserved and DM
+    jobs may omit ``target_id``.
+    """
+    from sqlalchemy import inspect, text
+
+    if not _is_sqlite(settings.database.url):
+        # Non-SQLite: additive columns + ALTER nullable if dialect supports it.
+        insp = inspect(engine)
+        if "scheduled_jobs" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("scheduled_jobs")}
+        for name, ddl in (
+            ("peer_id", "VARCHAR(64)"),
+            ("peer_type", "VARCHAR(32)"),
+            ("message_body", "TEXT"),
+            ("schedule_timezone", "VARCHAR(64)"),
+        ):
+            if name in cols:
+                continue
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(f"ALTER TABLE scheduled_jobs ADD COLUMN {name} {ddl}"))
+                    conn.commit()
+                logger.info("Added scheduled_jobs column", column=name)
+            except Exception as e:
+                logger.warning(
+                    "Could not add scheduled_jobs.%s (may already exist)",
+                    name,
+                    error=str(e),
+                )
+        return
+
+    insp = inspect(engine)
+    if "scheduled_jobs" not in insp.get_table_names():
+        return
+
+    col_infos = {c["name"]: c for c in insp.get_columns("scheduled_jobs")}
+    for name, ddl in (
+        ("peer_id", "VARCHAR(64)"),
+        ("peer_type", "VARCHAR(32)"),
+        ("message_body", "TEXT"),
+        ("schedule_timezone", "VARCHAR(64)"),
+    ):
+        if name in col_infos:
+            continue
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE scheduled_jobs ADD COLUMN {name} {ddl}"))
+                conn.commit()
+            logger.info("Added scheduled_jobs column", column=name)
+            col_infos[name] = {"name": name, "nullable": True}
+        except Exception as e:
+            logger.warning(
+                "Could not add scheduled_jobs.%s (may already exist)",
+                name,
+                error=str(e),
+            )
+
+    # Refresh after additive ALTERs
+    insp = inspect(engine)
+    col_infos = {c["name"]: c for c in insp.get_columns("scheduled_jobs")}
+    target_col = col_infos.get("target_id")
+    if target_col is None:
+        return
+    # SQLAlchemy inspect: nullable True means NULL allowed
+    if target_col.get("nullable", False):
+        return
+
+    logger.info(
+        "scheduled_jobs_rebuild_for_nullable_target_id",
+        reason="Wave 10 DM jobs cannot use chat_targets FK",
+    )
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("PRAGMA foreign_keys=OFF"))
+            conn.execute(text("CREATE TABLE scheduled_jobs__w10 ("
+                "id INTEGER NOT NULL PRIMARY KEY, "
+                "account_id INTEGER NOT NULL, "
+                "target_id INTEGER, "
+                "type VARCHAR(20) NOT NULL, "
+                "run_at DATETIME NOT NULL, "
+                "status VARCHAR(20), "
+                "template_id INTEGER, "
+                "attempts INTEGER, "
+                "last_error TEXT, "
+                "created_at DATETIME, "
+                "updated_at DATETIME, "
+                "lease_until DATETIME, "
+                "lease_owner VARCHAR(128), "
+                "peer_id VARCHAR(64), "
+                "peer_type VARCHAR(32), "
+                "message_body TEXT, "
+                "schedule_timezone VARCHAR(64), "
+                "FOREIGN KEY(account_id) REFERENCES accounts (id), "
+                "FOREIGN KEY(target_id) REFERENCES chat_targets (id), "
+                "FOREIGN KEY(template_id) REFERENCES message_templates (id)"
+                ")"))
+            conn.execute(text(
+                "INSERT INTO scheduled_jobs__w10 ("
+                "id, account_id, target_id, type, run_at, status, template_id, attempts, "
+                "last_error, created_at, updated_at, lease_until, lease_owner, "
+                "peer_id, peer_type, message_body, schedule_timezone) "
+                "SELECT id, account_id, target_id, type, run_at, status, template_id, attempts, "
+                "last_error, created_at, updated_at, lease_until, lease_owner, "
+                "peer_id, peer_type, message_body, schedule_timezone "
+                "FROM scheduled_jobs"
+            ))
+            conn.execute(text("DROP TABLE scheduled_jobs"))
+            conn.execute(text("ALTER TABLE scheduled_jobs__w10 RENAME TO scheduled_jobs"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_jobs_id ON scheduled_jobs (id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_jobs_status_run_at "
+                "ON scheduled_jobs (status, run_at)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_jobs_lease_owner_lease_until "
+                "ON scheduled_jobs (lease_owner, lease_until)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_jobs_account_id "
+                "ON scheduled_jobs (account_id)"
+            ))
+            conn.execute(text("PRAGMA foreign_keys=ON"))
+        logger.info("scheduled_jobs_rebuild_complete", target_id_nullable=True)
+    except Exception as e:
+        logger.error("scheduled_jobs_rebuild_failed", error=str(e))
+        raise
 
 
 def _ensure_message_deliveries_send_intent_columns() -> None:

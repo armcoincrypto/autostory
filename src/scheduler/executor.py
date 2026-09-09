@@ -66,7 +66,7 @@ from src.ai_agent.account_allowlist import account_id_excluded_from_scheduler_wo
 from src.core.models import Account, AccountStatus
 from src.core.scheduler_models import (
     ScheduledJob, MessageDelivery, ChatTarget,
-    MessageTemplate, AccountTargetBinding, DeliveryStatus, JobStatus,
+    MessageTemplate, AccountTargetBinding, DeliveryStatus, JobStatus, MessageType,
     SCHEDULED_JOB_OPERATOR_SEND_TEST_MARKER,
     SCHEDULED_JOB_CAMPAIGN_PILOT_MARKER,
     SCHEDULED_JOB_P4C_CERTIFICATION_MARKER,
@@ -386,6 +386,115 @@ def _finalize_delivery_failed(
             _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="terminal_failed")
 
 
+async def _execute_scheduled_dm_job(job_id: int) -> bool:
+    """Wave 10: due DM job → OwnerDirectMessageService.send_now (stable idempotency)."""
+    from src.messaging.owner_dm_service import OwnerDirectMessageService
+    from src.messaging.scheduled_dm_service import scheduled_dm_idempotency_key
+
+    with get_db_context() as db:
+        job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+        if not job:
+            return False
+        if str(job.status) not in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
+            return False
+        if str(job.type).upper() != MessageType.DM.value:
+            return False
+
+        account_id = int(job.account_id)
+        peer_id = (job.peer_id or "").strip()
+        peer_type = (job.peer_type or "private").strip().lower()
+        text = job.message_body if job.message_body is not None else ""
+        idem = scheduled_dm_idempotency_key(int(job.id))
+        lease_owner = job.lease_owner
+
+        if not peer_id or not str(text).strip():
+            prev_lo, prev_lu = job.lease_owner, job.lease_until
+            job.status = JobStatus.FAILED.value
+            job.attempts = (job.attempts or 0) + 1
+            job.last_error = "DM job missing peer_id or message_body"
+            job.updated_at = utc_now_naive()
+            job.lease_until = None
+            job.lease_owner = None
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="dm_invalid_payload")
+            return False
+
+        # Persist RUNNING if still PENDING (claim normally already set RUNNING).
+        if str(job.status) == JobStatus.PENDING.value:
+            job.status = JobStatus.RUNNING.value
+            job.updated_at = utc_now_naive()
+            db.commit()
+
+    svc = OwnerDirectMessageService()
+    with get_db_context() as db:
+        result = await svc.send_now(
+            db,
+            account_id=account_id,
+            peer_id=peer_id,
+            text=str(text),
+            idempotency_key=idem,
+            peer_type=peer_type,
+            claim_owner=lease_owner or f"scheduler-dm-{job_id}",
+        )
+
+    status = str(result.get("status") or "").upper()
+    err_code = result.get("error_code")
+    err_msg = result.get("error_message") or err_code or "DM send failed"
+    replay = bool(result.get("replay"))
+
+    with get_db_context() as db:
+        job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+        if not job:
+            return False
+        prev_lo, prev_lu = job.lease_owner, job.lease_until
+        now = utc_now_naive()
+        job.attempts = (job.attempts or 0) + (0 if replay and status == "SENT" else 1)
+        job.updated_at = now
+        job.lease_until = None
+        job.lease_owner = None
+
+        if status == "SENT":
+            job.status = JobStatus.SENT.value
+            job.last_error = None
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="dm_sent")
+            logger.info(
+                "scheduled_dm_job_sent",
+                job_id=int(job_id),
+                account_id=account_id,
+                telegram_message_id=result.get("telegram_message_id"),
+                replay=replay,
+                idempotency_key=idem,
+            )
+            return True
+
+        if status == "UNCERTAIN":
+            # Do NOT mint a new idempotency key. Surface Uncertain for operator review.
+            job.status = JobStatus.UNCERTAIN.value
+            job.last_error = f"UNCERTAIN: {err_msg}"[:2000]
+            _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="dm_uncertain")
+            logger.warning(
+                "scheduled_dm_job_uncertain",
+                job_id=int(job_id),
+                account_id=account_id,
+                idempotency_key=idem,
+                error_code=err_code,
+            )
+            return False
+
+        # Eligibility / rate / kill-switch / transport failures — safe terminal fail.
+        job.status = JobStatus.FAILED.value
+        job.last_error = f"{err_code or 'FAILED'}: {err_msg}"[:2000]
+        _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="dm_failed")
+        logger.info(
+            "scheduled_dm_job_failed",
+            job_id=int(job_id),
+            account_id=account_id,
+            error_code=err_code,
+            replay=replay,
+            idempotency_key=idem,
+        )
+        return False
+
+
 async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
     """Execute a single scheduled job. Returns True if sent successfully."""
     effective_send_test = bool(is_send_test)
@@ -397,6 +506,10 @@ async def execute_job(job_id: int, *, is_send_test: bool = False) -> bool:
         # Runnable jobs: queued (PENDING) or claimed by this worker loop (RUNNING).
         if str(job.status) not in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
             return False
+        # Wave 10 — scheduled private DM (no chat_targets / binding path).
+        if str(job.type).upper() == MessageType.DM.value:
+            return await _execute_scheduled_dm_job(int(job_id))
+
         account = db.query(Account).filter(Account.id == job.account_id).first()
         target = db.query(ChatTarget).filter(ChatTarget.id == job.target_id).first()
         binding = db.query(AccountTargetBinding).filter(

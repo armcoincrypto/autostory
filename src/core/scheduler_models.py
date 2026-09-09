@@ -17,6 +17,7 @@ from .database import Base
 class MessageType(str, Enum):
     PROMO = "PROMO"
     INFO = "INFO"
+    DM = "DM"  # Wave 10 — scheduled private owner DM (not a chat_targets post)
 
 
 class TemplateScope(str, Enum):
@@ -38,6 +39,7 @@ class JobStatus(str, Enum):
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
     CANCELLED = "CANCELLED"
+    UNCERTAIN = "UNCERTAIN"  # Wave 10 — Telegram may have sent; operator review required
 
 
 # Temporary value on ``ScheduledJob.last_error`` while PENDING for jobs created by
@@ -169,12 +171,16 @@ class ScheduleRule(Base):
 
 
 class ScheduledJob(Base):
-    """Concrete jobs created by scheduler"""
+    """Concrete jobs created by scheduler.
+
+    PROMO/INFO use ``target_id`` (chat_targets). Wave 10 DM jobs leave
+    ``target_id`` NULL and store peer + approved message body instead.
+    """
     __tablename__ = "scheduled_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
-    target_id = Column(Integer, ForeignKey("chat_targets.id"), nullable=False)
+    target_id = Column(Integer, ForeignKey("chat_targets.id"), nullable=True)
     type = Column(String(20), nullable=False)
     run_at = Column(DateTime, nullable=False)
 
@@ -185,6 +191,12 @@ class ScheduledJob(Base):
 
     lease_until = Column(DateTime, nullable=True)
     lease_owner = Column(String(128), nullable=True)
+
+    # Wave 10 scheduled DM (private peer — not chat_targets)
+    peer_id = Column(String(64), nullable=True)
+    peer_type = Column(String(32), nullable=True)
+    message_body = Column(Text, nullable=True)
+    schedule_timezone = Column(String(64), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
