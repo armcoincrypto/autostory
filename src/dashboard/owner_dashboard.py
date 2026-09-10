@@ -85,7 +85,9 @@ def _accounts_panel() -> dict[str, Any]:
         certified = int(summary.get("owner_certified") or 0)
         needs = int(summary.get("owner_needs_attention") or 0)
         disabled = int(summary.get("owner_disabled") or 0)
-        unavailable = int(summary.get("owner_unavailable") or 0)
+        # Owner "Unavailable" excludes Disabled (shown separately): protected + reserved.
+        unavailable_raw = int(summary.get("owner_unavailable") or 0)
+        unavailable = max(0, unavailable_raw - disabled)
         empty = needs == 0
         return {
             "ok": True,
