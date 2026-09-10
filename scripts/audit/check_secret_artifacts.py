@@ -159,10 +159,13 @@ def main() -> int:
         for root in roots
         for path in sorted(set(iter_candidates(root)))
     ]
+    # Wave F/I: shared /opt/autostory/.env is root:storyfleet 0640 so the
+    # dedicated service user can read EnvironmentFile without world access.
+    # Flag only world-accessible secret modes (other bits), not group-read.
     insecure = [
         row
         for row in rows
-        if row["is_secret_artifact"] and int(row["mode_after"], 8) & 0o077
+        if row["is_secret_artifact"] and int(row["mode_after"], 8) & 0o007
     ]
     summary = {
         "artifact_count": len(rows),
