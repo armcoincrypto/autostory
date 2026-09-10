@@ -421,6 +421,26 @@ def _disk_panel() -> dict[str, Any]:
         }
 
 
+def _ops_health_panel() -> dict[str, Any]:
+    """Optional Wave L consolidated ops status (cached file only — no probes)."""
+    path = Path("/opt/autostory/data/runtime/ops_health_latest.json")
+    if not path.is_file():
+        return {"ok": True, "present": False, "attention": False}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"ok": False, "present": False, "attention": False}
+    status = str(data.get("status") or "healthy")
+    return {
+        "ok": True,
+        "present": True,
+        "status": status,
+        "owner_copy": data.get("owner_copy") or "System healthy",
+        "attention": status in {"warning", "critical"},
+        "generated_at": data.get("generated_at"),
+    }
+
+
 def _system_panel(
     *,
     accounts: dict[str, Any],
@@ -429,6 +449,7 @@ def _system_panel(
     fleet: dict[str, Any],
     backup: dict[str, Any],
     disk: dict[str, Any],
+    ops: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     if accounts.get("attention"):
@@ -443,6 +464,8 @@ def _system_panel(
         reasons.append(backup.get("owner_copy") or "Backup issue")
     if disk.get("attention") and disk.get("surface"):
         reasons.append(disk.get("owner_copy") or "Disk issue")
+    if ops and ops.get("attention"):
+        reasons.append(ops.get("owner_copy") or "Ops health needs attention")
 
     if reasons:
         return {
@@ -498,6 +521,7 @@ def build_owner_dashboard_snapshot(*, db=None) -> dict[str, Any]:
         fleet=fleet,
         backup=backup,
         disk=disk,
+        ops=_ops_health_panel(),
     )
 
     return {

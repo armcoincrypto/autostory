@@ -49,10 +49,36 @@
             </div>
         </a>
     </div>
+    <div class="col-md-6">
+        <a href="/advanced#ops-health" class="card text-decoration-none h-100" style="color:inherit;" id="ops-health-card">
+            <div class="card-body">
+                <h5 class="card-title mb-2"><i class="bi bi-heart-pulse"></i> Ops health</h5>
+                <p class="card-text text-muted mb-2">Consolidated service, backup, fleet, disk, and message safety status.</p>
+                <p class="small text-muted mb-0" id="ops-health-summary">Loading…</p>
+            </div>
+        </a>
+    </div>
 </div>
 
 <p class="text-muted small mt-4 mb-0">
     Retired owner surfaces (Campaigns marketing CRUD, AI Agent desk) stay off this list.
     Historical data is preserved; direct URLs return a retired notice.
 </p>
+<script>
+(async function () {
+  const el = document.getElementById('ops-health-summary');
+  if (!el) return;
+  try {
+    const token = document.querySelector('meta[name="admin-token"]')?.content || '';
+    const headers = token ? {'X-Admin-Token': token} : {};
+    const resp = await fetch('/api/ops-health', {credentials:'same-origin', headers});
+    if (!resp.ok) { el.textContent = 'Status unavailable'; return; }
+    const data = await resp.json();
+    el.textContent = (data.owner_copy || data.status || 'unknown') +
+      (data.source ? ` (${data.source})` : '');
+  } catch (e) {
+    el.textContent = 'Status unavailable';
+  }
+})();
+</script>
 {% endblock %}
