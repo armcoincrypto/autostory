@@ -424,6 +424,29 @@ def get_stats():
         return jsonify(stats)
 
 
+@api.route('/owner-dashboard', methods=['GET'])
+def owner_dashboard_api():
+    """Wave I — authenticated owner home snapshot (no Telegram / OpenAI I/O)."""
+    from src.dashboard.owner_dashboard import build_owner_dashboard_snapshot
+
+    try:
+        return jsonify(build_owner_dashboard_snapshot())
+    except Exception as e:
+        logger.warning("owner_dashboard_api_failed", error=str(e))
+        return jsonify(
+            {
+                "ok": False,
+                "error": "unavailable",
+                "message": "Dashboard summary unavailable",
+                "contracts": {
+                    "live_telegram_calls": 0,
+                    "openai_calls": 0,
+                    "private_body_exposed": False,
+                },
+            }
+        ), 200
+
+
 # ============================================
 # Accounts API
 # ============================================
@@ -2294,8 +2317,31 @@ def logout():
 @web.route('/')
 @login_required
 def index():
-    """Dashboard home page"""
-    return render_template('index.html')
+    """Owner Dashboard home (Wave I) — attention-first, nontechnical."""
+    from src.dashboard.owner_dashboard import build_owner_dashboard_snapshot
+
+    try:
+        snapshot = build_owner_dashboard_snapshot()
+    except Exception as e:
+        logger.warning("owner_dashboard_render_failed", error=str(e))
+        snapshot = {
+            "ok": False,
+            "system": {
+                "owner_copy": "System needs attention",
+                "detail": "Dashboard summary unavailable",
+                "attention": True,
+                "state": "needs_attention",
+            },
+            "accounts": {"unavailable": True, "owner_copy": "Account health unavailable", "attention": True},
+            "messages": {"unavailable": True, "owner_copy": "Messages summary unavailable", "attention": True},
+            "scheduler": {"unavailable": True, "owner_copy": "Scheduler summary unavailable", "attention": True},
+            "fleet": {"unavailable": True, "owner_copy": "Fleet health unavailable", "attention": True},
+            "stories": {"omit": True},
+            "backup": {"surface": False},
+            "disk": {"surface": False},
+            "contracts": {"live_telegram_calls": 0, "openai_calls": 0, "private_body_exposed": False},
+        }
+    return render_template('index.html', dash=snapshot)
 
 
 @web.route('/accounts')

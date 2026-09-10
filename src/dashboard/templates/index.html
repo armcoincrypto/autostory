@@ -7,206 +7,159 @@
     <strong>Not signed in</strong> or your session expired. Dashboard data could not be loaded.
     <a href="/login?next=/" class="alert-link">Sign in again</a> to continue.
 </div>
+
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
     <h2 class="mb-0"><i class="bi bi-speedometer2"></i> Dashboard</h2>
     <div class="d-flex flex-wrap gap-2">
         <a href="/accounts" class="btn btn-outline-light"><i class="bi bi-people"></i> Accounts</a>
-        <a href="/stories" class="btn btn-outline-light"><i class="bi bi-collection-play"></i> Stories</a>
-        <a href="/scheduler" class="btn btn-primary"><i class="bi bi-calendar-week"></i> Scheduler</a>
-        <button class="btn btn-outline-secondary" type="button" onclick="refreshStats()">
+        <a href="/messages" class="btn btn-outline-light"><i class="bi bi-chat-dots"></i> Messages</a>
+        <a href="/scheduler" class="btn btn-outline-light"><i class="bi bi-calendar-week"></i> Scheduler</a>
+        <button class="btn btn-outline-secondary" type="button" onclick="refreshOwnerDashboard()">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
     </div>
 </div>
 
-<!-- Stats Cards -->
+{# Top: system status #}
+{% set sys = dash.system or {} %}
+<div class="alert {% if sys.attention %}alert-warning{% else %}alert-success{% endif %} mb-4" id="dash-system" role="status">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <strong id="dash-system-copy">{{ sys.owner_copy or 'System healthy' }}</strong>
+            {% if sys.detail %}
+            <span class="ms-2 opacity-75" id="dash-system-detail">{{ sys.detail }}</span>
+            {% else %}
+            <span class="ms-2 opacity-75 d-none" id="dash-system-detail"></span>
+            {% endif %}
+        </div>
+        <div class="small text-nowrap" id="dash-fleet-line">
+            {{ (dash.fleet or {}).owner_copy or '' }}
+        </div>
+    </div>
+</div>
+
+{% if (dash.backup or {}).surface %}
+<div class="alert alert-warning py-2" id="dash-backup-alert">{{ dash.backup.owner_copy }}</div>
+{% endif %}
+{% if (dash.disk or {}).surface %}
+<div class="alert alert-warning py-2" id="dash-disk-alert">{{ dash.disk.owner_copy }}</div>
+{% endif %}
+
+{# Primary: Accounts / Messages / Scheduler #}
 <div class="row mb-4">
-    <div class="col-md-3">
-        <div class="card stat-card text-white">
-            <div class="card-body">
-                <h6 class="card-subtitle mb-2 opacity-75">Active Accounts</h6>
-                <div class="stat-value" id="stat-accounts">-</div>
+    <div class="col-md-4 mb-3">
+        <div class="card h-100 {% if (dash.accounts or {}).attention %}border-warning{% endif %}" id="dash-accounts-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-people"></i> Accounts</h5>
+                <a href="/accounts" class="btn btn-sm btn-outline-primary">View Accounts</a>
+            </div>
+            <div class="card-body" id="dash-accounts-body">
+                {% set a = dash.accounts or {} %}
+                {% if a.unavailable %}
+                <p class="text-warning mb-0">{{ a.owner_copy or 'Account health unavailable' }}</p>
+                {% else %}
+                <ul class="list-unstyled mb-3">
+                    <li>Certified: <strong>{{ a.certified }}</strong></li>
+                    <li>Needs attention: <strong class="{% if a.needs_attention %}text-warning{% endif %}">{{ a.needs_attention }}</strong></li>
+                    <li>Disabled: <strong>{{ a.disabled }}</strong></li>
+                    <li>Unavailable: <strong>{{ a.unavailable_count }}</strong></li>
+                </ul>
+                <p class="mb-0 {% if a.attention %}text-warning{% else %}text-muted{% endif %}">{{ a.owner_copy }}</p>
+                {% endif %}
             </div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card stat-card text-white">
-            <div class="card-body">
-                <h6 class="card-subtitle mb-2 opacity-75">Stories Today</h6>
-                <div class="stat-value" id="stat-stories">-</div>
+    <div class="col-md-4 mb-3">
+        <div class="card h-100 {% if (dash.messages or {}).attention %}border-warning{% endif %}" id="dash-messages-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-chat-dots"></i> Messages</h5>
+                <a href="/messages" class="btn btn-sm btn-outline-primary">Open Messages</a>
+            </div>
+            <div class="card-body" id="dash-messages-body">
+                {% set m = dash.messages or {} %}
+                {% if m.unavailable %}
+                <p class="text-warning mb-0">{{ m.owner_copy or 'Messages summary unavailable' }}</p>
+                {% else %}
+                <p class="mb-2 {% if m.attention %}text-warning{% else %}text-muted{% endif %}">
+                    <strong>{{ m.owner_copy }}</strong>
+                </p>
+                {% if m.issues %}
+                <ul class="list-unstyled small mb-2">
+                    <li>Failed: <strong>{{ m.failed }}</strong></li>
+                    <li>Uncertain: <strong>{{ m.uncertain }}</strong></li>
+                    <li>Sent recently: {{ m.sent_recent }}</li>
+                </ul>
+                {% else %}
+                <p class="small text-muted mb-2">Sent recently: {{ m.sent_recent }}</p>
+                {% endif %}
+                <p class="small mb-0 text-muted">{{ m.ai_draft_copy }}</p>
+                {% endif %}
             </div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card stat-card text-white">
-            <div class="card-body">
-                <h6 class="card-subtitle mb-2 opacity-75">Discovered Users</h6>
-                <div class="stat-value" id="stat-users">-</div>
+    <div class="col-md-4 mb-3">
+        <div class="card h-100 {% if (dash.scheduler or {}).attention %}border-warning{% endif %}" id="dash-scheduler-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-calendar-week"></i> Scheduler</h5>
+                <a href="/scheduler" class="btn btn-sm btn-outline-primary">Open Scheduler</a>
             </div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card text-white">
-            <div class="card-body">
-                {# Wave 4: marketing campaigns table is unused — keep counter, avoid product language #}
-                <h6 class="card-subtitle mb-2 opacity-75">Legacy campaign records</h6>
-                <div class="stat-value" id="stat-campaigns">-</div>
+            <div class="card-body" id="dash-scheduler-body">
+                {% set s = dash.scheduler or {} %}
+                {% if s.unavailable %}
+                <p class="text-warning mb-0">{{ s.owner_copy or 'Scheduler summary unavailable' }}</p>
+                {% else %}
+                <p class="mb-2"><strong>{{ s.scheduled_dm_copy }}</strong></p>
+                <ul class="list-unstyled small mb-0">
+                    <li>Upcoming: {{ s.upcoming }}</li>
+                    <li>Failed: <strong class="{% if s.failed %}text-warning{% endif %}">{{ s.failed }}</strong></li>
+                    <li>Uncertain: <strong class="{% if s.uncertain %}text-warning{% endif %}">{{ s.uncertain }}</strong></li>
+                </ul>
+                {% endif %}
             </div>
         </div>
     </div>
 </div>
 
-<!-- Quick Actions -->
+{# Secondary #}
 <div class="row mb-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-lightning"></i> Quick Actions</h5>
-            </div>
-            <div class="card-body">
-                <div class="d-grid gap-2 mb-3">
-                    <a class="btn btn-outline-light" href="/accounts"><i class="bi bi-people"></i> Accounts</a>
-                    <a class="btn btn-outline-light" href="/stories"><i class="bi bi-collection-play"></i> Stories</a>
-                    <a class="btn btn-outline-light" href="/scheduler"><i class="bi bi-calendar-week"></i> Scheduler</a>
-                    <a class="btn btn-outline-light" href="/broadcast"><i class="bi bi-megaphone-fill"></i> Broadcast</a>
-                    <a class="btn btn-outline-light" href="/agents"><i class="bi bi-grid-3x3-gap"></i> Agents</a>
-                    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
-                        <i class="bi bi-plus-circle"></i> Add New Account
-                    </button>
-                </div>
-                <div class="alert alert-secondary py-2 px-3 small mb-2 mb-0">
-                    <i class="bi bi-lock-fill me-1"></i> Live publishing is locked. Use <a href="/stories">Stories</a> dry-run first.
-                </div>
-                <div class="d-grid gap-2 mt-2">
-                    <a class="btn btn-outline-secondary btn-sm" href="/advanced"><i class="bi bi-tools"></i> Advanced tools</a>
-                    <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#scanChannelModal">
-                        <i class="bi bi-search"></i> Scan Channel
-                    </button>
-                </div>
+    <div class="col-md-6 mb-3">
+        <div class="card h-100">
+            <div class="card-header"><h5 class="mb-0"><i class="bi bi-shield-check"></i> Fleet health</h5></div>
+            <div class="card-body" id="dash-fleet-body">
+                {% set f = dash.fleet or {} %}
+                <p class="mb-0 {% if f.attention %}text-warning{% else %}text-muted{% endif %}">{{ f.owner_copy }}</p>
             </div>
         </div>
     </div>
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Activity</h5>
+    {% if not (dash.stories or {}).omit %}
+    <div class="col-md-6 mb-3">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-collection-play"></i> Stories</h5>
+                <a href="/stories" class="btn btn-sm btn-outline-primary">View Stories</a>
             </div>
-            <div class="card-body" id="recent-activity">
-                <p class="text-muted">Loading...</p>
+            <div class="card-body" id="dash-stories-body">
+                <p class="mb-0 text-muted">{{ (dash.stories or {}).owner_copy }}</p>
             </div>
         </div>
     </div>
+    {% endif %}
 </div>
 
-<!-- Recent Stories -->
-<div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-collection-play"></i> Recent Stories</h5>
-        <a href="/stories" class="btn btn-sm btn-outline-primary">View All</a>
-    </div>
-    <div class="card-body">
-        <table class="table table-hover">
-            <thead>
-                <tr>
-                    <th>Account</th>
-                    <th>Type</th>
-                    <th>Mentions</th>
-                    <th>Views</th>
-                    <th>Published</th>
-                </tr>
-            </thead>
-            <tbody id="recent-stories">
-                <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<!-- Add Account Modal -->
-<div class="modal fade" id="addAccountModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Add New Account</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div id="auth-step-1">
-                    <div class="mb-3">
-                        <label class="form-label">Phone Number</label>
-                        <input type="text" class="form-control" id="phone-number" placeholder="+1234567890">
-                    </div>
-                    <button class="btn btn-primary w-100" onclick="startAuth()">Send Code</button>
-                </div>
-                <div id="auth-step-2" style="display:none;">
-                    <div class="mb-3">
-                        <label class="form-label">Verification Code</label>
-                        <input type="text" class="form-control" id="auth-code" placeholder="12345">
-                    </div>
-                    <button class="btn btn-primary w-100" onclick="completeAuth()">Verify</button>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Publish Story Modal (legacy — hidden while STORY_EXECUTION_ENABLED=false) -->
-<div class="modal fade d-none" id="publishStoryModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Publish Story <span class="text-muted small fw-normal">(Advanced)</span></h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <label class="form-label">Account</label>
-                    <select class="form-select" id="story-account">
-                        <option>Loading accounts...</option>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Media Path</label>
-                    <input type="text" class="form-control" id="story-media" placeholder="/path/to/media.jpg">
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Caption</label>
-                    <textarea class="form-control" id="story-caption" rows="3"></textarea>
-                </div>
-                <button class="btn btn-primary w-100" onclick="publishStory()">Publish</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Scan Channel Modal -->
-<div class="modal fade" id="scanChannelModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark">
-            <div class="modal-header">
-                <h5 class="modal-title">Scan Channel <span class="text-muted small fw-normal">(Advanced)</span></h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <label class="form-label">Channel Username</label>
-                    <input type="text" class="form-control" id="scan-channel" placeholder="@channelname">
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Limit</label>
-                    <input type="number" class="form-control" id="scan-limit" value="500">
-                </div>
-                <button class="btn btn-primary w-100" onclick="scanChannel()">Start Scan</button>
-            </div>
-        </div>
+<div class="card mb-4">
+    <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+        <span class="text-muted small me-2">More</span>
+        <a class="btn btn-outline-secondary btn-sm" href="/stories"><i class="bi bi-collection-play"></i> Stories</a>
+        <a class="btn btn-outline-secondary btn-sm" href="/advanced"><i class="bi bi-tools"></i> Advanced</a>
+        {% if not (dash.backup or {}).surface and (dash.backup or {}).owner_copy %}
+        <span class="small text-muted ms-auto" id="dash-backup-subtle">{{ dash.backup.owner_copy }}</span>
+        {% endif %}
     </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-let authData = {};
-
 function indexShowAuthRequiredBanner() {
     const el = document.getElementById('dashboard-session-alert');
     if (el) el.classList.remove('d-none');
@@ -215,7 +168,7 @@ function indexShowAuthRequiredBanner() {
 async function indexApiFetch(url, options = {}) {
     const opts = Object.assign({ credentials: 'same-origin' }, options);
     const headers = new Headers(opts.headers || {});
-    if (ADMIN_TOKEN && !headers.has('X-Admin-Token')) {
+    if (typeof ADMIN_TOKEN !== 'undefined' && ADMIN_TOKEN && !headers.has('X-Admin-Token')) {
         headers.set('X-Admin-Token', ADMIN_TOKEN);
     }
     opts.headers = headers;
@@ -226,148 +179,107 @@ async function indexApiFetch(url, options = {}) {
     return response;
 }
 
-async function refreshStats() {
-    try {
-        const response = await indexApiFetch('/api/stats');
-        const stats = await dashboardReadJson(response);
-
-        document.getElementById('stat-accounts').textContent = stats.accounts.active;
-        document.getElementById('stat-stories').textContent = stats.stories.total;
-        document.getElementById('stat-users').textContent = stats.users.discovered;
-        document.getElementById('stat-campaigns').textContent = stats.campaigns.active;
-    } catch (error) {
-        console.error('Failed to load stats:', error);
-    }
+function esc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
-async function loadRecentStories() {
-    try {
-        const response = await indexApiFetch('/api/stories?per_page=5');
-        const data = await dashboardReadJson(response);
-
-        const tbody = document.getElementById('recent-stories');
-        if (data.stories.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No stories yet</td></tr>';
-            return;
+function renderOwnerDashboard(dash) {
+    const sys = dash.system || {};
+    const sysEl = document.getElementById('dash-system');
+    if (sysEl) {
+        sysEl.className = 'alert mb-4 ' + (sys.attention ? 'alert-warning' : 'alert-success');
+        const copy = document.getElementById('dash-system-copy');
+        if (copy) copy.textContent = sys.owner_copy || 'System healthy';
+        const detail = document.getElementById('dash-system-detail');
+        if (detail) {
+            if (sys.detail) {
+                detail.textContent = sys.detail;
+                detail.classList.remove('d-none');
+            } else {
+                detail.textContent = '';
+                detail.classList.add('d-none');
+            }
         }
-
-        tbody.innerHTML = data.stories.map(s => `
-            <tr>
-                <td>Account #${s.account_id}</td>
-                <td><span class="badge bg-secondary">${s.media_type}</span></td>
-                <td>${s.mentions}</td>
-                <td>${s.views}</td>
-                <td>${new Date(s.published_at).toLocaleString()}</td>
-            </tr>
-        `).join('');
-    } catch (error) {
-        console.error('Failed to load stories:', error);
     }
-}
+    const fleetLine = document.getElementById('dash-fleet-line');
+    if (fleetLine) fleetLine.textContent = (dash.fleet || {}).owner_copy || '';
 
-async function startAuth() {
-    const phone = document.getElementById('phone-number').value;
-    try {
-        const response = await indexApiFetch('/api/accounts/auth/start', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({phone_number: phone})
-        });
-        const result = await dashboardReadJson(response);
-
-        if (result.success) {
-            authData = result;
-            document.getElementById('auth-step-1').style.display = 'none';
-            document.getElementById('auth-step-2').style.display = 'block';
+    const a = dash.accounts || {};
+    const ab = document.getElementById('dash-accounts-body');
+    if (ab) {
+        if (a.unavailable) {
+            ab.innerHTML = '<p class="text-warning mb-0">' + esc(a.owner_copy || 'Account health unavailable') + '</p>';
         } else {
-            alert('Error: ' + result.error);
+            ab.innerHTML =
+                '<ul class="list-unstyled mb-3">' +
+                '<li>Certified: <strong>' + esc(a.certified) + '</strong></li>' +
+                '<li>Needs attention: <strong class="' + (a.needs_attention ? 'text-warning' : '') + '">' + esc(a.needs_attention) + '</strong></li>' +
+                '<li>Disabled: <strong>' + esc(a.disabled) + '</strong></li>' +
+                '<li>Unavailable: <strong>' + esc(a.unavailable_count) + '</strong></li>' +
+                '</ul><p class="mb-0 ' + (a.attention ? 'text-warning' : 'text-muted') + '">' + esc(a.owner_copy) + '</p>';
         }
-    } catch (error) {
-        alert('Failed to send code: ' + error);
     }
-}
 
-async function completeAuth() {
-    const code = document.getElementById('auth-code').value;
-    try {
-        const response = await indexApiFetch('/api/accounts/auth/complete', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                phone_number: authData.phone_number,
-                code: code,
-                phone_code_hash: authData.phone_code_hash,
-                session_string: authData.session_string
-            })
-        });
-        const result = await dashboardReadJson(response);
-
-        if (result.success) {
-            alert('Account added successfully!');
-            location.reload();
+    const m = dash.messages || {};
+    const mb = document.getElementById('dash-messages-body');
+    if (mb) {
+        if (m.unavailable) {
+            mb.innerHTML = '<p class="text-warning mb-0">' + esc(m.owner_copy || 'Messages summary unavailable') + '</p>';
         } else {
-            alert('Error: ' + result.error);
+            let html = '<p class="mb-2 ' + (m.attention ? 'text-warning' : 'text-muted') + '"><strong>' + esc(m.owner_copy) + '</strong></p>';
+            if (m.issues) {
+                html += '<ul class="list-unstyled small mb-2"><li>Failed: <strong>' + esc(m.failed) +
+                    '</strong></li><li>Uncertain: <strong>' + esc(m.uncertain) +
+                    '</strong></li><li>Sent recently: ' + esc(m.sent_recent) + '</li></ul>';
+            } else {
+                html += '<p class="small text-muted mb-2">Sent recently: ' + esc(m.sent_recent) + '</p>';
+            }
+            html += '<p class="small mb-0 text-muted">' + esc(m.ai_draft_copy) + '</p>';
+            mb.innerHTML = html;
         }
-    } catch (error) {
-        alert('Failed to verify: ' + error);
     }
-}
 
-async function publishStory() {
-    alert('Live publishing is locked. Use Stories dry-run first.');
-    return;
-    const accountId = document.getElementById('story-account').value;
-    const mediaPath = document.getElementById('story-media').value;
-    const caption = document.getElementById('story-caption').value;
-
-    try {
-        const response = await indexApiFetch('/api/stories/publish', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                account_id: parseInt(accountId),
-                media_path: mediaPath,
-                caption: caption
-            })
-        });
-        const result = await dashboardReadJson(response);
-
-        if (result.success) {
-            alert('Story published!');
-            location.reload();
+    const s = dash.scheduler || {};
+    const sb = document.getElementById('dash-scheduler-body');
+    if (sb) {
+        if (s.unavailable) {
+            sb.innerHTML = '<p class="text-warning mb-0">' + esc(s.owner_copy || 'Scheduler summary unavailable') + '</p>';
         } else {
-            alert('Error: ' + result.error);
+            sb.innerHTML =
+                '<p class="mb-2"><strong>' + esc(s.scheduled_dm_copy) + '</strong></p>' +
+                '<ul class="list-unstyled small mb-0">' +
+                '<li>Upcoming: ' + esc(s.upcoming) + '</li>' +
+                '<li>Failed: <strong class="' + (s.failed ? 'text-warning' : '') + '">' + esc(s.failed) + '</strong></li>' +
+                '<li>Uncertain: <strong class="' + (s.uncertain ? 'text-warning' : '') + '">' + esc(s.uncertain) + '</strong></li>' +
+                '</ul>';
+        }
+    }
+
+    const fb = document.getElementById('dash-fleet-body');
+    if (fb) {
+        const f = dash.fleet || {};
+        fb.innerHTML = '<p class="mb-0 ' + (f.attention ? 'text-warning' : 'text-muted') + '">' + esc(f.owner_copy) + '</p>';
+    }
+    const stb = document.getElementById('dash-stories-body');
+    if (stb && dash.stories && !dash.stories.omit) {
+        stb.innerHTML = '<p class="mb-0 text-muted">' + esc(dash.stories.owner_copy) + '</p>';
+    }
+}
+
+async function refreshOwnerDashboard() {
+    try {
+        const response = await indexApiFetch('/api/owner-dashboard');
+        const dash = await dashboardReadJson(response);
+        if (dash && dash.ok !== false) {
+            renderOwnerDashboard(dash);
         }
     } catch (error) {
-        alert('Failed to publish: ' + error);
+        console.error('Failed to refresh dashboard:', error);
     }
 }
-
-async function scanChannel() {
-    const channel = document.getElementById('scan-channel').value;
-    const limit = document.getElementById('scan-limit').value;
-
-    try {
-        const result = await dashboardFetchJson('/api/discovery/scan', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                channels: [channel],
-                limit: parseInt(limit)
-            })
-        });
-
-        alert(`Scan complete! Found ${result.total_new_users} new users.`);
-    } catch (error) {
-        alert('Scan failed: ' + error);
-    }
-}
-
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
-    refreshStats();
-    loadRecentStories();
-});
 </script>
 {% endblock %}
