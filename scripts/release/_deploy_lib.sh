@@ -62,7 +62,21 @@ require_root() {
 # --- Read-only facts (safe to call from status.sh too) ---
 current_release_of() {
   # $1 = systemd unit name
-  systemctl show "$1" -p WorkingDirectory --value 2>/dev/null || true
+  # Wave F: autostory-web may use WorkingDirectory under data/runtime while the
+  # immutable release is carried by PYTHONPATH. Prefer a path under RELEASES_ROOT.
+  local u="$1" wd pp
+  wd="$(systemctl show "$u" -p WorkingDirectory --value 2>/dev/null || true)"
+  if [[ -n "$wd" && "$wd" == "${RELEASES_ROOT}"/* ]]; then
+    readlink -f "$wd" 2>/dev/null || printf '%s\n' "$wd"
+    return 0
+  fi
+  pp="$(systemctl show "$u" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^PYTHONPATH=//p' | head -1 || true)"
+  if [[ -n "$pp" ]]; then
+    readlink -f "$pp" 2>/dev/null || printf '%s\n' "$pp"
+    return 0
+  fi
+  # Last resort: WorkingDirectory even if outside releases (legacy)
+  printf '%s\n' "$wd"
 }
 
 unit_active_state() {

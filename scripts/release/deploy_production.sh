@@ -375,7 +375,7 @@ cutover_one() {
   } | tee -a "$HEALTH_AFTER_TXT"
 
   if [[ "$state" != "active" || "$wd" != "$NEW_RELEASE" ]]; then
-    log "HEALTH CHECK FAILED for $u (state=$state wd=$wd expected=$NEW_RELEASE)"
+    log "HEALTH CHECK FAILED for $u (state=$state release=$wd expected=$NEW_RELEASE)"
     return 1
   fi
   return 0
