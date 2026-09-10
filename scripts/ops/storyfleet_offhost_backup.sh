@@ -72,7 +72,9 @@ write_status() {
   "local_dir": "$(printf '%s' "${STAMP_DIR:-}" | sed 's/"/\\"/g')"
 }
 EOF
-  chmod 600 "$STATUS_FILE" 2>/dev/null || true
+  # Wave F/I: storyfleet must read status for owner Dashboard (group-readable, not world).
+  chgrp storyfleet "$STATUS_FILE" 2>/dev/null || true
+  chmod 640 "$STATUS_FILE" 2>/dev/null || true
 }
 
 require_file() {
