@@ -78,22 +78,25 @@ def test_advanced_landing_links_operator_tools():
 
 def test_campaigns_is_retired_page_not_crud():
     text = (ROOT / "src/dashboard/templates/campaigns.html").read_text(encoding="utf-8")
-    assert "Legacy / unused" in text
+    assert "Retired" in text
     assert "createCampaignModal" not in text
     assert "New Campaign" not in text
     assert 'href="/broadcast"' in text
     assert 'href="/scheduler"' in text
-    # Model/API kept (LEGACY_KEEP_TEMPORARILY)
+    # Model/API kept (LEGACY_KEEP_TEMPORARILY); writes return 410 (Wave J)
     models = (ROOT / "src/core/models.py").read_text(encoding="utf-8")
     assert 'class Campaign(Base):' in models
     assert '__tablename__ = "campaigns"' in models
     api = (ROOT / "src/dashboard/routes.py").read_text(encoding="utf-8")
     assert "@api.route('/campaigns', methods=['GET'])" in api
+    assert "Marketing Campaigns write API is retired" in api
+    assert "return render_template('campaigns.html'), 410" in api
 
 
 def test_dashboard_quick_actions_real_workflows():
     text = (ROOT / "src/dashboard/templates/index.html").read_text(encoding="utf-8")
-    for path in ("/accounts", "/stories", "/scheduler", "/broadcast", "/agents", "/advanced"):
+    # Wave I attention-first Dashboard: core owner paths (Broadcast/Agents live in sidebar).
+    for path in ("/accounts", "/stories", "/scheduler", "/messages", "/advanced"):
         assert f'href="{path}"' in text
     assert 'href="/campaigns"' not in text
     assert 'href="/stories/fleet-readiness"' not in text

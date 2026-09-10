@@ -30,14 +30,17 @@ def db_session():
 def test_social_agent_registered_in_platform_registry():
     agents = list_platform_agents()
     ids = {a["agent_id"] for a in agents}
-    assert "social_agent" in ids
-    assert "ai_agent" in ids
-    assert "ai_coding" in ids
-    assert "broadcast" in ids
+    assert ids == {"social_agent", "ai_agent"}
     sa = get_agent("social_agent")
     assert sa is not None
     assert sa["route"] == "/social-agent"
     assert sa["status"] == "active"
+    ai = get_agent("ai_agent")
+    assert ai is not None
+    assert ai["status"] == "inactive"
+    # Wave J: Broadcast + AI Coding are primary/Advanced products, not Agents cards.
+    assert get_agent("broadcast") is None
+    assert get_agent("ai_coding") is None
 
 
 def test_tool_registry_marks_live_publish_unavailable():

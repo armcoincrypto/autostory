@@ -1,19 +1,18 @@
 {% extends "base.html" %}
 
-{% block title %}Campaigns (legacy) - STORYFLEET{% endblock %}
+{% block title %}Campaigns (retired) - STORYFLEET{% endblock %}
 
 {% block content %}
-{# Wave 4: marketing Campaigns CRUD is unused (0 rows, no execution engine).
-   Kept as a clear retired page so bookmarks do not land on empty CRUD.
-   Model/table/API retained as LEGACY_KEEP_TEMPORARILY. #}
+{# Wave J: marketing Campaigns owner write surface fully retired (410).
+   Historical campaigns table retained. Broadcast/Stories/Scheduler are live. #}
 <div class="mb-4">
     <h2 class="mb-1"><i class="bi bi-megaphone"></i> Campaigns</h2>
-    <span class="badge text-bg-secondary">Legacy / unused</span>
+    <span class="badge text-bg-secondary">Retired</span>
 </div>
 
 <div class="alert alert-secondary">
-    <p class="mb-2"><strong>This page is not an active Storyfleet product.</strong></p>
-    <p class="mb-2">The marketing Campaigns CRUD has no execution engine and does not control Stories, Scheduler, Broadcast, or AutoStory (retired).</p>
+    <p class="mb-2"><strong>This page is retired and is not an active Storyfleet product.</strong></p>
+    <p class="mb-2">The old marketing Campaigns CRUD has no execution engine and does not control Stories, Scheduler, Broadcast, or Messages.</p>
     <p class="mb-0">Use the live workflows instead:</p>
 </div>
 
@@ -21,6 +20,7 @@
     <a class="btn btn-outline-primary" href="/stories"><i class="bi bi-collection-play"></i> Stories</a>
     <a class="btn btn-outline-primary" href="/scheduler"><i class="bi bi-calendar-week"></i> Scheduler</a>
     <a class="btn btn-outline-primary" href="/broadcast"><i class="bi bi-megaphone-fill"></i> Broadcast</a>
+    <a class="btn btn-outline-primary" href="/messages"><i class="bi bi-chat-dots"></i> Messages</a>
     <a class="btn btn-outline-secondary" href="/"><i class="bi bi-speedometer2"></i> Dashboard</a>
 </div>
 {% endblock %}

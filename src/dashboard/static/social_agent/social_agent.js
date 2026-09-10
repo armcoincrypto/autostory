@@ -90,7 +90,7 @@
     { id: "accounts", label: "Open Social Accounts", href: "/social-agent/accounts", keywords: "meta telegram" },
     { id: "analytics", label: "Open Analytics", href: "/social-agent/analytics", keywords: "metrics" },
     { id: "comments", label: "Open Comments", href: "/social-agent/comments", keywords: "" },
-    { id: "messages", label: "Open Messages", href: "/social-agent/messages", keywords: "inbox" },
+    { id: "messages", label: "Open Agent inbox", href: "/social-agent/messages", keywords: "inbox agent" },
     { id: "brand", label: "Open Brand Knowledge", href: "/social-agent/brand", keywords: "tone hashtags" },
     { id: "automations", label: "Open Automations (disabled)", href: "/social-agent/automations", keywords: "workflow" },
     { id: "settings", label: "Open Settings", href: "/social-agent/settings", keywords: "health" },

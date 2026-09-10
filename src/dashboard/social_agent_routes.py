@@ -34,7 +34,7 @@ NAV = [
     {"id": "accounts", "label": "Social Accounts", "path": "/social-agent/accounts"},
     {"id": "analytics", "label": "Analytics", "path": "/social-agent/analytics", "badge": "architecture"},
     {"id": "comments", "label": "Comments", "path": "/social-agent/comments", "badge": "architecture"},
-    {"id": "messages", "label": "Messages", "path": "/social-agent/messages", "badge": "architecture"},
+    {"id": "messages", "label": "Agent inbox", "path": "/social-agent/messages", "badge": "architecture"},
     {"id": "brand", "label": "Brand Knowledge", "path": "/social-agent/brand"},
     {"id": "automations", "label": "Automations", "path": "/social-agent/automations", "badge": "disabled"},
     {"id": "settings", "label": "Settings", "path": "/social-agent/settings"},

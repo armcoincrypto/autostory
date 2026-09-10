@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Retired - STORYFLEET{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h2 class="mb-1"><i class="bi bi-archive"></i> {{ product_name|default('This product') }}</h2>
+    <span class="badge text-bg-secondary">Retired</span>
+</div>
+
+<div class="alert alert-secondary">
+    <p class="mb-2"><strong>{{ headline|default('This owner surface is no longer an active Storyfleet product.') }}</strong></p>
+    {% if detail %}
+    <p class="mb-2">{{ detail }}</p>
+    {% endif %}
+    <p class="mb-0">Continue with the live workflows:</p>
+</div>
+
+<div class="d-flex flex-wrap gap-2">
+    {% for item in links|default([]) %}
+    <a class="btn {{ item.class|default('btn-outline-primary') }}" href="{{ item.href }}">{{ item.label }}</a>
+    {% endfor %}
+    <a class="btn btn-outline-secondary" href="/"><i class="bi bi-speedometer2"></i> Dashboard</a>
+</div>
+{% endblock %}

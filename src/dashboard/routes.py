@@ -2218,45 +2218,34 @@ def list_campaigns():
 
 @api.route('/campaigns', methods=['POST'])
 def create_campaign():
-    """Create a new campaign"""
-    data = request.get_json()
-    with get_db_context() as db:
-        campaign = Campaign(
-            name=data.get('name'),
-            description=data.get('description'),
-            target_chat_ids=data.get('target_chats', []),
-            story_templates=data.get('templates', []),
-            media_files=data.get('media_files', []),
-        )
-        db.add(campaign)
-        db.commit()
-        db.refresh(campaign)
-        return jsonify({"success": True, "campaign_id": campaign.id, "name": campaign.name})
+    """Wave J: marketing Campaigns owner write API retired (history table preserved)."""
+    return jsonify({
+        "ok": False,
+        "error": "gone",
+        "message": "Marketing Campaigns write API is retired. Use Stories, Scheduler, Broadcast, or Messages.",
+    }), 410
 
 
 @api.route('/campaigns/<int:campaign_id>', methods=['PUT'])
 def update_campaign(campaign_id):
-    """Update a campaign"""
-    data = request.get_json()
-    with get_db_context() as db:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-        if not campaign:
-            return jsonify({"error": "Campaign not found"}), 404
-        for key in ['name', 'description', 'is_active', 'target_chat_ids', 'story_templates', 'media_files']:
-            if key in data:
-                setattr(campaign, key, data[key])
-        return jsonify({"success": True})
+    """Wave J: marketing Campaigns owner write API retired."""
+    return jsonify({
+        "ok": False,
+        "error": "gone",
+        "message": "Marketing Campaigns write API is retired.",
+        "campaign_id": campaign_id,
+    }), 410
 
 
 @api.route('/campaigns/<int:campaign_id>', methods=['DELETE'])
 def delete_campaign(campaign_id):
-    """Delete a campaign"""
-    with get_db_context() as db:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-        if not campaign:
-            return jsonify({"error": "Campaign not found"}), 404
-        db.delete(campaign)
-        return jsonify({"success": True})
+    """Wave J: marketing Campaigns owner write API retired (rows preserved)."""
+    return jsonify({
+        "ok": False,
+        "error": "gone",
+        "message": "Marketing Campaigns delete API is retired. Historical rows are preserved.",
+        "campaign_id": campaign_id,
+    }), 410
 
 
 # ============================================
@@ -2368,14 +2357,33 @@ def discovery_page():
 @web.route('/campaigns')
 @login_required
 def campaigns_page():
-    """Legacy marketing Campaigns CRUD — owner nav removed (Wave 4)."""
-    return render_template('campaigns.html')
+    """Wave J: marketing Campaigns owner surface retired (410 Gone). Table preserved."""
+    return render_template('campaigns.html'), 410
+
+
+@web.route('/ai-agent')
+@login_required
+def ai_agent_retired_page():
+    """Wave J: AI Agent owner UI retired; APIs/history retained for forensics."""
+    return render_template(
+        'retired_product.html',
+        product_name='AI Agent',
+        headline='AI Agent owner UI is retired.',
+        detail=(
+            'The negotiation-desk experiment is dormant. Reserved-account safety and '
+            'audit history remain. Use Messages for private replies, or Agents for Social Agent.'
+        ),
+        links=[
+            {"href": "/agents", "label": "Agents", "class": "btn-outline-primary"},
+            {"href": "/messages", "label": "Messages", "class": "btn-outline-primary"},
+        ],
+    ), 410
 
 
 @web.route('/advanced')
 @login_required
 def advanced_page():
-    """Owner landing for technical/operator tools (Wave 4 navigation)."""
+    """Owner landing for technical/operator tools (Wave 4 / Wave J navigation)."""
     return render_template('advanced.html')
 
 

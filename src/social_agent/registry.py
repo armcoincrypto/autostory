@@ -1,7 +1,7 @@
 """Thin platform agent launcher registry (not a plugin marketplace).
 
-STORYFLEET historically used flat sidebar workspaces. This registry makes
-agent-like products first-class and discoverable without inventing a second app.
+Wave J: Agents hub lists only agent workspaces — not duplicate primary products
+(Broadcast) and not Advanced-only tools (AI Coding).
 """
 from __future__ import annotations
 
@@ -23,44 +23,24 @@ class PlatformAgent:
 
 _AGENTS: tuple[PlatformAgent, ...] = (
     PlatformAgent(
-        agent_id="ai_agent",
-        display_name="AI Agent",
-        route="/ai-agent",
-        description="Telegram negotiation desk for reserved AI accounts. Page route temporarily unavailable (Wave 1).",
-        status="inactive",
-        owner="storyfleet",
-        frontend_component="ai_agent.html",
-        backend_handler="src.dashboard.ai_agent_routes",
-    ),
-    PlatformAgent(
-        agent_id="ai_coding",
-        display_name="AI Coding",
-        route="/ai-coding",
-        description="Software factory review and execution transparency.",
-        status="limited",
-        owner="storyfleet",
-        frontend_component="ai_coding.html",
-        backend_handler="src.dashboard.ai_coding_routes",
-    ),
-    PlatformAgent(
-        agent_id="broadcast",
-        display_name="Broadcast",
-        route="/broadcast",
-        description="Broadcast / distribution workspace.",
-        status="active",
-        owner="storyfleet",
-        frontend_component="broadcast.html",
-        backend_handler="src.dashboard.broadcast_routes",
-    ),
-    PlatformAgent(
         agent_id="social_agent",
         display_name="Social Agent",
         route="/social-agent",
-        description="Unified social content, accounts, publishing, and AI assistant.",
+        description="Social content, social accounts, publishing preview, and AI assistant (not Telegram Messages).",
         status="active",
         owner="storyfleet",
         frontend_component="social_agent/overview.html",
         backend_handler="src.dashboard.social_agent_routes",
+    ),
+    PlatformAgent(
+        agent_id="ai_agent",
+        display_name="AI Agent",
+        route="/ai-agent",
+        description="Legacy Telegram negotiation desk for reserved AI accounts. Owner UI retired; history preserved.",
+        status="inactive",
+        owner="storyfleet",
+        frontend_component="ai_agent.html",
+        backend_handler="src.dashboard.ai_agent_routes",
     ),
 )
 
