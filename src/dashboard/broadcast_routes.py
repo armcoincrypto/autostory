@@ -1,12 +1,23 @@
-"""Safe broadcast campaign page + server-side proxy (Phase 8C.1)."""
+"""Broadcast owner page + API (Wave K fail-closed).
+
+Architecture note:
+  Historical Phase 8C UI proxied CRUD/send to AI Factory at
+  AI_CODING_API_BASE_URL (default http://127.0.0.1:8015). That upstream is a
+  separate codebase (Aicodingauto-) using a bot-token Telegram provider — not
+  Storyfleet's certified send rails. Port 8015 is not a running production
+  dependency for Storyfleet.
+
+Wave K keeps the owner Broadcast surface but fail-closes all mutations and
+does not require :8015 for the page to load.
+"""
 from __future__ import annotations
 
 import structlog
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user
 
-from .ai_coding_client import fetch_upstream
 from .auth_access import dashboard_api_authorized
+from .broadcast_guard import broadcast_execution_enabled, broadcast_fail_closed_payload
 
 logger = structlog.get_logger(__name__)
 
@@ -24,47 +35,9 @@ def _audit(action: str, **fields) -> None:
     logger.info("broadcast_audit", action=action, actor=_actor_label(), **fields)
 
 
-def _proxy(method: str, upstream_path: str, *, action: str, json_body=None, query=None):
-    import json as json_lib
-    import urllib.error
-    import urllib.request
-
-    from .ai_coding_client import ai_coding_api_base_url
-
-    base = ai_coding_api_base_url()
-    url = f"{base}{upstream_path}"
-    if query:
-        from urllib.parse import urlencode
-
-        params = urlencode({k: v for k, v in query.items() if v})
-        if params:
-            url = f"{url}?{params}"
-
-    data = None
-    headers = {"Accept": "application/json"}
-    if json_body is not None:
-        data = json_lib.dumps(json_body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            body = response.read().decode("utf-8")
-            status = response.getcode() or 200
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        status = exc.code
-    except urllib.error.URLError as exc:
-        _audit(action, upstream_status=502, error=str(exc.reason))
-        return jsonify({"error": "broadcast_upstream_unavailable", "detail": str(exc.reason)}), 502
-
-    _audit(action, upstream_status=status)
-    if not body.strip():
-        return jsonify({}), status
-    try:
-        return jsonify(json_lib.loads(body)), status
-    except json_lib.JSONDecodeError:
-        return jsonify({"error": "broadcast_upstream_invalid_json"}), 502
+def _deny_execution(*, action: str):
+    _audit(action, execution_enabled=False, denied=True)
+    return jsonify(broadcast_fail_closed_payload()), 403
 
 
 @broadcast_bp.before_request
@@ -84,234 +57,164 @@ def _api_auth():
 
 @broadcast_bp.route("/broadcast", methods=["GET"])
 def broadcast_page():
-    _audit("broadcast_dashboard_viewed")
-    return render_template("broadcast.html", api_base="/api/v1/broadcast")
+    _audit("broadcast_dashboard_viewed", execution_enabled=broadcast_execution_enabled())
+    return render_template(
+        "broadcast.html",
+        execution_enabled=broadcast_execution_enabled(),
+        api_base="/api/v1/broadcast",
+    )
+
+
+@broadcast_api.route("/status", methods=["GET"])
+def broadcast_status():
+    """Cheap static status — no Telegram, no OpenAI, no :8015 call."""
+    enabled = broadcast_execution_enabled()
+    payload = {
+        "ok": True,
+        "execution_enabled": enabled,
+        "mode": "live" if enabled else "fail_closed",
+        "upstream": {
+            "classification": "LEGACY_PROXY",
+            "default_base": "http://127.0.0.1:8015",
+            "note": "AI Factory campaign API — not a Storyfleet certified send rail",
+            "required_for_owner_page": False,
+        },
+        "send_owner": "external_ai_factory_bot_token_provider (uncertified)",
+        "owner_copy": (
+            "Broadcast live sending is enabled."
+            if enabled
+            else "Broadcast is not enabled for production. Use Messages for one private reply."
+        ),
+    }
+    _audit("broadcast_status_viewed", execution_enabled=enabled)
+    return jsonify(payload)
 
 
 @broadcast_api.route("/campaigns", methods=["GET", "POST"])
 def campaigns_collection():
-    if request.method == "GET":
-        return _proxy("GET", "/api/v1/campaigns", action="broadcast_campaigns_listed")
-    body = request.get_json(silent=True) or {}
-    body.setdefault("created_by", _actor_label())
-    return _proxy("POST", "/api/v1/campaigns", action="broadcast_campaign_created", json_body=body)
+    if request.method == "POST":
+        return _deny_execution(action="broadcast_campaign_create_denied")
+    # Fail-closed read: do not depend on :8015. Empty history is honest while
+    # the external engine is offline / uncertified.
+    _audit("broadcast_campaigns_listed_fail_closed", execution_enabled=False)
+    return jsonify([])
 
 
 @broadcast_api.route("/campaigns/<campaign_id>", methods=["GET", "PATCH"])
 def campaign_detail(campaign_id: str):
-    if request.method == "GET":
-        return _proxy("GET", f"/api/v1/campaigns/{campaign_id}", action="broadcast_campaign_viewed")
-    body = request.get_json(silent=True) or {}
-    return _proxy("PATCH", f"/api/v1/campaigns/{campaign_id}", action="broadcast_campaign_updated", json_body=body)
+    if request.method == "PATCH":
+        return _deny_execution(action="broadcast_campaign_update_denied")
+    return jsonify(
+        broadcast_fail_closed_payload(
+            detail=f"Broadcast campaign history is unavailable while execution is fail-closed ({campaign_id})."
+        )
+    ), 404
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/audience/import", methods=["POST"])
 def campaign_audience_import(campaign_id: str):
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy(
-        "POST",
-        f"/api/v1/campaigns/{campaign_id}/audience/import",
-        action="broadcast_audience_imported",
-        json_body=body,
-    )
+    return _deny_execution(action="broadcast_audience_import_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/audience/preview", methods=["GET"])
 def campaign_audience_preview(campaign_id: str):
-    return _proxy(
-        "GET",
-        f"/api/v1/campaigns/{campaign_id}/audience/preview",
-        action="broadcast_audience_previewed",
-    )
+    return jsonify({"eligible_count": 0, "execution_enabled": False, "campaign_id": campaign_id})
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/preview", methods=["POST"])
 def campaign_message_preview(campaign_id: str):
-    return _proxy("POST", f"/api/v1/campaigns/{campaign_id}/preview", action="broadcast_message_previewed")
+    return _deny_execution(action="broadcast_message_preview_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/dry-run", methods=["POST"])
 def campaign_dry_run(campaign_id: str):
-    return _proxy("POST", f"/api/v1/campaigns/{campaign_id}/dry-run", action="broadcast_dry_run_completed")
+    return _deny_execution(action="broadcast_dry_run_denied")
 
 
 @broadcast_api.route("/suppression", methods=["GET", "POST"])
 def suppression_collection():
-    if request.method == "GET":
-        return _proxy(
-            "GET",
-            "/api/v1/campaigns/suppression",
-            action="broadcast_suppression_listed",
-            query={
-                "channel": request.args.get("channel"),
-                "search": request.args.get("search"),
-            },
-        )
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy("POST", "/api/v1/campaigns/suppression", action="broadcast_suppression_added", json_body=body)
+    if request.method == "POST":
+        return _deny_execution(action="broadcast_suppression_add_denied")
+    return jsonify([])
 
 
 @broadcast_api.route("/suppression/<entry_id>", methods=["DELETE"])
 def suppression_remove(entry_id: str):
-    return _proxy(
-        "DELETE",
-        f"/api/v1/campaigns/suppression/{entry_id}",
-        action="broadcast_suppression_removed",
-        query={"actor": _actor_label()},
-    )
-
-
-def _proxy_raw(method: str, upstream_path: str, *, action: str, query=None):
-    """Proxy non-JSON responses (exports)."""
-    import urllib.error
-    import urllib.request
-
-    from .ai_coding_client import ai_coding_api_base_url
-
-    base = ai_coding_api_base_url()
-    url = f"{base}{upstream_path}"
-    if query:
-        from urllib.parse import urlencode
-
-        params = urlencode({k: v for k, v in query.items() if v is not None})
-        if params:
-            url = f"{url}?{params}"
-
-    req = urllib.request.Request(url, headers={"Accept": "*/*"}, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            body = response.read()
-            status = response.getcode() or 200
-            headers = dict(response.headers.items())
-    except urllib.error.HTTPError as exc:
-        body = exc.read()
-        status = exc.code
-        headers = dict(exc.headers.items()) if exc.headers else {}
-    except urllib.error.URLError as exc:
-        _audit(action, upstream_status=502, error=str(exc.reason))
-        return jsonify({"error": "broadcast_upstream_unavailable", "detail": str(exc.reason)}), 502
-
-    _audit(action, upstream_status=status)
-    from flask import Response as FlaskResponse
-
-    resp = FlaskResponse(body, status=status)
-    for key in ("Content-Type", "Content-Disposition"):
-        if key in headers:
-            resp.headers[key] = headers[key]
-    return resp
+    return _deny_execution(action="broadcast_suppression_remove_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/validation", methods=["GET"])
 def campaign_validation(campaign_id: str):
-    return _proxy("GET", f"/api/v1/campaigns/{campaign_id}/validation", action="broadcast_validation_viewed")
+    return jsonify(
+        {
+            "valid": False,
+            "execution_enabled": False,
+            "blocking": ["broadcast_execution_disabled"],
+            "campaign_id": campaign_id,
+        }
+    )
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/audit", methods=["GET"])
 def campaign_audit(campaign_id: str):
-    return _proxy("GET", f"/api/v1/campaigns/{campaign_id}/audit", action="broadcast_audit_viewed")
+    return jsonify([])
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/submit-review", methods=["POST"])
 def campaign_submit_review(campaign_id: str):
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy(
-        "POST",
-        f"/api/v1/campaigns/{campaign_id}/submit-review",
-        action="broadcast_review_submitted",
-        json_body=body,
-    )
+    return _deny_execution(action="broadcast_review_submit_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/approve", methods=["POST"])
 def campaign_approve(campaign_id: str):
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy(
-        "POST",
-        f"/api/v1/campaigns/{campaign_id}/approve",
-        action="broadcast_campaign_approved",
-        json_body=body,
-    )
+    return _deny_execution(action="broadcast_approve_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/reject", methods=["POST"])
 def campaign_reject(campaign_id: str):
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy(
-        "POST",
-        f"/api/v1/campaigns/{campaign_id}/reject",
-        action="broadcast_campaign_rejected",
-        json_body=body,
-    )
+    return _deny_execution(action="broadcast_reject_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/cancel", methods=["POST"])
 def campaign_cancel(campaign_id: str):
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy(
-        "POST",
-        f"/api/v1/campaigns/{campaign_id}/cancel",
-        action="broadcast_campaign_cancelled",
-        json_body=body,
-    )
+    return _deny_execution(action="broadcast_cancel_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/dry-run/export", methods=["GET"])
 def campaign_dry_run_export(campaign_id: str):
-    return _proxy_raw(
-        "GET",
-        f"/api/v1/campaigns/{campaign_id}/dry-run/export",
-        action="broadcast_dry_run_exported",
-        query={
-            "fmt": request.args.get("fmt", "markdown"),
-            "actor": _actor_label(),
-        },
-    )
+    return _deny_execution(action="broadcast_dry_run_export_denied")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/send/preview", methods=["GET"])
 def campaign_send_preview(campaign_id: str):
-    return _proxy(
-        "GET",
-        f"/api/v1/campaigns/{campaign_id}/send/preview",
-        action="broadcast_send_preview_viewed",
-        query={
-            "limit": request.args.get("limit", "5"),
-            "actor": _actor_label(),
-        },
+    return jsonify(
+        {
+            "campaign_id": campaign_id,
+            "live_send_enabled": False,
+            "can_send": False,
+            "eligible_count": 0,
+            "selected_count": 0,
+            "execution_enabled": False,
+            "blocking_reasons": ["broadcast_execution_disabled"],
+            "confirmation_phrase": "Live sending disabled",
+        }
     )
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/send/tiny-cohort", methods=["POST"])
 def campaign_send_tiny_cohort(campaign_id: str):
-    body = request.get_json(silent=True) or {}
-    body.setdefault("actor", _actor_label())
-    return _proxy(
-        "POST",
-        f"/api/v1/campaigns/{campaign_id}/send/tiny-cohort",
-        action="broadcast_tiny_cohort_send",
-        json_body=body,
-    )
+    # Hard deny even if someone flips a future flag incorrectly without full cert.
+    if not broadcast_execution_enabled():
+        return _deny_execution(action="broadcast_tiny_cohort_send_denied")
+    # Wave K: never enable live send through this proxy without a dedicated cert.
+    return _deny_execution(action="broadcast_tiny_cohort_send_uncertified")
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/send/batches", methods=["GET"])
 def campaign_send_batches(campaign_id: str):
-    return _proxy(
-        "GET",
-        f"/api/v1/campaigns/{campaign_id}/send/batches",
-        action="broadcast_send_batches_listed",
-    )
+    return jsonify([])
 
 
 @broadcast_api.route("/campaigns/<campaign_id>/send/batches/<batch_id>", methods=["GET"])
 def campaign_send_batch_detail(campaign_id: str, batch_id: str):
-    return _proxy(
-        "GET",
-        f"/api/v1/campaigns/{campaign_id}/send/batches/{batch_id}",
-        action="broadcast_send_batch_viewed",
-    )
+    return jsonify({"error": "not_found", "campaign_id": campaign_id, "batch_id": batch_id}), 404
