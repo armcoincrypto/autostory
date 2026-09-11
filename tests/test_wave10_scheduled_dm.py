@@ -129,6 +129,8 @@ def test_wave_d_dm_allowed_without_global_scheduler_mutations(memory_db):
     """Wave D: SCHEDULED_DM_ENABLED alone is enough for DM create."""
     _add_account(memory_db)
     svc = ScheduledDirectMessageService()
+    # Keep local schedule in the future relative to wall clock (Yerevan UTC+4).
+    future = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
     with patch("src.messaging.scheduled_dm_flags.scheduled_dm_enabled", return_value=True):
         with patch(
             "src.dashboard.scheduler_mutations.scheduler_mutations_enabled",
@@ -144,7 +146,7 @@ def test_wave_d_dm_allowed_without_global_scheduler_mutations(memory_db):
                     account_id=106,
                     peer_id="8531893204",
                     message="wave-d-canary",
-                    local_date="2026-09-10",
+                    local_date=future,
                     local_time="15:00",
                     timezone="Asia/Yerevan",
                 )

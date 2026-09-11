@@ -19,7 +19,14 @@ from src.messaging.message_draft_flags import messages_ai_draft_enabled
 from src.messaging.message_draft_service import MessageDraftService
 from src.messaging.eligibility import evaluate_dm_account_eligibility
 from src.messaging.flags import messages_execution_enabled
+from src.messaging.chat_flags import (
+    messages_chat_join_enabled,
+    messages_chat_leave_enabled,
+    messages_group_channel_send_enabled,
+)
+from src.messaging.chat_policy import evaluate_send_policy, policy_matrix_for_status
 from src.messaging.models import OwnerDmIntent
+from src.messaging.owner_chat_service import OwnerChatService
 from src.messaging.owner_dm_service import OwnerDirectMessageService
 from src.messaging.scheduled_dm_flags import (
     scheduled_dm_create_allowed,
@@ -133,6 +140,10 @@ def messages_status():
             "ai_draft_available": messages_ai_draft_enabled(),
             "scheduled_dm_enabled": scheduled_dm_enabled(),
             "schedule_available": scheduled_dm_create_allowed(),
+            "messages_chat_join_enabled": messages_chat_join_enabled(),
+            "messages_chat_leave_enabled": messages_chat_leave_enabled(),
+            "messages_group_channel_send_enabled": messages_group_channel_send_enabled(),
+            "chat_capabilities": policy_matrix_for_status(),
             "default_timezone": DEFAULT_OWNER_TIMEZONE,
             "banner": (
                 None
@@ -176,7 +187,7 @@ def messages_accounts():
 
 @messages_api.route("/history", methods=["GET"])
 def messages_history():
-    """Recent private-dialog history via TelegramDmTransport (eligibility gated)."""
+    """Recent dialog history via TelegramDmTransport (eligibility gated; all chat types)."""
     account_id = request.args.get("account_id", type=int)
     peer = (request.args.get("peer") or "").strip()
     limit = request.args.get("limit", 20, type=int)
@@ -251,6 +262,22 @@ def messages_history():
     return jsonify({"ok": True, "account_id": int(account_id), "peer": peer, "messages": messages})
 
 
+def _deny_group_channel_send(peer_type: str):
+    allowed, code, msg = evaluate_send_policy(peer_type)
+    if allowed:
+        return None
+    return (
+        {
+            "ok": False,
+            "error": code,
+            "message": msg,
+            "peer_type": peer_type,
+            "would_send": False,
+        },
+        423 if code == "GROUP_CHANNEL_SEND_DISABLED" else 400,
+    )
+
+
 @messages_api.route("/draft", methods=["POST"])
 def messages_draft():
     """AI draft assistant — returns suggested text only (never sends)."""
@@ -308,6 +335,14 @@ def messages_dry_run():
     if message is None:
         return jsonify({"ok": False, "error": "EMPTY_MESSAGE", "message": "message required"}), 400
 
+    denied = _deny_group_channel_send(peer_type)
+    if denied is not None:
+        payload, _status = denied
+        payload = dict(payload)
+        payload["ok"] = True
+        payload["would_send"] = False
+        return jsonify(payload), 200
+
     svc = OwnerDirectMessageService()
     with get_db_context() as db:
         result = svc.dry_run(
@@ -342,6 +377,11 @@ def messages_send_now():
             jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "idempotency_key required"}),
             400,
         )
+
+    denied = _deny_group_channel_send(peer_type)
+    if denied is not None:
+        payload, status = denied
+        return jsonify(payload), status
 
     svc = OwnerDirectMessageService()
     with get_db_context() as db:
@@ -449,6 +489,11 @@ def messages_schedule():
     if message is None:
         return jsonify({"ok": False, "error": "EMPTY_MESSAGE", "message": "message required"}), 400
 
+    denied = _deny_group_channel_send(peer_type)
+    if denied is not None:
+        payload, status = denied
+        return jsonify(payload), status
+
     svc = ScheduledDirectMessageService()
     with get_db_context() as db:
         result = svc.schedule(
@@ -463,6 +508,98 @@ def messages_schedule():
             dry_run_only=dry_run_only,
         )
     return jsonify(result.payload), result.status_code
+
+
+@messages_api.route("/chat/resolve", methods=["POST"])
+def messages_chat_resolve():
+    """Parse + non-mutating preview for join/open (no join execution)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        account_id = int(data.get("account_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_id required"}), 400
+    raw = (data.get("ref") or data.get("input") or data.get("chat") or "").strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+
+    svc = OwnerChatService()
+    parsed = svc.resolve_input(raw)
+    if not parsed.get("ok"):
+        return jsonify({"ok": False, "error": "PEER_INVALID", **parsed}), 400
+
+    preview = _run_async(svc.preview_async(account_id, raw))
+    return jsonify(preview), (200 if preview.get("ok") else 400)
+
+
+@messages_api.route("/chat/join", methods=["POST"])
+def messages_chat_join():
+    """Owner-confirmed join — gated by MESSAGES_CHAT_JOIN_ENABLED only."""
+    data = request.get_json(silent=True) or {}
+    try:
+        account_id = int(data.get("account_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_id required"}), 400
+    raw = (data.get("ref") or data.get("input") or data.get("chat") or "").strip()
+    confirm = bool(data.get("confirm"))
+    if not raw:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+
+    svc = OwnerChatService()
+    result = _run_async(svc.join_async(account_id, raw, confirm=confirm))
+    status_code = 200
+    if not result.get("ok"):
+        err = result.get("error") or result.get("error_code") or ""
+        if err in {"CONFIRM_REQUIRED"}:
+            status_code = 400
+        elif err in _ACCOUNT_DENY_CODES or err in {
+            "ACCOUNT_PROTECTED",
+            "ACCOUNT_RESERVED",
+            "ACCOUNT_DISABLED",
+            "ACCOUNT_INELIGIBLE",
+            "AUTH_REQUIRED",
+        }:
+            status_code = 403
+        elif err == "messages_chat_join_disabled" or (
+            result.get("execution_guard") or {}
+        ).get("reason_code") == "messages_chat_join_disabled":
+            status_code = 423
+        else:
+            status_code = 400
+        # Map guard deny from joiner
+        eg = result.get("execution_guard") or {}
+        if eg.get("reason_code") == "messages_chat_join_disabled":
+            status_code = 423
+            result["error"] = result.get("error") or "messages_chat_join_disabled"
+    return jsonify(result), status_code
+
+
+@messages_api.route("/chat/leave", methods=["POST"])
+def messages_chat_leave():
+    """Owner-confirmed leave — gated by MESSAGES_CHAT_LEAVE_ENABLED only."""
+    data = request.get_json(silent=True) or {}
+    try:
+        account_id = int(data.get("account_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_id required"}), 400
+    raw = (data.get("ref") or data.get("input") or data.get("chat") or data.get("peer") or "").strip()
+    confirm = bool(data.get("confirm"))
+    if not raw:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+
+    svc = OwnerChatService()
+    result = _run_async(svc.leave_async(account_id, raw, confirm=confirm))
+    status_code = 200
+    if not result.get("ok"):
+        eg = result.get("execution_guard") or {}
+        if eg.get("reason_code") == "messages_chat_leave_disabled" or result.get("status") == "denied":
+            status_code = 423
+        elif result.get("error") == "CONFIRM_REQUIRED":
+            status_code = 400
+        elif result.get("error") in _ACCOUNT_DENY_CODES:
+            status_code = 403
+        else:
+            status_code = 400
+    return jsonify(result), status_code
 
 
 @messages_api.route("/scheduled", methods=["GET"])

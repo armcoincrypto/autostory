@@ -98,7 +98,7 @@
 <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
   <div>
     <h2 class="mb-1"><i class="bi bi-chat-dots"></i> Messages</h2>
-    <p class="text-muted mb-0">Send now or schedule one private conversation.</p>
+    <p class="text-muted mb-0">Choose an account, open a chat (or join one), then read, draft, send, or schedule.</p>
   </div>
 </div>
 
@@ -114,7 +114,19 @@
   </section>
 
   <section class="msg-pane">
-    <div class="msg-pane-header">2. Private dialog</div>
+    <div class="msg-pane-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+      <span>2. Chats</span>
+      <button type="button" class="btn btn-outline-light btn-sm" id="btn-join-chat" disabled title="Join a group or channel">Join chat</button>
+    </div>
+    <div class="px-2 pt-2">
+      <div class="btn-group btn-group-sm w-100 mb-2" role="group" aria-label="Chat filter">
+        <button type="button" class="btn btn-outline-light active" data-dialog-filter="all">All</button>
+        <button type="button" class="btn btn-outline-light" data-dialog-filter="private">Private</button>
+        <button type="button" class="btn btn-outline-light" data-dialog-filter="groups">Groups</button>
+        <button type="button" class="btn btn-outline-light" data-dialog-filter="channels">Channels</button>
+      </div>
+      <input type="search" id="dialog-search" class="form-control form-control-sm mb-2" placeholder="Search joined chats…" disabled>
+    </div>
     <div class="msg-pane-body" id="dialog-list">
       <div class="text-muted small p-2">Choose an account first.</div>
     </div>
@@ -126,10 +138,11 @@
       <span class="small text-muted" id="thread-label">No dialog selected</span>
     </div>
     <div class="msg-pane-body" id="thread">
-      <div class="text-muted small p-2">Select a private dialog to load recent messages.</div>
+      <div class="text-muted small p-2">Select a chat to load recent messages.</div>
     </div>
     <div class="composer">
       <div id="ai-draft-label" class="small text-info mb-1 d-none">AI draft — review before sending</div>
+      <div id="send-policy-hint" class="small text-warning mb-2 d-none"></div>
       <textarea id="composer-text" class="form-control mb-2" rows="3" maxlength="4096"
         placeholder="Type a message…" disabled></textarea>
       <div class="mb-2">
@@ -266,6 +279,41 @@
     </div>
   </div>
 </div>
+
+<!-- Join chat modal -->
+<div class="modal fade" id="joinChatModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:#111827;color:#f8fafc;border:1px solid rgba(148,163,184,.3);">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title">Join chat</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted">Paste @username, t.me link, or invite. Preview before joining.</p>
+        <input type="text" id="join-ref-input" class="form-control mb-3" placeholder="@channel or https://t.me/+invite">
+        <div id="join-preview" class="small d-none">
+          <dl class="row mb-0">
+            <dt class="col-4 text-muted">Title</dt><dd class="col-8" id="join-prev-title">—</dd>
+            <dt class="col-4 text-muted">Type</dt><dd class="col-8" id="join-prev-type">—</dd>
+            <dt class="col-4 text-muted">Access</dt><dd class="col-8" id="join-prev-access">—</dd>
+            <dt class="col-4 text-muted">Account</dt><dd class="col-8" id="join-prev-account">—</dd>
+            <dt class="col-4 text-muted">Membership</dt><dd class="col-8" id="join-prev-member">—</dd>
+          </dl>
+          <div id="join-prev-msg" class="alert alert-secondary py-2 mt-3 mb-0 small"></div>
+        </div>
+        <div id="join-flag-warn" class="alert alert-warning py-2 mt-3 mb-0 small d-none">
+          Chat join is currently disabled (MESSAGES_CHAT_JOIN_ENABLED=false).
+        </div>
+      </div>
+      <div class="modal-footer border-secondary">
+        <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-outline-info" id="btn-join-preview">Preview</button>
+        <button type="button" class="btn btn-primary" id="btn-join-confirm" disabled>Confirm join</button>
+        <button type="button" class="btn btn-success d-none" id="btn-join-open">Open chat</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -277,13 +325,19 @@
     accountLabel: '',
     dialogs: [],
     dialog: null,
+    dialogFilter: 'all',
+    dialogSearch: '',
     messagesEnabled: false,
     aiDraftAvailable: false,
     scheduleAvailable: false,
+    joinEnabled: false,
+    leaveEnabled: false,
+    groupChannelSendEnabled: false,
     defaultTimezone: 'Asia/Yerevan',
     inFlight: false,
     idempotencyKey: null,
     scheduleReviewed: false,
+    joinPreview: null,
   };
 
   const elAlert = document.getElementById('msg-alert');
@@ -294,6 +348,9 @@
   const btnRefreshScheduled = document.getElementById('btn-refresh-scheduled');
   const elAccounts = document.getElementById('account-list');
   const elDialogs = document.getElementById('dialog-list');
+  const elDialogSearch = document.getElementById('dialog-search');
+  const elSendPolicyHint = document.getElementById('send-policy-hint');
+  const btnJoinChat = document.getElementById('btn-join-chat');
   const elThread = document.getElementById('thread');
   const elThreadLabel = document.getElementById('thread-label');
   const elComposer = document.getElementById('composer-text');
@@ -309,6 +366,13 @@
   const btnScheduleConfirm = document.getElementById('btn-schedule-confirm');
   const confirmModal = new bootstrap.Modal(document.getElementById('confirmSendModal'));
   const scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
+  const joinModal = new bootstrap.Modal(document.getElementById('joinChatModal'));
+  const btnJoinPreview = document.getElementById('btn-join-preview');
+  const btnJoinConfirm = document.getElementById('btn-join-confirm');
+  const btnJoinOpen = document.getElementById('btn-join-open');
+  const elJoinRef = document.getElementById('join-ref-input');
+  const elJoinPreviewBox = document.getElementById('join-preview');
+  const elJoinFlagWarn = document.getElementById('join-flag-warn');
 
   const STATUS_LABELS = {
     SENT: 'Sent',
@@ -317,6 +381,19 @@
     SENDING: 'Sending',
     CREATED: 'Created',
   };
+
+  function isPrivateLike(t) {
+    return !t || t === 'private' || t === 'bot' || t === 'user';
+  }
+  function canSendForDialog(d) {
+    if (!d) return false;
+    if (isPrivateLike(d.peer_type || d.dialog_type)) return true;
+    return !!state.groupChannelSendEnabled;
+  }
+  function currentPeerType() {
+    if (!state.dialog) return 'private';
+    return state.dialog.peer_type || state.dialog.dialog_type || 'private';
+  }
 
   function showAlert(kind, text) {
     elAlert.className = 'alert alert-' + kind;
@@ -329,18 +406,27 @@
   }
 
   function setComposerEnabled(on) {
+    const sendOk = on && canSendForDialog(state.dialog);
     elComposer.disabled = !on;
     if (elAiInstruction) elAiInstruction.disabled = !on;
-    btnCheck.disabled = !on;
-    btnReview.disabled = !on;
+    btnCheck.disabled = !sendOk;
+    btnReview.disabled = !sendOk;
     if (btnSchedule) {
-      btnSchedule.disabled = !(on && state.dialog);
+      btnSchedule.disabled = !(sendOk && state.dialog && state.scheduleAvailable);
       btnSchedule.title = state.scheduleAvailable
-        ? ''
+        ? (sendOk ? '' : 'Sending to this chat type is not enabled yet')
         : 'Scheduling is currently disabled (flags off)';
     }
     if (btnAiDraft) {
       btnAiDraft.disabled = !(on && state.aiDraftAvailable && state.dialog);
+    }
+    if (elSendPolicyHint) {
+      if (on && state.dialog && !canSendForDialog(state.dialog)) {
+        elSendPolicyHint.textContent = 'Send/Schedule for groups and channels is disabled until certified. You can still read history and draft.';
+        elSendPolicyHint.classList.remove('d-none');
+      } else {
+        elSendPolicyHint.classList.add('d-none');
+      }
     }
   }
 
@@ -355,6 +441,9 @@
     state.messagesEnabled = !!data.messages_execution_enabled;
     state.aiDraftAvailable = !!data.ai_draft_available;
     state.scheduleAvailable = !!data.schedule_available;
+    state.joinEnabled = !!data.messages_chat_join_enabled;
+    state.leaveEnabled = !!data.messages_chat_leave_enabled;
+    state.groupChannelSendEnabled = !!data.messages_group_channel_send_enabled;
     state.defaultTimezone = data.default_timezone || 'Asia/Yerevan';
     if (data.banner) {
       elBanner.textContent = data.banner;
@@ -406,8 +495,10 @@
     elAccounts.querySelectorAll('.msg-item').forEach((n) => {
       n.classList.toggle('active', Number(n.dataset.accountId) === accountId);
     });
-    elDialogs.innerHTML = '<div class="text-muted small p-2">Loading private dialogs…</div>';
-    elThread.innerHTML = '<div class="text-muted small p-2">Select a private dialog to load recent messages.</div>';
+    if (btnJoinChat) btnJoinChat.disabled = false;
+    if (elDialogSearch) elDialogSearch.disabled = false;
+    elDialogs.innerHTML = '<div class="text-muted small p-2">Loading chats…</div>';
+    elThread.innerHTML = '<div class="text-muted small p-2">Select a chat to load recent messages.</div>';
     elThreadLabel.textContent = 'No dialog selected';
     setComposerEnabled(false);
     elComposer.value = '';
@@ -415,7 +506,7 @@
 
     try {
       const dialogs = await dashboardFetchJson(
-        `/api/accounts/${accountId}/dialogs?type=private&limit=200`
+        `/api/accounts/${accountId}/dialogs?limit=200`
       );
       state.dialogs = Array.isArray(dialogs) ? dialogs : (dialogs.dialogs || []);
       renderDialogs();
@@ -424,19 +515,39 @@
     }
   }
 
+  function filteredDialogs() {
+    const q = (state.dialogSearch || '').trim().toLowerCase();
+    return (state.dialogs || []).filter((d) => {
+      const t = (d.dialog_type || d.chat_type || '').toLowerCase();
+      if (state.dialogFilter === 'private') {
+        if (!(t === 'private' || t === 'bot' || t === 'user')) return false;
+      } else if (state.dialogFilter === 'groups') {
+        if (!(t === 'group' || t === 'supergroup')) return false;
+      } else if (state.dialogFilter === 'channels') {
+        if (t !== 'channel') return false;
+      }
+      if (!q) return true;
+      const name = String(d.display_name || d.title || '').toLowerCase();
+      const user = String(d.username || '').toLowerCase();
+      return name.includes(q) || user.includes(q) || String(d.id).includes(q);
+    });
+  }
+
   function renderDialogs() {
-    if (!state.dialogs.length) {
-      elDialogs.innerHTML = '<div class="text-muted small p-2">No private dialogs returned.</div>';
+    const list = filteredDialogs();
+    if (!list.length) {
+      elDialogs.innerHTML = '<div class="text-muted small p-2">No chats match this filter.</div>';
       return;
     }
-    elDialogs.innerHTML = state.dialogs.map((d) => {
+    elDialogs.innerHTML = list.map((d) => {
       const name = esc(d.display_name || d.title || d.id);
       const user = d.username ? `@${esc(d.username)}` : '';
+      const dtype = esc(d.dialog_type || d.chat_type || '');
       const unread = Number(d.unread_count || 0);
       const when = d.last_message_at ? esc(String(d.last_message_at).replace('T', ' ').slice(0, 16)) : '';
-      return `<div class="msg-item" data-peer-id="${esc(d.id)}" data-username="${esc(d.username || '')}" data-name="${name}">
+      return `<div class="msg-item" data-peer-id="${esc(d.id)}" data-username="${esc(d.username || '')}" data-name="${name}" data-type="${dtype}">
         <div class="fw-semibold">${name}</div>
-        <div class="small text-muted">${user}${user && when ? ' · ' : ''}${when}${unread ? ` · unread ${unread}` : ''}</div>
+        <div class="small text-muted">${dtype}${user ? ' · ' + user : ''}${when ? ' · ' + when : ''}${unread ? ` · unread ${unread}` : ''}</div>
       </div>`;
     }).join('');
     elDialogs.querySelectorAll('.msg-item').forEach((node) => {
@@ -447,6 +558,8 @@
           peer_id: String(node.dataset.peerId),
           username: node.dataset.username || '',
           display_name: node.dataset.name || peer,
+          peer_type: node.dataset.type || 'private',
+          dialog_type: node.dataset.type || 'private',
         });
         elDialogs.querySelectorAll('.msg-item').forEach((n) => n.classList.remove('active'));
         node.classList.add('active');
@@ -471,7 +584,6 @@
       elThread.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;
     }
   }
-
   function renderThread(messages) {
     // Transport returns newest-first typically; show chronological.
     const ordered = [...messages].reverse();
@@ -566,7 +678,7 @@
         account_id: state.accountId,
         peer: state.dialog.peer,
         message: text,
-        peer_type: 'private',
+        peer_type: currentPeerType(),
       }),
     });
   }
@@ -832,7 +944,7 @@
             account_id: state.accountId,
             peer: state.dialog.peer,
             message: elComposer.value,
-            peer_type: 'private',
+            peer_type: currentPeerType(),
             local_date: document.getElementById('schedule-date').value,
             local_time: document.getElementById('schedule-time').value,
             timezone: document.getElementById('schedule-tz').value,
@@ -871,7 +983,7 @@
             account_id: state.accountId,
             peer: state.dialog.peer,
             message: elComposer.value,
-            peer_type: 'private',
+            peer_type: currentPeerType(),
             local_date: document.getElementById('schedule-date').value,
             local_time: document.getElementById('schedule-time').value,
             timezone: document.getElementById('schedule-tz').value,
@@ -911,7 +1023,7 @@
           peer: state.dialog.peer,
           message: elComposer.value,
           idempotency_key: key,
-          peer_type: 'private',
+          peer_type: currentPeerType(),
         }),
       });
       confirmModal.hide();
@@ -931,6 +1043,156 @@
       btnConfirm.disabled = false;
     }
   });
+
+  // Dialog filter chips + local search
+  document.querySelectorAll('[data-dialog-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.dialogFilter = btn.getAttribute('data-dialog-filter') || 'all';
+      document.querySelectorAll('[data-dialog-filter]').forEach((b) => {
+        b.classList.toggle('active', b === btn);
+      });
+      renderDialogs();
+    });
+  });
+  if (elDialogSearch) {
+    elDialogSearch.addEventListener('input', () => {
+      state.dialogSearch = elDialogSearch.value || '';
+      renderDialogs();
+    });
+  }
+
+  function resetJoinModal() {
+    state.joinPreview = null;
+    if (btnJoinConfirm) btnJoinConfirm.disabled = true;
+    if (btnJoinOpen) btnJoinOpen.classList.add('d-none');
+    if (elJoinPreviewBox) elJoinPreviewBox.classList.add('d-none');
+    if (elJoinFlagWarn) {
+      elJoinFlagWarn.classList.toggle('d-none', !!state.joinEnabled);
+    }
+  }
+
+  if (btnJoinChat) {
+    btnJoinChat.addEventListener('click', () => {
+      if (!state.accountId) {
+        showAlert('warning', 'Select an account first.');
+        return;
+      }
+      resetJoinModal();
+      if (elJoinRef) elJoinRef.value = '';
+      joinModal.show();
+    });
+  }
+
+  async function runJoinPreview() {
+    if (!state.accountId || !elJoinRef) return;
+    const ref = (elJoinRef.value || '').trim();
+    if (!ref) {
+      showAlert('warning', 'Paste a username or invite link.');
+      return;
+    }
+    btnJoinPreview.disabled = true;
+    try {
+      const data = await dashboardFetchJson('/api/messages/chat/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: state.accountId, ref }),
+      });
+      state.joinPreview = data;
+      elJoinPreviewBox.classList.remove('d-none');
+      document.getElementById('join-prev-title').textContent = data.title || (data.parsed && data.parsed.display) || '—';
+      document.getElementById('join-prev-type').textContent = data.chat_type || '—';
+      document.getElementById('join-prev-access').textContent = data.public ? 'Public' : 'Private / invite';
+      document.getElementById('join-prev-account').textContent = state.accountLabel || ('#' + state.accountId);
+      document.getElementById('join-prev-member').textContent = data.already_joined ? 'Already joined' : 'Not a member';
+      document.getElementById('join-prev-msg').textContent = data.message || '';
+      if (data.action_hint === 'open' || data.already_joined) {
+        btnJoinConfirm.disabled = true;
+        btnJoinConfirm.classList.add('d-none');
+        btnJoinOpen.classList.remove('d-none');
+      } else if (data.action_hint === 'join' && data.ok) {
+        btnJoinOpen.classList.add('d-none');
+        btnJoinConfirm.classList.remove('d-none');
+        btnJoinConfirm.disabled = !state.joinEnabled;
+      } else {
+        btnJoinConfirm.disabled = true;
+        btnJoinOpen.classList.add('d-none');
+      }
+    } catch (e) {
+      const data = e.data || {};
+      showAlert('danger', data.message || e.message || String(e));
+      resetJoinModal();
+    } finally {
+      btnJoinPreview.disabled = false;
+    }
+  }
+
+  if (btnJoinPreview) btnJoinPreview.addEventListener('click', runJoinPreview);
+
+  if (btnJoinConfirm) {
+    btnJoinConfirm.addEventListener('click', async () => {
+      if (!state.accountId || !elJoinRef || state.inFlight) return;
+      if (!state.joinEnabled) {
+        showAlert('warning', 'Chat join is disabled (MESSAGES_CHAT_JOIN_ENABLED=false).');
+        return;
+      }
+      const ref = (elJoinRef.value || '').trim();
+      const ok = window.confirm('Join this chat with the selected account?');
+      if (!ok) return;
+      state.inFlight = true;
+      btnJoinConfirm.disabled = true;
+      try {
+        const data = await dashboardFetchJson('/api/messages/chat/join', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: state.accountId, ref, confirm: true }),
+        });
+        showAlert('success', data.message || 'Join completed');
+        if (data.open_chat && data.peer) {
+          joinModal.hide();
+          await selectAccount(state.accountId);
+          await selectDialog({
+            peer: data.peer,
+            peer_id: data.peer_id != null ? String(data.peer_id) : '',
+            username: (data.peer || '').replace(/^@/, ''),
+            display_name: data.title || data.peer,
+            peer_type: data.chat_type || 'supergroup',
+            dialog_type: data.chat_type || 'supergroup',
+          });
+        } else if (data.already_member) {
+          btnJoinOpen.classList.remove('d-none');
+        }
+      } catch (e) {
+        const data = e.data || {};
+        showAlert('danger', data.message || e.message || String(e));
+      } finally {
+        state.inFlight = false;
+        btnJoinConfirm.disabled = false;
+      }
+    });
+  }
+
+  if (btnJoinOpen) {
+    btnJoinOpen.addEventListener('click', async () => {
+      const data = state.joinPreview || {};
+      const parsed = data.parsed || {};
+      let peer = null;
+      if (parsed.username) peer = '@' + parsed.username;
+      else if (data.peer_id != null) peer = String(data.peer_id);
+      if (!peer) {
+        showAlert('warning', 'Could not determine chat peer to open.');
+        return;
+      }
+      joinModal.hide();
+      await selectDialog({
+        peer,
+        peer_id: data.peer_id != null ? String(data.peer_id) : '',
+        username: parsed.username || '',
+        display_name: data.title || peer,
+        peer_type: data.chat_type || 'supergroup',
+        dialog_type: data.chat_type || 'supergroup',
+      });
+    });
+  }
 
   // Initial load: accounts + status + recent intents only (Telegram calls = 0)
   (async function init() {

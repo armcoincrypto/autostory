@@ -38,7 +38,7 @@ class TaskType(str, Enum):
     PUBLISH_STORY = "publish_story"
     DISCOVER_USERS = "discover_users"
     SEND_MESSAGE = "send_message"
-    JOIN_CHAT = "join_chat"
+    JOIN_CHAT = "join_chat"  # Historical enum only — not used by owner Messages join (Wave M)
 
 
 class Account(Base):

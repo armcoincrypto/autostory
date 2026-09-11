@@ -181,6 +181,30 @@ class Settings(BaseSettings):
             "Env: MESSAGES_EXECUTION_ENABLED."
         ),
     )
+    messages_chat_join_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), owner Messages chat join is denied. "
+            "Independent of SCHEDULER_MUTATIONS_ENABLED and DISCOVERY_EXECUTION_ENABLED. "
+            "Env: MESSAGES_CHAT_JOIN_ENABLED."
+        ),
+    )
+    messages_chat_leave_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), owner Messages chat leave is denied. "
+            "Independent of scheduler/discovery mutation flags. "
+            "Env: MESSAGES_CHAT_LEAVE_ENABLED."
+        ),
+    )
+    messages_group_channel_send_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), owner Send Now / schedule to groups and channels "
+            "is denied. Private/bot DM send remains gated only by MESSAGES_EXECUTION_ENABLED. "
+            "Env: MESSAGES_GROUP_CHANNEL_SEND_ENABLED."
+        ),
+    )
     scheduled_dm_enabled: bool = Field(
         default=False,
         description=(

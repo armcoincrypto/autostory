@@ -472,43 +472,60 @@ class UserDiscovery:
 
     async def join_channel(self, channel: str, *, dry_run: bool = False) -> Dict[str, Any]:
         """
-        Join a Telegram channel/group using the first available active account.
-        This is needed so that account sessions cache the access hash for
-        private/ID-based channel resolution (required for scanning).
+        Advanced Discovery join — thin wrapper over canonical ``join_ref_for_account``.
+
+        Still gated by ACTION_DISCOVERY_JOIN / DISCOVERY_EXECUTION_ENABLED.
+        Owner-facing joins belong in Messages (ACTION_OWNER_CHAT_JOIN).
         """
+        from src.clients.joiner import join_ref_for_account
         from src.core.execution_guard import (
             ACTION_DISCOVERY_JOIN,
             guard_blocked_discovery,
             require_execution_allowed,
         )
+        from src.core.models import Account, AccountStatus
 
         blocked = require_execution_allowed(ACTION_DISCOVERY_JOIN, dry_run=dry_run)
         if blocked is not None:
             logger.warning("discovery_join_blocked_execution_guard", reason=blocked.reason_code)
             return guard_blocked_discovery(blocked)
 
-        from telethon.tl.functions.channels import JoinChannelRequest
-        from telethon.tl.functions.messages import ImportChatInviteRequest
+        with get_db_context() as db:
+            account = (
+                db.query(Account)
+                .filter(Account.status == AccountStatus.ACTIVE)
+                .filter(Account.session_string.isnot(None))
+                .order_by(Account.id.asc())
+                .first()
+            )
+        if not account:
+            return {"success": False, "error": "No active Telegram account available"}
 
-        client = await self._scanner.get_active_client()
-        if not client:
-            return {'success': False, 'error': 'No active Telegram account available'}
-
-        try:
-            # Handle invite links like t.me/joinchat/... or t.me/+...
-            if 'joinchat/' in channel or channel.startswith('https://t.me/+'):
-                hash_part = channel.split('/')[-1].lstrip('+')
-                await client(ImportChatInviteRequest(hash_part))
-                return {'success': True, 'title': channel}
-
-            entity = await client.get_entity(channel)
-            await client(JoinChannelRequest(entity))
-            return {'success': True, 'title': getattr(entity, 'title', channel)}
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-        finally:
-            await client.disconnect()
-
+        # Discovery already passed ACTION_DISCOVERY_JOIN; call Telethon join with
+        # dry_run so join_ref does not re-check Messages join flag. When not dry_run,
+        # pass ACTION_DISCOVERY_JOIN so Messages/scheduler flags stay independent.
+        result = await join_ref_for_account(
+            int(account.id),
+            channel,
+            action=ACTION_DISCOVERY_JOIN,
+            dry_run=dry_run,
+        )
+        status = result.get("status")
+        ok = status in {
+            "joined",
+            "already_joined",
+            "join_requested",
+            "no_permission_to_post",
+            "dry_run",
+        }
+        return {
+            "success": ok,
+            "title": result.get("title") or result.get("display") or channel,
+            "status": status,
+            "message": result.get("message"),
+            "error": None if ok else (result.get("error") or result.get("message")),
+            "canonical": "join_ref_for_account",
+        }
     async def get_discovery_stats(self) -> Dict[str, Any]:
         """Get discovery statistics"""
         with get_db_context() as db:

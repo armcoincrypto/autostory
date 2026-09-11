@@ -21,7 +21,9 @@ Design notes
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -418,3 +420,331 @@ async def join_target_for_account(account_id: int, target_id: int) -> Dict[str, 
         )
         msg = _human_telethon_error(e)
         return {**base, "status": STATUS_FAILED, "error": msg, "message": msg}
+
+
+# ---------------------------------------------------------------------------
+# Ref-based join (Messages / Discovery) — same Telethon primitives as above.
+# Does NOT require a ChatTarget row. Action is parameterized so Scheduler keeps
+# ACTION_TELEGRAM_JOIN while Messages uses ACTION_OWNER_CHAT_JOIN.
+# ---------------------------------------------------------------------------
+
+_JOIN_REF_LOCKS: Dict[int, asyncio.Lock] = {}
+_JOIN_REF_LOCKS_GUARD = threading.Lock()
+
+
+async def _join_lock_for_account(account_id: int) -> asyncio.Lock:
+    with _JOIN_REF_LOCKS_GUARD:
+        lock = _JOIN_REF_LOCKS.get(account_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _JOIN_REF_LOCKS[account_id] = lock
+        return lock
+
+
+async def join_ref_for_account(
+    account_id: int,
+    ref: str,
+    *,
+    action: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Join a public @username or invite link for ``account_id``.
+
+    Canonical Telethon join for owner Messages and Discovery (via thin wrapper).
+    Default action is ACTION_OWNER_CHAT_JOIN (independent of scheduler mutations).
+    """
+    from src.core.execution_guard import (
+        ACTION_OWNER_CHAT_JOIN,
+        guard_blocked_join,
+        require_execution_allowed,
+    )
+    from src.messaging.chat_ref import parse_chat_ref, parsed_as_classify_row
+
+    parsed = parse_chat_ref(ref)
+    base: Dict[str, Any] = {
+        "account_id": int(account_id),
+        "ref": (ref or "").strip(),
+        "display": parsed.get("display") or (ref or "").strip(),
+        "kind": parsed.get("kind"),
+    }
+    if not parsed.get("ok"):
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": parsed.get("reason") or "Invalid ref",
+            "message": parsed.get("reason") or "Invalid ref",
+            "already_member": False,
+        }
+
+    use_action = action or ACTION_OWNER_CHAT_JOIN
+    with get_db_context() as db:
+        blocked = require_execution_allowed(
+            use_action,
+            account_id=int(account_id),
+            db=db,
+            dry_run=dry_run,
+        )
+    if blocked is not None:
+        logger.warning(
+            "join_ref_blocked_execution_guard",
+            account_id=int(account_id),
+            action=use_action,
+            reason=blocked.reason_code,
+        )
+        return guard_blocked_join(blocked, base=base)
+
+    if dry_run:
+        return {
+            **base,
+            "status": "dry_run",
+            "message": "Dry-run: join would be attempted",
+            "ok": True,
+        }
+
+    row = parsed_as_classify_row(parsed)
+    health = classify_target(row)
+    if not is_health_allowed_for_binding(health.get("health") or ""):
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": health.get("reason") or "Target cannot be joined",
+            "message": health.get("reason") or "Target cannot be joined",
+            "already_member": False,
+        }
+
+    with get_db_context() as db:
+        account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": "Account not found",
+            "message": "Account not found",
+            "already_member": False,
+        }
+
+    lock = await _join_lock_for_account(int(account_id))
+    if lock.locked():
+        return {
+            **base,
+            "status": STATUS_TEMP_ERROR,
+            "error": "join_in_progress",
+            "message": "A join is already in progress for this account — retry shortly",
+            "already_member": False,
+        }
+
+    async with lock:
+        wrapper, fail_reason = await client_manager.add_account(account)
+        if not wrapper:
+            detail = human_message_for_code(fail_reason) if fail_reason else "Failed to get client"
+            return {
+                **base,
+                "status": STATUS_FAILED,
+                "error": detail,
+                "message": detail,
+                "already_member": False,
+            }
+        client = wrapper.client
+        invite_hash = parsed.get("invite_hash") or _extract_invite_hash(
+            parsed.get("invite_link") or ""
+        )
+        try:
+            return await _join_client_ref(
+                client,
+                base=base,
+                invite_hash=invite_hash,
+                username=parsed.get("username"),
+            )
+        except Exception as e:
+            logger.error(
+                "join_ref_for_account failed",
+                account_id=account_id,
+                error=str(e),
+                exc_info=True,
+            )
+            msg = _human_telethon_error(e)
+            return {
+                **base,
+                "status": STATUS_FAILED,
+                "error": msg,
+                "message": msg,
+                "already_member": False,
+            }
+
+
+async def _join_client_ref(
+    client: Any,
+    *,
+    base: Dict[str, Any],
+    invite_hash: Optional[str],
+    username: Optional[str],
+) -> Dict[str, Any]:
+    """Shared Telethon join body for username/invite (no ChatTarget cache writes)."""
+    entity = None
+    if invite_hash:
+        try:
+            upd = await client(ImportChatInviteRequest(invite_hash))
+            entity = (upd.chats or [None])[0]
+            ok_post, reason = _can_post_heuristic(entity) if entity else (True, "")
+            title = getattr(entity, "title", None) if entity else None
+            peer_id = getattr(entity, "id", None) if entity else None
+            chat_type = _entity_chat_type(entity) if entity else None
+            if not ok_post:
+                return {
+                    **base,
+                    "status": STATUS_NO_PERMISSION,
+                    "message": f"Joined but cannot post — {reason}",
+                    "already_member": True,
+                    "title": title,
+                    "peer_id": peer_id,
+                    "chat_type": chat_type,
+                    "can_post": False,
+                }
+            return {
+                **base,
+                "status": STATUS_JOINED,
+                "message": "Joined via invite link",
+                "already_member": False,
+                "title": title,
+                "peer_id": peer_id,
+                "chat_type": chat_type,
+                "can_post": True,
+            }
+        except InviteRequestSentError:
+            return {
+                **base,
+                "status": STATUS_JOIN_REQUESTED,
+                "message": "Waiting for admin approval",
+                "already_member": False,
+            }
+        except UserAlreadyParticipantError:
+            return {
+                **base,
+                "status": STATUS_ALREADY_JOINED,
+                "message": "Already a member",
+                "already_member": True,
+            }
+        except FloodWaitError as e:
+            return {
+                **base,
+                "status": STATUS_TEMP_ERROR,
+                "error": "FloodWaitError",
+                "message": _human_telethon_error(e),
+                "already_member": False,
+                "retry_after": getattr(e, "seconds", None),
+            }
+        except (InviteHashExpiredError, InviteHashInvalidError) as e:
+            return {
+                **base,
+                "status": STATUS_FAILED,
+                "error": _human_telethon_error(e),
+                "message": _human_telethon_error(e),
+                "already_member": False,
+            }
+
+    if not username:
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": "No username or invite",
+            "message": "No username or invite",
+            "already_member": False,
+        }
+
+    try:
+        entity = await client.get_entity(username)
+    except ChannelPrivateError:
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": "Channel is private (need invite link)",
+            "message": "Channel is private — provide an invite link",
+            "already_member": False,
+        }
+    except Exception as e:
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": _human_telethon_error(e),
+            "message": _human_telethon_error(e),
+            "already_member": False,
+        }
+
+    title = getattr(entity, "title", None) or getattr(entity, "username", None)
+    peer_id = getattr(entity, "id", None)
+    chat_type = _entity_chat_type(entity)
+
+    try:
+        await client(JoinChannelRequest(entity))
+        joined_status = STATUS_JOINED
+        joined_message = "Joined"
+        already = False
+    except UserAlreadyParticipantError:
+        joined_status = STATUS_ALREADY_JOINED
+        joined_message = "Already a member"
+        already = True
+    except InviteRequestSentError:
+        return {
+            **base,
+            "status": STATUS_JOIN_REQUESTED,
+            "message": "Waiting for admin approval",
+            "already_member": False,
+            "title": title,
+            "peer_id": peer_id,
+            "chat_type": chat_type,
+        }
+    except FloodWaitError as e:
+        return {
+            **base,
+            "status": STATUS_TEMP_ERROR,
+            "error": "FloodWaitError",
+            "message": _human_telethon_error(e),
+            "already_member": False,
+            "retry_after": getattr(e, "seconds", None),
+        }
+    except (UserBannedInChannelError, ChannelPrivateError, ChatAdminRequiredError) as e:
+        return {
+            **base,
+            "status": STATUS_FAILED,
+            "error": _human_telethon_error(e),
+            "message": _human_telethon_error(e),
+            "already_member": False,
+        }
+
+    ok_post, reason = _can_post_heuristic(entity)
+    if not ok_post:
+        return {
+            **base,
+            "status": STATUS_NO_PERMISSION,
+            "message": f"{joined_message} but cannot post — {reason}",
+            "already_member": already,
+            "title": title,
+            "peer_id": peer_id,
+            "chat_type": chat_type,
+            "can_post": False,
+        }
+    return {
+        **base,
+        "status": joined_status,
+        "message": joined_message,
+        "already_member": already,
+        "title": title,
+        "peer_id": peer_id,
+        "chat_type": chat_type,
+        "can_post": True,
+    }
+
+
+def _entity_chat_type(entity: Any) -> Optional[str]:
+    if entity is None:
+        return None
+    if isinstance(entity, Channel):
+        return "channel" if getattr(entity, "broadcast", False) else "supergroup"
+    from telethon.tl.types import Chat, User
+
+    if isinstance(entity, Chat):
+        return "group"
+    if isinstance(entity, User):
+        return "bot" if getattr(entity, "bot", False) else "private"
+    return None

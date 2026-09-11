@@ -24,6 +24,9 @@ ACTION_DISCOVERY_JOIN = "discovery_join"
 ACTION_ACCOUNT_MUTATION = "account_mutation"
 ACTION_AI_CODING_EXECUTE = "ai_coding_execute"
 ACTION_OWNER_DM_SEND = "owner_dm_send"
+# Owner Messages join/leave — independent of SCHEDULER_MUTATIONS_ENABLED.
+ACTION_OWNER_CHAT_JOIN = "owner_chat_join"
+ACTION_OWNER_CHAT_LEAVE = "owner_chat_leave"
 
 ACTION_TYPES = frozenset(
     {
@@ -36,6 +39,8 @@ ACTION_TYPES = frozenset(
         ACTION_ACCOUNT_MUTATION,
         ACTION_AI_CODING_EXECUTE,
         ACTION_OWNER_DM_SEND,
+        ACTION_OWNER_CHAT_JOIN,
+        ACTION_OWNER_CHAT_LEAVE,
     }
 )
 
@@ -664,7 +669,45 @@ def can_execute_action(
                 audit={**audit_base, "messages_execution_enabled": True},
             )
 
+    elif action == ACTION_OWNER_CHAT_JOIN:
+        # Canonical Messages join — NOT gated by SCHEDULER_MUTATIONS_ENABLED.
+        from src.messaging.chat_flags import messages_chat_join_enabled
+
+        if not messages_chat_join_enabled():
+            decision = _deny(
+                action,
+                "messages_chat_join_disabled",
+                "MESSAGES_CHAT_JOIN_ENABLED is false; owner chat join blocked.",
+                audit={**audit_base, "messages_chat_join_enabled": False},
+            )
+        else:
+            decision = _allow(
+                action,
+                "owner_chat_join_ok",
+                "Owner chat join permitted by Messages join flag.",
+                audit={**audit_base, "messages_chat_join_enabled": True},
+            )
+
+    elif action == ACTION_OWNER_CHAT_LEAVE:
+        from src.messaging.chat_flags import messages_chat_leave_enabled
+
+        if not messages_chat_leave_enabled():
+            decision = _deny(
+                action,
+                "messages_chat_leave_disabled",
+                "MESSAGES_CHAT_LEAVE_ENABLED is false; owner chat leave blocked.",
+                audit={**audit_base, "messages_chat_leave_enabled": False},
+            )
+        else:
+            decision = _allow(
+                action,
+                "owner_chat_leave_ok",
+                "Owner chat leave permitted by Messages leave flag.",
+                audit={**audit_base, "messages_chat_leave_enabled": True},
+            )
+
     elif action == ACTION_TELEGRAM_JOIN:
+        # Scheduler-scoped join only (join-targets / campaign binding). Not Messages.
         from src.dashboard.scheduler_mutations import scheduler_mutations_enabled
 
         if not scheduler_mutations_enabled():
