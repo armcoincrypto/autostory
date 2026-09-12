@@ -242,7 +242,34 @@ class OwnerChatService:
                 "status": "failed",
             }
 
+        # Mutation contract: POST join is fail-closed even when already a member.
+        # Resolve/preview remain read-only and may still report membership.
+        from src.core.execution_guard import (
+            ACTION_OWNER_CHAT_JOIN,
+            guard_blocked_join,
+            require_execution_allowed,
+        )
+
         with get_db_context() as db:
+            blocked = require_execution_allowed(
+                ACTION_OWNER_CHAT_JOIN,
+                account_id=int(account_id),
+                db=db,
+            )
+            if blocked is not None:
+                out = guard_blocked_join(
+                    blocked,
+                    base={
+                        "account_id": int(account_id),
+                        "ok": False,
+                    },
+                )
+                out["ok"] = False
+                out["status"] = "denied"
+                out["error"] = blocked.reason_code
+                out["error_code"] = blocked.reason_code
+                return out
+
             elig = evaluate_dm_account_eligibility(db, int(account_id))
             if not elig.eligible:
                 return {
@@ -253,7 +280,8 @@ class OwnerChatService:
                     "eligibility": elig.to_dict(),
                 }
 
-        # Short-circuit when preview says already member (no duplicate mutation)
+        # Short-circuit when preview says already member (no duplicate mutation).
+        # Only reached when MESSAGES_CHAT_JOIN_ENABLED is true.
         preview = await self.preview_async(account_id, raw)
         if preview.get("already_joined") and preview.get("action_hint") == "open":
             peer = None

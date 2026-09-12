@@ -159,6 +159,36 @@ def test_owner_chat_join_confirm_required():
     assert out["error"] == "CONFIRM_REQUIRED"
 
 
+def test_owner_chat_join_disabled_before_already_member_short_circuit(monkeypatch):
+    """POST join while flag off must deny even if membership would be already-joined."""
+    import asyncio
+    from src.messaging.owner_chat_service import OwnerChatService
+
+    monkeypatch.setenv("MESSAGES_CHAT_JOIN_ENABLED", "false")
+    svc = OwnerChatService()
+
+    async def fake_preview(account_id, raw):
+        return {
+            "ok": True,
+            "already_joined": True,
+            "action_hint": "open",
+            "title": "Already Here",
+            "chat_type": "channel",
+            "peer_id": 123,
+            "can_post": False,
+            "parsed": {"username": None},
+        }
+
+    with patch.object(svc, "preview_async", side_effect=fake_preview):
+        out = asyncio.run(svc.join_async(106, "https://t.me/+invite", confirm=True))
+    assert out["ok"] is False
+    assert out.get("error_code") == "messages_chat_join_disabled" or out.get("error") in {
+        "messages_chat_join_disabled",
+        "MESSAGES_CHAT_JOIN_ENABLED is false; owner chat join blocked.",
+    }
+    assert out.get("status") == "denied"
+
+
 def test_owner_chat_leave_confirm_required():
     import asyncio
     from src.messaging.owner_chat_service import OwnerChatService
