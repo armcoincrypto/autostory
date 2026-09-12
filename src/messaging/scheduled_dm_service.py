@@ -347,11 +347,43 @@ class ScheduledDirectMessageService:
         *,
         limit: int = 20,
         account_id: Optional[int] = None,
+        peer: Optional[str] = None,
+        status: Optional[str] = None,
+        date_local: Optional[str] = None,
+        timezone_name: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        lim = max(1, min(int(limit or 20), 50))
+        lim = max(1, min(int(limit or 20), 100))
         q = db.query(ScheduledJob).filter(ScheduledJob.type == MessageType.DM.value)
         if account_id is not None:
             q = q.filter(ScheduledJob.account_id == int(account_id))
+        if peer:
+            raw = (peer or "").strip()
+            variants = {raw}
+            if raw.startswith("-100") and raw[4:].isdigit():
+                variants.add(raw[4:])
+            elif raw.isdigit():
+                variants.add(f"-100{raw}")
+            q = q.filter(ScheduledJob.peer_id.in_(list(variants)))
+        if status:
+            st = (status or "").strip().upper()
+            if st == "UPCOMING":
+                st = JobStatus.PENDING.value
+            q = q.filter(ScheduledJob.status == st)
+        if date_local:
+            try:
+                from datetime import date as date_cls
+                from zoneinfo import ZoneInfo
+                from datetime import timezone as tzmod
+
+                d = date_cls.fromisoformat(str(date_local).strip())
+                tz = ZoneInfo((timezone_name or DEFAULT_OWNER_TIMEZONE).strip() or DEFAULT_OWNER_TIMEZONE)
+                start_local = datetime(d.year, d.month, d.day, tzinfo=tz)
+                end_local = start_local + timedelta(days=1)
+                start_utc = start_local.astimezone(tzmod.utc).replace(tzinfo=None)
+                end_utc = end_local.astimezone(tzmod.utc).replace(tzinfo=None)
+                q = q.filter(ScheduledJob.run_at >= start_utc).filter(ScheduledJob.run_at < end_utc)
+            except Exception:
+                pass
         jobs = q.order_by(ScheduledJob.run_at.desc(), ScheduledJob.id.desc()).limit(lim).all()
         rows: list[dict[str, Any]] = []
         for job in jobs:

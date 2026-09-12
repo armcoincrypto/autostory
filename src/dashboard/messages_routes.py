@@ -39,6 +39,10 @@ from src.messaging.scheduled_dm_flags import (
     scheduled_dm_enabled,
 )
 from src.messaging.scheduled_dm_service import ScheduledDirectMessageService
+from src.messaging.multi_account_schedule import (
+    MultiAccountScheduleOrchestrator,
+    scheduled_ops_summary,
+)
 from src.messaging.transport import TelegramDmTransport
 from src.scheduler.timezone import DEFAULT_OWNER_TIMEZONE
 
@@ -617,6 +621,107 @@ def messages_schedule():
     return jsonify(result.payload), result.status_code
 
 
+@messages_api.route("/chat/account-matrix", methods=["POST"])
+def messages_chat_account_matrix():
+    """Chat-first readiness matrix (membership + eligibility). No join/send."""
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("ref") or data.get("input") or data.get("chat") or "").strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+    account_ids = data.get("account_ids")
+    ids: Optional[list[int]] = None
+    if isinstance(account_ids, list) and account_ids:
+        try:
+            ids = [int(x) for x in account_ids][:40]
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_ids invalid"}), 400
+    orch = MultiAccountScheduleOrchestrator()
+    with get_db_context() as db:
+        matrix = orch.build_matrix(db, ref=raw, account_ids=ids, probe_telegram=True)
+    return jsonify(matrix), (200 if matrix.get("ok") else 400)
+
+
+@messages_api.route("/schedule-bulk", methods=["POST"])
+def messages_schedule_bulk():
+    """Create N independent scheduled DM jobs with spacing. No mass Send Now."""
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("ref") or data.get("peer") or data.get("chat") or "").strip()
+    message = data.get("message") if data.get("message") is not None else data.get("text")
+    local_date = data.get("local_date") or data.get("date")
+    local_time = data.get("local_time") or data.get("time")
+    timezone = data.get("timezone")
+    dry_run_only = bool(data.get("dry_run"))
+    spacing_sec = data.get("spacing_sec", 60)
+    peer_type = (data.get("peer_type") or data.get("chat_type") or "supergroup").strip().lower()
+    idem = (data.get("idempotency_key") or data.get("bulk_key") or "").strip() or None
+    try:
+        account_ids = [int(x) for x in (data.get("account_ids") or [])]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_ids required"}), 400
+    if not raw:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+    if message is None or not str(message).strip():
+        return jsonify({"ok": False, "error": "EMPTY_MESSAGE", "message": "message required"}), 400
+    if not account_ids:
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_ids required"}), 400
+    try:
+        spacing_sec = int(spacing_sec)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "INVALID_SPACING", "message": "spacing_sec invalid"}), 400
+
+    can_post = data.get("can_post")
+    if can_post is None and peer_type in {"group", "supergroup", "channel"}:
+        can_post = True  # matrix already filtered Ready/can_post; deny gate still applies
+    elif isinstance(can_post, str):
+        can_post = can_post.strip().lower() in {"1", "true", "yes", "on"}
+
+    denied = _deny_group_channel_send(peer_type, can_post=can_post)
+    if denied is not None:
+        payload, status = denied
+        return jsonify(payload), status
+
+    orch = MultiAccountScheduleOrchestrator()
+    with get_db_context() as db:
+        result = orch.create_bulk(
+            db,
+            ref=raw,
+            account_ids=account_ids,
+            message=str(message),
+            local_date=str(local_date) if local_date is not None else "",
+            local_time=str(local_time) if local_time is not None else "",
+            timezone_name=str(timezone) if timezone is not None else None,
+            spacing_sec=spacing_sec,
+            peer_type=peer_type,
+            idempotency_key=idem,
+            dry_run_only=dry_run_only,
+        )
+    return jsonify(result.payload), result.status_code
+
+
+@messages_api.route("/scheduled/ops-summary", methods=["GET"])
+def messages_scheduled_ops_summary():
+    """DB-only today strip for Messages (no Telegram)."""
+    tz = (request.args.get("timezone") or DEFAULT_OWNER_TIMEZONE).strip() or DEFAULT_OWNER_TIMEZONE
+    with get_db_context() as db:
+        return jsonify(scheduled_ops_summary(db, timezone_name=tz))
+
+
+@messages_api.route("/scheduled/cancel-bulk", methods=["POST"])
+def messages_scheduled_cancel_bulk():
+    """Cancel multiple PENDING scheduled DMs. SENT/UNCERTAIN never cancelled."""
+    data = request.get_json(silent=True) or {}
+    try:
+        job_ids = [int(x) for x in (data.get("job_ids") or [])]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "job_ids required"}), 400
+    if not job_ids:
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "job_ids required"}), 400
+    orch = MultiAccountScheduleOrchestrator()
+    with get_db_context() as db:
+        result = orch.cancel_bulk(db, job_ids=job_ids)
+    return jsonify(result.payload), result.status_code
+
+
 @messages_api.route("/chat/resolve", methods=["POST"])
 def messages_chat_resolve():
     """Parse + non-mutating preview for join/open (no join execution)."""
@@ -714,9 +819,21 @@ def messages_scheduled_list():
     """List scheduled DM jobs (read-only; no mutation gate)."""
     limit = request.args.get("limit", 20, type=int)
     account_id = request.args.get("account_id", type=int)
+    peer = (request.args.get("peer") or request.args.get("chat") or "").strip() or None
+    status = (request.args.get("status") or "").strip() or None
+    date_local = (request.args.get("date") or request.args.get("date_local") or "").strip() or None
+    timezone = (request.args.get("timezone") or DEFAULT_OWNER_TIMEZONE).strip() or DEFAULT_OWNER_TIMEZONE
     svc = ScheduledDirectMessageService()
     with get_db_context() as db:
-        rows = svc.list_jobs(db, limit=limit, account_id=account_id)
+        rows = svc.list_jobs(
+            db,
+            limit=limit,
+            account_id=account_id,
+            peer=peer,
+            status=status,
+            date_local=date_local,
+            timezone_name=timezone,
+        )
         account_ids = {int(r["account_id"]) for r in rows}
         labels: dict[int, str] = {}
         if account_ids:
@@ -732,6 +849,8 @@ def messages_scheduled_list():
                 db, r.get("peer"), r.get("peer_type")
             )
             r["peer_display"] = r["peer_label"]
+            if (r.get("status") or "").upper() == "UNCERTAIN":
+                r["owner_hint"] = "Delivery uncertain — check the chat before retrying."
     return jsonify({"ok": True, "jobs": rows, "schedule_available": scheduled_dm_create_allowed()})
 
 

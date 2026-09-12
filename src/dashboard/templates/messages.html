@@ -129,14 +129,25 @@
 <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
   <div>
     <h2 class="mb-1"><i class="bi bi-chat-dots"></i> Messages</h2>
-    <p class="text-muted mb-0">Choose an account, open a chat (or join one), then read, draft, send, or schedule.</p>
+    <p class="text-muted mb-0">Choose an account or a chat, then read, draft, send, or schedule.</p>
   </div>
+  <div class="btn-group" role="group" aria-label="Operating mode">
+    <button type="button" class="btn btn-outline-light btn-sm active" id="mode-by-account" data-mode="account">By Account</button>
+    <button type="button" class="btn btn-outline-light btn-sm" id="mode-by-chat" data-mode="chat">By Chat</button>
+  </div>
+</div>
+
+<div id="msg-ops-strip" class="d-flex flex-wrap gap-2 mb-3" aria-label="Today ops">
+  <button type="button" class="btn btn-outline-light btn-sm ops-chip" data-ops-filter="upcoming_today">Upcoming today <span id="ops-upcoming">—</span></button>
+  <button type="button" class="btn btn-outline-light btn-sm ops-chip" data-ops-filter="sent_today">Sent today <span id="ops-sent">—</span></button>
+  <button type="button" class="btn btn-outline-danger btn-sm ops-chip" data-ops-filter="failed">Failed <span id="ops-failed">—</span></button>
+  <button type="button" class="btn btn-outline-warning btn-sm ops-chip" data-ops-filter="uncertain">Uncertain <span id="ops-uncertain">—</span></button>
 </div>
 
 <div id="msg-exec-banner" class="disabled-banner mb-3 d-none" role="status"></div>
 <div id="msg-alert" class="alert d-none" role="alert"></div>
 
-<div class="msg-layout">
+<div id="by-account-layout" class="msg-layout">
   <section class="msg-pane">
     <div class="msg-pane-header">1. Account</div>
     <div class="px-2 pt-2">
@@ -202,15 +213,104 @@
   </section>
 </div>
 
+<section id="by-chat-layout" class="recent-panel d-none mb-3" aria-label="By Chat scheduling">
+  <div class="recent-head">
+    <span>By Chat — multi-account schedule</span>
+    <span class="small text-muted">No mass Send Now · one job per account</span>
+  </div>
+  <div class="p-3">
+    <div class="row g-2 align-items-end mb-3">
+      <div class="col-md-8">
+        <label class="form-label small text-muted" for="chat-mode-ref">Chat (link, @username, or known title)</label>
+        <input type="text" class="form-control form-control-sm" id="chat-mode-ref" placeholder="https://t.me/+… or Storyfleet Test Group">
+      </div>
+      <div class="col-md-4">
+        <button type="button" class="btn btn-outline-info btn-sm w-100" id="btn-load-matrix">Load account readiness</button>
+      </div>
+    </div>
+    <div id="chat-membership-counts" class="small text-muted mb-2 d-none"></div>
+    <div class="d-flex flex-wrap gap-2 mb-2">
+      <input type="search" id="matrix-account-search" class="form-control form-control-sm" style="max-width:220px" placeholder="Search accounts…" disabled>
+      <button type="button" class="btn btn-outline-light btn-sm" id="btn-select-all-ready" disabled>Select all ready</button>
+      <button type="button" class="btn btn-outline-light btn-sm" id="btn-clear-matrix-sel" disabled>Clear all</button>
+      <select id="matrix-status-filter" class="form-select form-select-sm" style="max-width:200px" disabled>
+        <option value="all">All statuses</option>
+        <option value="ready">Ready</option>
+        <option value="not_joined">Not joined</option>
+        <option value="waiting_approval">Waiting for approval</option>
+        <option value="cannot_post">Cannot post</option>
+        <option value="unavailable">Unavailable</option>
+      </select>
+    </div>
+    <div class="table-responsive mb-3" style="max-height:280px;overflow:auto;">
+      <table class="table table-dark table-sm mb-0">
+        <thead><tr><th></th><th>Account</th><th>Status</th></tr></thead>
+        <tbody id="matrix-body">
+          <tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see account readiness.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <label class="form-label small text-muted" for="chat-mode-message">Message</label>
+    <textarea id="chat-mode-message" class="form-control mb-2" rows="3" maxlength="4096" placeholder="One message body → one scheduled job per selected Ready account" disabled></textarea>
+    <div class="row g-2 mb-2">
+      <div class="col-md-3">
+        <label class="form-label small text-muted" for="bulk-schedule-date">Date</label>
+        <input type="date" class="form-control form-control-sm" id="bulk-schedule-date" disabled>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted" for="bulk-schedule-time">Start time</label>
+        <input type="time" class="form-control form-control-sm" id="bulk-schedule-time" disabled>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted" for="bulk-schedule-tz">Timezone</label>
+        <input type="text" class="form-control form-control-sm" id="bulk-schedule-tz" value="Asia/Yerevan" disabled>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted" for="bulk-spacing">Spacing</label>
+        <select id="bulk-spacing" class="form-select form-select-sm" disabled>
+          <option value="30">30 sec</option>
+          <option value="60" selected>60 sec</option>
+          <option value="120">2 min</option>
+          <option value="300">5 min</option>
+        </select>
+      </div>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+      <button type="button" class="btn btn-outline-info btn-sm" id="btn-bulk-preview" disabled>Review schedule</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-bulk-confirm" disabled>Schedule messages</button>
+    </div>
+    <div id="bulk-preview-box" class="small mt-3 d-none"></div>
+  </div>
+</section>
+
 <section class="recent-panel" aria-label="Scheduled Messages">
   <div class="recent-head">
     <span>Scheduled</span>
-    <button type="button" class="btn btn-outline-light btn-sm" id="btn-refresh-scheduled">Refresh</button>
+    <div class="d-flex gap-2 flex-wrap">
+      <button type="button" class="btn btn-outline-warning btn-sm" id="btn-cancel-selected" disabled>Cancel selected</button>
+      <button type="button" class="btn btn-outline-light btn-sm" id="btn-refresh-scheduled">Refresh</button>
+    </div>
+  </div>
+  <div class="px-3 pt-2 pb-1 d-flex flex-wrap gap-2">
+    <input type="search" id="sched-filter-account" class="form-control form-control-sm" style="max-width:140px" placeholder="Account id">
+    <input type="search" id="sched-filter-peer" class="form-control form-control-sm" style="max-width:180px" placeholder="Chat peer/name">
+    <select id="sched-filter-status" class="form-select form-select-sm" style="max-width:140px">
+      <option value="">All statuses</option>
+      <option value="PENDING">Upcoming</option>
+      <option value="RUNNING">Sending</option>
+      <option value="SENT">Sent</option>
+      <option value="FAILED">Failed</option>
+      <option value="UNCERTAIN">Uncertain</option>
+      <option value="CANCELLED">Cancelled</option>
+    </select>
+    <input type="date" id="sched-filter-date" class="form-control form-control-sm" style="max-width:160px" title="Date (Asia/Yerevan)">
+    <button type="button" class="btn btn-outline-light btn-sm" id="btn-apply-sched-filters">Filter</button>
   </div>
   <div class="table-responsive">
     <table class="table table-dark table-sm mb-0">
       <thead>
         <tr>
+          <th scope="col"><input type="checkbox" id="sched-select-all" title="Select pending"></th>
           <th scope="col">Time</th>
           <th scope="col">Account</th>
           <th scope="col">Chat</th>
@@ -219,7 +319,7 @@
         </tr>
       </thead>
       <tbody id="scheduled-jobs-body">
-        <tr><td colspan="5" class="text-muted small px-3 py-3">Loading…</td></tr>
+        <tr><td colspan="6" class="text-muted small px-3 py-3">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -379,6 +479,12 @@
     joinPreview: null,
     accountSearch: '',
     peerNameCache: {},
+    mode: 'account',
+    matrix: null,
+    matrixSelected: {},
+    bulkReviewed: false,
+    bulkIdempotencyKey: null,
+    schedFilter: { account_id: '', peer: '', status: '', date: '' },
   };
 
   const elAlert = document.getElementById('msg-alert');
@@ -1033,11 +1139,18 @@
   async function loadScheduledJobs() {
     if (!elScheduledBody) return;
     try {
-      const data = await dashboardFetchJson('/api/messages/scheduled?limit=20');
+      const q = new URLSearchParams({ limit: '50' });
+      if (state.schedFilter.account_id) q.set('account_id', state.schedFilter.account_id);
+      if (state.schedFilter.peer) q.set('peer', state.schedFilter.peer);
+      if (state.schedFilter.status) q.set('status', state.schedFilter.status);
+      if (state.schedFilter.date) q.set('date', state.schedFilter.date);
+      q.set('timezone', state.defaultTimezone || 'Asia/Yerevan');
+      const data = await dashboardFetchJson('/api/messages/scheduled?' + q.toString());
       const rows = data.jobs || [];
       if (!rows.length) {
         elScheduledBody.innerHTML =
-          '<tr><td colspan="5" class="text-muted small px-3 py-3">No scheduled messages.</td></tr>';
+          '<tr><td colspan="6" class="text-muted small px-3 py-3">No scheduled messages.</td></tr>';
+        updateCancelSelectedBtn();
         return;
       }
       elScheduledBody.innerHTML = rows
@@ -1047,15 +1160,22 @@
           const label = row.status_label || st || '—';
           const chat = friendlyPeerName(row.peer, row.peer_type, row.peer_label || row.peer_display);
           const canCancel = st === 'PENDING' && state.scheduleAvailable;
+          const hint = st === 'UNCERTAIN'
+            ? `<div class="small text-warning">${esc(row.owner_hint || 'Delivery uncertain — check the chat before retrying.')}</div>`
+            : '';
+          const check = canCancel
+            ? `<input type="checkbox" class="sched-job-check" data-job-id="${row.job_id}">`
+            : '';
           const actions = canCancel
             ? `<button type="button" class="btn btn-outline-warning btn-sm btn-cancel-sched" data-job-id="${row.job_id}">Cancel</button>`
             : '—';
           return (
             '<tr>' +
+            `<td>${check}</td>` +
             `<td class="text-nowrap">${esc(when)}</td>` +
             `<td>${esc(row.account_label || ('Account ' + row.account_id))}</td>` +
             `<td>${esc(chat)}</td>` +
-            `<td><span class="status-pill status-${esc(st)}">${esc(label)}</span></td>` +
+            `<td><span class="status-pill status-${esc(st)}">${esc(label)}</span>${hint}</td>` +
             `<td>${actions}</td>` +
             '</tr>'
           );
@@ -1072,21 +1192,364 @@
             });
             showAlert('success', 'Scheduled message cancelled.');
             loadScheduledJobs();
+            loadOpsSummary();
           } catch (e) {
             const data = e.data || {};
             showAlert('warning', data.message || e.message || String(e));
           }
         });
       });
+      elScheduledBody.querySelectorAll('.sched-job-check').forEach((cb) => {
+        cb.addEventListener('change', updateCancelSelectedBtn);
+      });
+      updateCancelSelectedBtn();
     } catch (e) {
       elScheduledBody.innerHTML =
-        `<tr><td colspan="5" class="text-danger small px-3 py-3">${esc(e.message || e)}</td></tr>`;
+        `<tr><td colspan="6" class="text-danger small px-3 py-3">${esc(e.message || e)}</td></tr>`;
     }
   }
 
-  if (btnRefreshScheduled) {
-    btnRefreshScheduled.addEventListener('click', () => loadScheduledJobs());
+  function updateCancelSelectedBtn() {
+    const btn = document.getElementById('btn-cancel-selected');
+    if (!btn) return;
+    const n = document.querySelectorAll('.sched-job-check:checked').length;
+    btn.disabled = n < 1 || !state.scheduleAvailable;
+    btn.textContent = n ? `Cancel selected (${n})` : 'Cancel selected';
   }
+
+  async function loadOpsSummary() {
+    try {
+      const data = await dashboardFetchJson('/api/messages/scheduled/ops-summary');
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
+      set('ops-upcoming', data.upcoming_today ?? '—');
+      set('ops-sent', data.sent_today ?? '—');
+      set('ops-failed', data.failed ?? '—');
+      set('ops-uncertain', data.uncertain ?? '—');
+    } catch (_) { /* non-fatal */ }
+  }
+
+  function setMode(mode) {
+    state.mode = mode === 'chat' ? 'chat' : 'account';
+    const byAcct = document.getElementById('by-account-layout');
+    const byChat = document.getElementById('by-chat-layout');
+    const btnA = document.getElementById('mode-by-account');
+    const btnC = document.getElementById('mode-by-chat');
+    if (byAcct) byAcct.classList.toggle('d-none', state.mode === 'chat');
+    if (byChat) byChat.classList.toggle('d-none', state.mode !== 'chat');
+    if (btnA) btnA.classList.toggle('active', state.mode === 'account');
+    if (btnC) btnC.classList.toggle('active', state.mode === 'chat');
+  }
+
+  function selectedReadyIds() {
+    return Object.keys(state.matrixSelected)
+      .filter((k) => state.matrixSelected[k])
+      .map((k) => Number(k))
+      .filter((id) => {
+        const row = (state.matrix && state.matrix.accounts || []).find((a) => a.account_id === id);
+        return row && row.ready;
+      });
+  }
+
+  function renderMatrix() {
+    const body = document.getElementById('matrix-body');
+    const countsEl = document.getElementById('chat-membership-counts');
+    if (!body) return;
+    const matrix = state.matrix;
+    if (!matrix || !matrix.accounts) {
+      body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see account readiness.</td></tr>';
+      return;
+    }
+    const q = (document.getElementById('matrix-account-search') || {}).value || '';
+    const ql = q.trim().toLowerCase();
+    const stf = (document.getElementById('matrix-status-filter') || {}).value || 'all';
+    let rows = matrix.accounts.slice();
+    if (ql) {
+      rows = rows.filter((r) =>
+        String(r.display_name || '').toLowerCase().includes(ql) ||
+        String(r.account_id).includes(ql)
+      );
+    }
+    if (stf === 'unavailable') {
+      rows = rows.filter((r) =>
+        ['protected','reserved','disabled','needs_login','unavailable','temp_unavailable'].includes(r.status)
+      );
+    } else if (stf !== 'all') {
+      rows = rows.filter((r) => r.status === stf);
+    }
+    if (countsEl && matrix.counts) {
+      const c = matrix.counts;
+      countsEl.classList.remove('d-none');
+      const title = matrix.title || matrix.ref || 'Chat';
+      countsEl.textContent =
+        `${title} · ${c.total} accounts · Ready ${c.ready} · Not joined ${c.not_joined}` +
+        ` · Waiting approval ${c.waiting_approval} · Cannot post ${c.cannot_post} · Unavailable ${c.unavailable}`;
+    }
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">No accounts match.</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map((r) => {
+      const disabled = !r.ready ? 'disabled' : '';
+      const checked = state.matrixSelected[r.account_id] && r.ready ? 'checked' : '';
+      return (
+        '<tr>' +
+        `<td><input type="checkbox" class="matrix-check" data-aid="${r.account_id}" ${disabled} ${checked}></td>` +
+        `<td>${esc(r.display_name)}</td>` +
+        `<td>${esc(r.status_label)}</td>` +
+        '</tr>'
+      );
+    }).join('');
+    body.querySelectorAll('.matrix-check').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const aid = Number(cb.dataset.aid);
+        const row = (state.matrix.accounts || []).find((a) => a.account_id === aid);
+        if (!row || !row.ready) {
+          cb.checked = false;
+          delete state.matrixSelected[aid];
+          return;
+        }
+        if (cb.checked) state.matrixSelected[aid] = true;
+        else delete state.matrixSelected[aid];
+        state.bulkReviewed = false;
+        const conf = document.getElementById('btn-bulk-confirm');
+        if (conf) conf.disabled = true;
+      });
+    });
+  }
+
+  function enableChatModeControls(on) {
+    ['matrix-account-search','btn-select-all-ready','btn-clear-matrix-sel','matrix-status-filter',
+     'chat-mode-message','bulk-schedule-date','bulk-schedule-time','bulk-schedule-tz','bulk-spacing',
+     'btn-bulk-preview'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !on;
+    });
+  }
+
+  function defaultBulkScheduleInputs() {
+    const tzEl = document.getElementById('bulk-schedule-tz');
+    if (tzEl) tzEl.value = state.defaultTimezone || 'Asia/Yerevan';
+    const soon = new Date(Date.now() + 15 * 60 * 1000);
+    const yyyy = soon.getFullYear();
+    const mm = String(soon.getMonth() + 1).padStart(2, '0');
+    const dd = String(soon.getDate()).padStart(2, '0');
+    const hh = String(soon.getHours()).padStart(2, '0');
+    const mi = String(soon.getMinutes()).padStart(2, '0');
+    const d = document.getElementById('bulk-schedule-date');
+    const t = document.getElementById('bulk-schedule-time');
+    if (d) d.value = `${yyyy}-${mm}-${dd}`;
+    if (t) t.value = `${hh}:${mi}`;
+  }
+
+  if (btnRefreshScheduled) {
+    btnRefreshScheduled.addEventListener('click', () => { loadScheduledJobs(); loadOpsSummary(); });
+  }
+
+  document.getElementById('mode-by-account')?.addEventListener('click', () => setMode('account'));
+  document.getElementById('mode-by-chat')?.addEventListener('click', () => setMode('chat'));
+
+  document.getElementById('btn-load-matrix')?.addEventListener('click', async () => {
+    const ref = (document.getElementById('chat-mode-ref') || {}).value || '';
+    if (!ref.trim()) {
+      showAlert('warning', 'Enter a chat link or name first.');
+      return;
+    }
+    try {
+      const data = await dashboardFetchJson('/api/messages/chat/account-matrix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: ref.trim() }),
+      });
+      state.matrix = data;
+      state.matrixSelected = {};
+      state.bulkReviewed = false;
+      enableChatModeControls(true);
+      defaultBulkScheduleInputs();
+      renderMatrix();
+      showAlert('success', `Loaded readiness for ${data.title || ref}. Ready: ${(data.counts || {}).ready || 0}`);
+    } catch (e) {
+      showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+    }
+  });
+
+  document.getElementById('btn-select-all-ready')?.addEventListener('click', () => {
+    (state.matrix && state.matrix.accounts || []).forEach((r) => {
+      if (r.ready) state.matrixSelected[r.account_id] = true;
+    });
+    state.bulkReviewed = false;
+    document.getElementById('btn-bulk-confirm').disabled = true;
+    renderMatrix();
+  });
+  document.getElementById('btn-clear-matrix-sel')?.addEventListener('click', () => {
+    state.matrixSelected = {};
+    state.bulkReviewed = false;
+    document.getElementById('btn-bulk-confirm').disabled = true;
+    renderMatrix();
+  });
+  document.getElementById('matrix-account-search')?.addEventListener('input', renderMatrix);
+  document.getElementById('matrix-status-filter')?.addEventListener('change', renderMatrix);
+
+  document.getElementById('btn-bulk-preview')?.addEventListener('click', async () => {
+    const ids = selectedReadyIds();
+    const box = document.getElementById('bulk-preview-box');
+    const conf = document.getElementById('btn-bulk-confirm');
+    if (!ids.length) {
+      showAlert('warning', 'Select at least one Ready account.');
+      return;
+    }
+    const msg = (document.getElementById('chat-mode-message') || {}).value || '';
+    if (!msg.trim()) {
+      showAlert('warning', 'Message is empty.');
+      return;
+    }
+    try {
+      const data = await dashboardFetchJson('/api/messages/schedule-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ref: (document.getElementById('chat-mode-ref') || {}).value,
+          account_ids: ids,
+          message: msg,
+          local_date: document.getElementById('bulk-schedule-date').value,
+          local_time: document.getElementById('bulk-schedule-time').value,
+          timezone: document.getElementById('bulk-schedule-tz').value,
+          spacing_sec: Number(document.getElementById('bulk-spacing').value || 60),
+          peer_type: (state.matrix && state.matrix.chat_type) || 'supergroup',
+          dry_run: true,
+          can_post: true,
+        }),
+      });
+      state.bulkReviewed = true;
+      state.bulkIdempotencyKey = (crypto.randomUUID && crypto.randomUUID()) || ('bulk-' + Date.now());
+      if (conf) {
+        conf.disabled = !state.scheduleAvailable;
+        conf.textContent = `Schedule ${data.jobs_to_create || ids.length} messages`;
+      }
+      if (box) {
+        box.classList.remove('d-none');
+        const planLines = (data.plan || []).map((p) =>
+          `${p.display_name}: ${p.scheduled_at_local}`
+        ).join('<br>');
+        box.innerHTML =
+          `<div><strong>Chat:</strong> ${esc(data.chat_title || '')}</div>` +
+          `<div><strong>Accounts:</strong> ${esc(String(data.accounts || 0))}</div>` +
+          `<div><strong>Message:</strong> ${esc(data.message_preview || '')}</div>` +
+          `<div><strong>Starts:</strong> ${esc(data.starts_local || '')}</div>` +
+          `<div><strong>Spacing:</strong> ${esc(String(data.spacing_sec || 60))} sec</div>` +
+          `<div><strong>Last send:</strong> ${esc(data.ends_local || '')}</div>` +
+          `<div><strong>Jobs to create:</strong> ${esc(String(data.jobs_to_create || 0))}</div>` +
+          `<div class="mt-2">${planLines}</div>` +
+          (data.skipped && data.skipped.length
+            ? `<div class="text-warning mt-2">Skipped non-ready: ${data.skipped.length}</div>`
+            : '');
+      }
+    } catch (e) {
+      state.bulkReviewed = false;
+      if (conf) conf.disabled = true;
+      showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+    }
+  });
+
+  document.getElementById('btn-bulk-confirm')?.addEventListener('click', async () => {
+    if (!state.bulkReviewed || state.inFlight) return;
+    const ids = selectedReadyIds();
+    const msg = (document.getElementById('chat-mode-message') || {}).value || '';
+    state.inFlight = true;
+    try {
+      const data = await dashboardFetchJson('/api/messages/schedule-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ref: (document.getElementById('chat-mode-ref') || {}).value,
+          account_ids: ids,
+          message: msg,
+          local_date: document.getElementById('bulk-schedule-date').value,
+          local_time: document.getElementById('bulk-schedule-time').value,
+          timezone: document.getElementById('bulk-schedule-tz').value,
+          spacing_sec: Number(document.getElementById('bulk-spacing').value || 60),
+          peer_type: (state.matrix && state.matrix.chat_type) || 'supergroup',
+          dry_run: false,
+          can_post: true,
+          idempotency_key: state.bulkIdempotencyKey,
+        }),
+      });
+      showAlert(
+        data.failed ? 'warning' : 'success',
+        `Created: ${data.created || 0}. Failed: ${data.failed || 0}.`
+      );
+      state.bulkReviewed = false;
+      document.getElementById('btn-bulk-confirm').disabled = true;
+      loadScheduledJobs();
+      loadOpsSummary();
+    } catch (e) {
+      showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+    } finally {
+      state.inFlight = false;
+    }
+  });
+
+  document.getElementById('btn-apply-sched-filters')?.addEventListener('click', () => {
+    state.schedFilter = {
+      account_id: (document.getElementById('sched-filter-account') || {}).value || '',
+      peer: (document.getElementById('sched-filter-peer') || {}).value || '',
+      status: (document.getElementById('sched-filter-status') || {}).value || '',
+      date: (document.getElementById('sched-filter-date') || {}).value || '',
+    };
+    loadScheduledJobs();
+  });
+
+  document.getElementById('btn-cancel-selected')?.addEventListener('click', async () => {
+    const ids = Array.from(document.querySelectorAll('.sched-job-check:checked'))
+      .map((el) => Number(el.dataset.jobId))
+      .filter(Boolean);
+    if (!ids.length) return;
+    try {
+      const data = await dashboardFetchJson('/api/messages/scheduled/cancel-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: ids }),
+      });
+      showAlert('success', `Cancelled: ${data.cancelled || 0}. Rejected: ${data.rejected || 0}.`);
+      loadScheduledJobs();
+      loadOpsSummary();
+    } catch (e) {
+      showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+    }
+  });
+
+  document.getElementById('sched-select-all')?.addEventListener('change', (ev) => {
+    document.querySelectorAll('.sched-job-check').forEach((cb) => {
+      cb.checked = !!ev.target.checked;
+    });
+    updateCancelSelectedBtn();
+  });
+
+  document.querySelectorAll('.ops-chip').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const kind = btn.dataset.opsFilter;
+      const today = new Date();
+      const yyyy = today.getFullYear();
+      const mm = String(today.getMonth() + 1).padStart(2, '0');
+      const dd = String(today.getDate()).padStart(2, '0');
+      const dateStr = `${yyyy}-${mm}-${dd}`;
+      const statusEl = document.getElementById('sched-filter-status');
+      const dateEl = document.getElementById('sched-filter-date');
+      if (kind === 'upcoming_today') {
+        if (statusEl) statusEl.value = 'PENDING';
+        if (dateEl) dateEl.value = dateStr;
+      } else if (kind === 'sent_today') {
+        if (statusEl) statusEl.value = 'SENT';
+        if (dateEl) dateEl.value = dateStr;
+      } else if (kind === 'failed') {
+        if (statusEl) statusEl.value = 'FAILED';
+        if (dateEl) dateEl.value = '';
+      } else if (kind === 'uncertain') {
+        if (statusEl) statusEl.value = 'UNCERTAIN';
+        if (dateEl) dateEl.value = '';
+      }
+      document.getElementById('btn-apply-sched-filters')?.click();
+    });
+  });
 
   function defaultScheduleInputs() {
     const tzEl = document.getElementById('schedule-tz');
@@ -1434,7 +1897,8 @@
       await loadAccounts();
       await loadRecentIntents();
       await loadScheduledJobs();
-    } catch (e) {
+      await loadOpsSummary();
+      setMode('account');
       showAlert('danger', e.message || String(e));
       elAccounts.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;
     }

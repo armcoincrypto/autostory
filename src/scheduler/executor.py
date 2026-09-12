@@ -422,6 +422,12 @@ async def _execute_scheduled_dm_job(job_id: int) -> bool:
         if str(job.status) == JobStatus.PENDING.value:
             job.status = JobStatus.RUNNING.value
             job.updated_at = utc_now_naive()
+            # Drop bulk-schedule idempotency marker so it is never shown as an error.
+            if (job.last_error or "").startswith("bulk:"):
+                job.last_error = None
+            db.commit()
+        elif (job.last_error or "").startswith("bulk:"):
+            job.last_error = None
             db.commit()
 
     svc = OwnerDirectMessageService()
