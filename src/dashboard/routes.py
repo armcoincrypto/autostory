@@ -649,10 +649,16 @@ def account_dialogs(account_id):
                 {
                     "id": d.get("id"),
                     "display_name": d.get("display_name") or d.get("title"),
+                    "title": d.get("title") or d.get("display_name"),
                     "username": d.get("username"),
                     "dialog_type": d.get("dialog_type") or d.get("chat_type"),
+                    "chat_type": d.get("chat_type") or d.get("dialog_type"),
                     "unread_count": d.get("unread_count", 0),
                     "last_message_at": d.get("last_message_at"),
+                    # Owner Messages: marked peer + write hint (no Telegram secrets).
+                    "peer_id": d.get("peer_id"),
+                    "peer": d.get("peer"),
+                    "can_post": d.get("can_post"),
                 }
             )
         return jsonify(safe)
