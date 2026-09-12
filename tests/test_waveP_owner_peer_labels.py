@@ -16,3 +16,8 @@ def test_account_bucket_and_labels():
     assert account_bucket(False, "AUTH_FAILED") == "attention"
     assert account_bucket(False, "PROTECTED") == "unavailable"
     assert owner_unavailable_label("RESERVED") == "Reserved"
+
+
+def test_owner_safe_error_empty():
+    assert owner_safe_error_copy(None, None) == ""
+    assert owner_safe_error_copy("", "") == ""

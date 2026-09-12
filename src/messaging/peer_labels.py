@@ -86,6 +86,8 @@ def resolve_owner_peer_label(
 
 def owner_safe_error_copy(error_code: Optional[str], error_message: Optional[str] = None) -> str:
     """Map internal failure codes to owner-safe short copy."""
+    if not (error_code or "").strip() and not (error_message or "").strip():
+        return ""
     code = (error_code or "").strip().upper()
     mapping = {
         "UNKNOWN": "Temporary Telegram error",
