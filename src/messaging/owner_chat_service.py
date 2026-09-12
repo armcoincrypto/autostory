@@ -18,6 +18,7 @@ from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.types import Channel, Chat, ChatInvite, ChatInviteAlready, User
 
+from src.messaging.peer_ids import marked_peer_id_from_entity
 from src.clients.joiner import (
     STATUS_ALREADY_JOINED,
     STATUS_JOINED,
@@ -137,8 +138,10 @@ class OwnerChatService:
                     base["already_joined"] = True
                     base["action_hint"] = "open"
                     base["title"] = getattr(entity, "title", None)
-                    base["peer_id"] = getattr(entity, "id", None)
                     base["chat_type"] = _entity_chat_type(entity)
+                    base["peer_id"] = marked_peer_id_from_entity(
+                        getattr(entity, "id", None), base["chat_type"]
+                    )
                     ok_post, _ = _can_post_heuristic(entity)
                     base["can_post"] = ok_post
                     base["message"] = "Already joined"
@@ -163,8 +166,10 @@ class OwnerChatService:
                 or getattr(entity, "username", None)
                 or parsed.get("display")
             )
-            base["peer_id"] = getattr(entity, "id", None)
             base["chat_type"] = _entity_chat_type(entity)
+            base["peer_id"] = marked_peer_id_from_entity(
+                getattr(entity, "id", None), base["chat_type"]
+            )
             base["public"] = True
 
             if isinstance(entity, User):

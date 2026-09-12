@@ -395,7 +395,10 @@ class OwnerDirectMessageService:
 
         try:
             result = await self.transport.send_message_async(
-                int(account_id), (peer_id or "").strip(), text
+                int(account_id),
+                (peer_id or "").strip(),
+                text,
+                peer_type=(peer_type or "private").strip().lower(),
             )
         except Exception as e:
             logger.exception("owner_dm_transport_raised", intent_id=intent.id)

@@ -190,6 +190,7 @@ def messages_history():
     """Recent dialog history via TelegramDmTransport (eligibility gated; all chat types)."""
     account_id = request.args.get("account_id", type=int)
     peer = (request.args.get("peer") or "").strip()
+    peer_type = (request.args.get("peer_type") or "private").strip().lower()
     limit = request.args.get("limit", 20, type=int)
     if not account_id:
         return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_id required"}), 400
@@ -214,7 +215,11 @@ def messages_history():
     lim = max(1, min(int(limit or 20), 50))
     transport = TelegramDmTransport()
     try:
-        raw = _run_async(transport.fetch_recent_messages_async(int(account_id), peer, lim))
+        raw = _run_async(
+            transport.fetch_recent_messages_async(
+                int(account_id), peer, lim, peer_type=peer_type
+            )
+        )
     except Exception as e:
         logger.exception("messages_history_failed", account_id=account_id, error=str(e))
         return (

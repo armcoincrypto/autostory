@@ -14,17 +14,26 @@ from src.clients.manager import client_manager
 from src.core.database import get_db_context
 from src.core.models import Account, AccountStatus
 from src.messaging.errors import map_dm_error
+from src.messaging.peer_ids import normalize_peer_target
 
 logger = structlog.get_logger(__name__)
 
 
 class DmTransport(Protocol):
     async def send_message_async(
-        self, account_id: int, target: str, text: str
+        self,
+        account_id: int,
+        target: str,
+        text: str,
+        peer_type: str = "private",
     ) -> dict[str, Any]: ...
 
     async def fetch_recent_messages_async(
-        self, account_id: int, target: str, limit: int
+        self,
+        account_id: int,
+        target: str,
+        limit: int,
+        peer_type: str = "private",
     ) -> dict[str, Any]: ...
 
 
@@ -43,24 +52,33 @@ async def _resolve_peer(client: Any, target: str) -> Any:
 
 
 async def _resolve_peer_with_dialog_warm(
-    account_id: int, client: Any, target: str
+    account_id: int,
+    client: Any,
+    target: str,
+    *,
+    peer_type: str | None = None,
 ) -> Any:
     """
-    Resolve a peer for history.
+    Resolve a peer for history/send.
 
     Cold numeric IDs often lack Telethon entity cache / access_hash. Warming via
     server-side get_dialogs (never exposing access_hash to the browser) populates
     the in-process entity cache on this client, then resolve retries.
+
+    Group/channel bare ids from dialogs/resolve are marked via peer_type so
+    Telethon does not treat them as PeerUser.
     """
+    resolved_target = normalize_peer_target(target, peer_type)
     try:
-        return await _resolve_peer(client, target)
+        return await _resolve_peer(client, resolved_target)
     except Exception as first:
-        raw = (target or "").strip()
+        raw = (resolved_target or "").strip()
         # Username resolves online; still warm once if get_entity failed transiently.
         logger.info(
             "dm_peer_resolve_warm_dialogs",
             account_id=int(account_id),
             peer_kind=("username" if raw.startswith("@") or not raw.lstrip("-").isdigit() else "numeric"),
+            peer_type=(peer_type or "private"),
             error=str(first)[:160],
         )
         try:
@@ -72,14 +90,18 @@ async def _resolve_peer_with_dialog_warm(
                 error=str(warm_err)[:160],
             )
             raise first
-        return await _resolve_peer(client, target)
+        return await _resolve_peer(client, resolved_target)
 
 
 class TelegramDmTransport:
     """In-process Telethon send/fetch without product allowlists."""
 
     async def fetch_recent_messages_async(
-        self, account_id: int, target: str, limit: int = 20
+        self,
+        account_id: int,
+        target: str,
+        limit: int = 20,
+        peer_type: str = "private",
     ) -> dict[str, Any]:
         lim = max(1, min(int(limit or 20), 100))
         with get_db_context() as db:
@@ -115,7 +137,10 @@ class TelegramDmTransport:
 
         try:
             entity = await _resolve_peer_with_dialog_warm(
-                int(account_id), wrapper.client, target
+                int(account_id),
+                wrapper.client,
+                target,
+                peer_type=peer_type,
             )
         except Exception as e:
             code, msg, _ = map_dm_error(e)
@@ -151,7 +176,11 @@ class TelegramDmTransport:
         return {"ok": True, "messages": out}
 
     async def send_message_async(
-        self, account_id: int, target: str, text: str
+        self,
+        account_id: int,
+        target: str,
+        text: str,
+        peer_type: str = "private",
     ) -> dict[str, Any]:
         """Low-level send. Caller must have already enforced product policy."""
         if not (text or "").strip():
@@ -217,7 +246,12 @@ class TelegramDmTransport:
                 }
 
         try:
-            entity = await _resolve_peer(wrapper.client, target)
+            entity = await _resolve_peer_with_dialog_warm(
+                int(account_id),
+                wrapper.client,
+                target,
+                peer_type=peer_type,
+            )
         except Exception as e:
             code, msg, extras = map_dm_error(e)
             return {
@@ -281,9 +315,15 @@ class CountingFakeTransport:
         self._raise_on_send = raise_on_send
 
     async def send_message_async(
-        self, account_id: int, target: str, text: str
+        self,
+        account_id: int,
+        target: str,
+        text: str,
+        peer_type: str = "private",
     ) -> dict[str, Any]:
         self.send_calls += 1
+        self.last_peer_type = peer_type
+        self.last_target = target
         if self._raise_on_send is not None:
             raise self._raise_on_send
         if self._send_result is not None:
@@ -299,7 +339,13 @@ class CountingFakeTransport:
         }
 
     async def fetch_recent_messages_async(
-        self, account_id: int, target: str, limit: int
+        self,
+        account_id: int,
+        target: str,
+        limit: int,
+        peer_type: str = "private",
     ) -> dict[str, Any]:
         self.fetch_calls += 1
+        self.last_peer_type = peer_type
+        self.last_target = target
         return {"ok": True, "messages": []}
