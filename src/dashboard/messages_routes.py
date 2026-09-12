@@ -262,8 +262,8 @@ def messages_history():
     return jsonify({"ok": True, "account_id": int(account_id), "peer": peer, "messages": messages})
 
 
-def _deny_group_channel_send(peer_type: str):
-    allowed, code, msg = evaluate_send_policy(peer_type)
+def _deny_group_channel_send(peer_type: str, *, can_post: bool | None = None):
+    allowed, code, msg = evaluate_send_policy(peer_type, can_post=can_post)
     if allowed:
         return None
     return (
@@ -274,8 +274,42 @@ def _deny_group_channel_send(peer_type: str):
             "peer_type": peer_type,
             "would_send": False,
         },
-        423 if code == "GROUP_CHANNEL_SEND_DISABLED" else 400,
+        423 if code in {"GROUP_CHANNEL_SEND_DISABLED", "NO_WRITE_PERMISSION"} else 400,
     )
+
+
+def _infer_can_post_for_peer(account_id: int, peer: str, peer_type: str) -> bool | None:
+    """Best-effort write-permission probe for group/channel (None if private/unknown)."""
+    pt = (peer_type or "").strip().lower()
+    if pt in {"private", "bot", "user", "dm", ""}:
+        return None
+    try:
+        from src.clients.joiner import _can_post_heuristic
+        from src.clients.manager import client_manager
+        from src.core.database import get_db_context
+        from src.core.models import Account
+
+        async def _probe():
+            with get_db_context() as db:
+                account = db.query(Account).filter(Account.id == int(account_id)).first()
+            if not account:
+                return None
+            wrapper, _ = await client_manager.add_account(account)
+            if not wrapper:
+                return None
+            target = peer.strip()
+            if target.startswith("@"):
+                entity = await wrapper.client.get_entity(target)
+            elif target.lstrip("-").isdigit():
+                entity = await wrapper.client.get_entity(int(target))
+            else:
+                entity = await wrapper.client.get_entity(target)
+            ok, _reason = _can_post_heuristic(entity)
+            return bool(ok)
+
+        return bool(_run_async(_probe()))
+    except Exception:
+        return None
 
 
 @messages_api.route("/draft", methods=["POST"])
@@ -335,7 +369,13 @@ def messages_dry_run():
     if message is None:
         return jsonify({"ok": False, "error": "EMPTY_MESSAGE", "message": "message required"}), 400
 
-    denied = _deny_group_channel_send(peer_type)
+    can_post = data.get("can_post")
+    if can_post is None and peer_type in {"group", "supergroup", "channel"}:
+        can_post = _infer_can_post_for_peer(account_id, peer, peer_type)
+    elif isinstance(can_post, str):
+        can_post = can_post.strip().lower() in {"1", "true", "yes", "on"}
+
+    denied = _deny_group_channel_send(peer_type, can_post=can_post)
     if denied is not None:
         payload, _status = denied
         payload = dict(payload)
@@ -353,6 +393,7 @@ def messages_dry_run():
             peer_type=peer_type,
         )
     result["ok"] = True
+    result["would_send"] = bool(result.get("would_send", True))
     return jsonify(result)
 
 
@@ -378,7 +419,13 @@ def messages_send_now():
             400,
         )
 
-    denied = _deny_group_channel_send(peer_type)
+    can_post = data.get("can_post")
+    if can_post is None and peer_type in {"group", "supergroup", "channel"}:
+        can_post = _infer_can_post_for_peer(account_id, peer, peer_type)
+    elif isinstance(can_post, str):
+        can_post = can_post.strip().lower() in {"1", "true", "yes", "on"}
+
+    denied = _deny_group_channel_send(peer_type, can_post=can_post)
     if denied is not None:
         payload, status = denied
         return jsonify(payload), status

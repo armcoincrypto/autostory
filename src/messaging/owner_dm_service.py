@@ -69,11 +69,22 @@ def validate_peer(peer_id: str, peer_type: str = "private") -> tuple[bool, str, 
     pt = (peer_type or "private").strip().lower()
     if not pid:
         return False, "PEER_INVALID", "Recipient is required."
-    if pt not in SUPPORTED_PEER_TYPES and pt not in {"group", "supergroup", "channel"}:
-        return False, "PEER_INVALID", f"Unsupported peer type: {pt}."
-    if pt not in SUPPORTED_PEER_TYPES:
-        return False, "PEER_INVALID", "Owner DMs support private/bot recipients only."
-    return True, "OK", "ok"
+    if pt in {"user", "dm"}:
+        pt = "private"
+    if pt in SUPPORTED_PEER_TYPES:
+        return True, "OK", "ok"
+    if pt in {"group", "supergroup", "channel"}:
+        # Private/bot semantics unchanged. Group/channel only when product flag is on.
+        from src.messaging.chat_flags import messages_group_channel_send_enabled
+
+        if not messages_group_channel_send_enabled():
+            return (
+                False,
+                "GROUP_CHANNEL_SEND_DISABLED",
+                "Sending to groups and channels is not enabled yet.",
+            )
+        return True, "OK", "ok"
+    return False, "PEER_INVALID", f"Unsupported peer type: {pt}."
 
 
 # Owner-facing denial codes (Wave 7D). MESSAGES_DISABLED only for kill switch.

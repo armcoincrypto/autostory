@@ -128,8 +128,8 @@ def test_private_dm_validate_peer_unchanged():
     assert ok and code == "OK"
     ok2, code2, msg2 = validate_peer("@alice", "channel")
     assert not ok2
-    assert code2 == "PEER_INVALID"
-    assert "private/bot" in msg2
+    # Flag-off group/channel deny (still blocks; private path unchanged)
+    assert code2 in {"PEER_INVALID", "GROUP_CHANNEL_SEND_DISABLED"}
 
 
 def test_discovery_join_delegates_to_canonical():
@@ -245,3 +245,16 @@ def test_duplicate_detection_markers():
 
     assert OwnerDirectMessageService is not None
     assert ScheduledDirectMessageService is not None
+
+
+def test_validate_peer_group_gated_by_flag(monkeypatch):
+    from src.messaging.owner_dm_service import validate_peer
+
+    monkeypatch.setenv("MESSAGES_GROUP_CHANNEL_SEND_ENABLED", "false")
+    ok, code, _ = validate_peer("123", "group")
+    assert not ok and code == "GROUP_CHANNEL_SEND_DISABLED"
+    monkeypatch.setenv("MESSAGES_GROUP_CHANNEL_SEND_ENABLED", "true")
+    ok2, code2, _ = validate_peer("123", "supergroup")
+    assert ok2 and code2 == "OK"
+    ok3, code3, _ = validate_peer("@alice", "private")
+    assert ok3 and code3 == "OK"
