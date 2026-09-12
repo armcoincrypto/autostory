@@ -300,7 +300,7 @@ def test_flask_draft_disabled_returns_423(monkeypatch):
 
 def test_template_has_ai_draft_controls():
     tpl = (ROOT / "src/dashboard/templates/messages.html").read_text(encoding="utf-8")
-    assert "Draft with AI" in tpl
+    assert "AI Draft" in tpl or "Draft with AI" in tpl
     assert "/api/messages/draft" in tpl
     assert "Replace the current composer text with an AI draft?" in tpl
     assert "AI draft — review before sending" in tpl

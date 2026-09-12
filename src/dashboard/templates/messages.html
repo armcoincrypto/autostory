@@ -92,6 +92,36 @@
   .status-SENDING, .status-RUNNING { background: rgba(59,130,246,.2); color: #93c5fd; }
   .status-CREATED, .status-PENDING { background: rgba(148,163,184,.15); color: #cbd5e1; }
   .status-CANCELLED { background: rgba(100,116,139,.25); color: #94a3b8; }
+  .msg-section-label {
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #94a3b8;
+    padding: .45rem .75rem .2rem;
+    font-weight: 600;
+  }
+  .msg-char-count { opacity: .55; font-size: .75rem; }
+  .msg-write-state {
+    display: inline-block;
+    margin-left: .5rem;
+    padding: .1rem .45rem;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 600;
+  }
+  .msg-write-ok { background: rgba(34,197,94,.18); color: #86efac; }
+  .msg-write-no { background: rgba(245,158,11,.18); color: #fcd34d; }
+  .msg-pane-body.accounts-body { max-height: 62vh; }
+  .composer-actions { justify-content: flex-end !important; }
+  details.msg-tech summary {
+    cursor: pointer;
+    color: #94a3b8;
+    font-size: .75rem;
+  }
+  @media (max-width: 992px) {
+    .msg-pane { max-height: none; min-height: 280px; }
+    .recent-panel { overflow-x: auto; }
+  }
 </style>
 {% endblock %}
 
@@ -109,7 +139,10 @@
 <div class="msg-layout">
   <section class="msg-pane">
     <div class="msg-pane-header">1. Account</div>
-    <div class="msg-pane-body" id="account-list">
+    <div class="px-2 pt-2">
+      <input type="search" id="account-search" class="form-control form-control-sm mb-2" placeholder="Search accounts…" autocomplete="off">
+    </div>
+    <div class="msg-pane-body accounts-body" id="account-list">
       <div class="text-muted small p-2">Loading accounts…</div>
     </div>
   </section>
@@ -134,9 +167,14 @@
   </section>
 
   <section class="msg-pane">
-    <div class="msg-pane-header d-flex justify-content-between align-items-center">
-      <span>3. Conversation</span>
-      <span class="small text-muted" id="thread-label">No dialog selected</span>
+    <div class="msg-pane-header">
+      <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
+        <div>
+          <div>3. Conversation</div>
+          <div class="small text-muted mt-1" id="thread-label">No dialog selected</div>
+        </div>
+        <span id="thread-write-state" class="msg-write-state d-none"></span>
+      </div>
     </div>
     <div class="msg-pane-body" id="thread">
       <div class="text-muted small p-2">Select a chat to load recent messages.</div>
@@ -152,12 +190,12 @@
           disabled>
       </div>
       <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <span class="small text-muted"><span id="char-count">0</span> / 4096</span>
-        <div class="d-flex gap-2 flex-wrap">
-          <button type="button" class="btn btn-outline-info btn-sm" id="btn-ai-draft" disabled>Draft with AI</button>
-          <button type="button" class="btn btn-outline-light btn-sm" id="btn-check" disabled>Check message</button>
+        <span class="msg-char-count text-muted"><span id="char-count">0</span> / 4096</span>
+        <div class="d-flex gap-2 flex-wrap composer-actions">
+          <button type="button" class="btn btn-outline-info btn-sm" id="btn-ai-draft" disabled>AI Draft</button>
+          <button type="button" class="btn btn-outline-light btn-sm d-none" id="btn-check" disabled>Check</button>
           <button type="button" class="btn btn-outline-primary btn-sm" id="btn-schedule" disabled>Schedule</button>
-          <button type="button" class="btn btn-primary btn-sm" id="btn-review" disabled>Send now</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-review" disabled>Send Now</button>
         </div>
       </div>
     </div>
@@ -175,7 +213,7 @@
         <tr>
           <th scope="col">Time</th>
           <th scope="col">Account</th>
-          <th scope="col">Recipient</th>
+          <th scope="col">Chat</th>
           <th scope="col">Status</th>
           <th scope="col">Actions</th>
         </tr>
@@ -198,7 +236,7 @@
         <tr>
           <th scope="col">Time</th>
           <th scope="col">Account</th>
-          <th scope="col">Recipient</th>
+          <th scope="col">Chat</th>
           <th scope="col">Status</th>
           <th scope="col">Details</th>
         </tr>
@@ -303,7 +341,7 @@
           <div id="join-prev-msg" class="alert alert-secondary py-2 mt-3 mb-0 small"></div>
         </div>
         <div id="join-flag-warn" class="alert alert-warning py-2 mt-3 mb-0 small d-none">
-          Chat join is currently disabled (MESSAGES_CHAT_JOIN_ENABLED=false).
+          Chat join is currently disabled. You can still open chats you already joined.
         </div>
       </div>
       <div class="modal-footer border-secondary">
@@ -339,6 +377,8 @@
     idempotencyKey: null,
     scheduleReviewed: false,
     joinPreview: null,
+    accountSearch: '',
+    peerNameCache: {},
   };
 
   const elAlert = document.getElementById('msg-alert');
@@ -348,6 +388,8 @@
   const btnRefreshRecent = document.getElementById('btn-refresh-recent');
   const btnRefreshScheduled = document.getElementById('btn-refresh-scheduled');
   const elAccounts = document.getElementById('account-list');
+  const elAccountSearch = document.getElementById('account-search');
+  const elThreadWrite = document.getElementById('thread-write-state');
   const elDialogs = document.getElementById('dialog-list');
   const elDialogSearch = document.getElementById('dialog-search');
   const elSendPolicyHint = document.getElementById('send-policy-hint');
@@ -494,33 +536,71 @@
     }
   }
 
-  async function loadAccounts() {
-    const data = await dashboardFetchJson('/api/messages/accounts');
-    state.accounts = data.accounts || [];
+  function filteredAccounts() {
+    const q = (state.accountSearch || '').trim().toLowerCase();
+    return (state.accounts || []).filter((a) => {
+      if (!q) return true;
+      const name = String(a.display_name || '').toLowerCase();
+      const user = String(a.username || '').toLowerCase();
+      const first = String(a.first_name || '').toLowerCase();
+      return name.includes(q) || user.includes(q) || first.includes(q) || String(a.id).includes(q);
+    });
+  }
+
+  function renderAccounts() {
+    const list = filteredAccounts();
     if (!state.accounts.length) {
-      elAccounts.innerHTML = '<div class="text-muted small p-2">No accounts found.</div>';
+      elAccounts.innerHTML = '<div class="text-muted small p-2">No accounts available.</div>';
       return;
     }
-    elAccounts.innerHTML = state.accounts.map((a) => {
-      const label = esc(a.display_name || ('#' + a.id));
-      const badge = a.eligible
-        ? '<span class="badge badge-active">Eligible</span>'
-        : `<span class="badge badge-inactive">${esc(a.eligibility_code || 'Ineligible')}</span>`;
-      const cls = a.eligible ? '' : ' disabled';
-      return `<div class="msg-item${cls}" data-account-id="${a.id}" data-eligible="${a.eligible ? '1' : '0'}" title="${esc(a.eligibility_reason || '')}">
-        <div class="d-flex justify-content-between gap-2"><strong>${label}</strong>${badge}</div>
-        <div class="small text-muted">#${a.id} · ${esc(a.status || '')}</div>
-      </div>`;
-    }).join('');
+    if (!list.length) {
+      elAccounts.innerHTML = '<div class="text-muted small p-2">No accounts match this search.</div>';
+      return;
+    }
+    const buckets = [
+      { key: 'available', title: 'Available' },
+      { key: 'attention', title: 'Needs attention' },
+      { key: 'unavailable', title: 'Unavailable' },
+    ];
+    let html = '';
+    buckets.forEach((b) => {
+      const rows = list.filter((a) => (a.bucket || (a.eligible ? 'available' : 'unavailable')) === b.key);
+      if (!rows.length) return;
+      html += `<div class="msg-section-label">${esc(b.title)}</div>`;
+      html += rows.map((a) => {
+        const label = esc(a.display_name || ('Account ' + a.id));
+        const selectable = !!a.eligible;
+        const cls = selectable ? '' : ' disabled';
+        const sub = selectable
+          ? `<div class="small text-muted">#${a.id}</div>`
+          : `<div class="small text-muted">${esc(a.unavailable_label || 'Unavailable')}</div>`;
+        return `<div class="msg-item${cls}" data-account-id="${a.id}" data-eligible="${selectable ? '1' : '0'}" title="${esc(a.eligibility_reason || '')}">
+          <div class="fw-semibold">${label}</div>
+          ${sub}
+        </div>`;
+      }).join('');
+    });
+    elAccounts.innerHTML = html || '<div class="text-muted small p-2">No accounts match this search.</div>';
     elAccounts.querySelectorAll('.msg-item').forEach((node) => {
       node.addEventListener('click', () => {
         if (node.dataset.eligible !== '1') {
-          showAlert('warning', node.title || 'Account is not eligible for Messages.');
+          showAlert('warning', node.title || 'This account is not available for Messages.');
           return;
         }
         selectAccount(Number(node.dataset.accountId));
       });
     });
+    if (state.accountId) {
+      elAccounts.querySelectorAll('.msg-item').forEach((n) => {
+        n.classList.toggle('active', Number(n.dataset.accountId) === state.accountId);
+      });
+    }
+  }
+
+  async function loadAccounts() {
+    const data = await dashboardFetchJson('/api/messages/accounts');
+    state.accounts = data.accounts || [];
+    renderAccounts();
   }
 
   async function selectAccount(accountId) {
@@ -538,6 +618,7 @@
     elDialogs.innerHTML = '<div class="text-muted small p-2">Loading chats…</div>';
     elThread.innerHTML = '<div class="text-muted small p-2">Select a chat to load recent messages.</div>';
     elThreadLabel.textContent = 'No dialog selected';
+    updateWriteState(null);
     setComposerEnabled(false);
     elComposer.value = '';
     elCount.textContent = '0';
@@ -554,6 +635,14 @@
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
+      });
+      state.peerNameCache = {};
+      state.dialogs.forEach((d) => {
+        const name = d.display_name || d.title;
+        const pid = String(d.peer_id || markedPeerId(d.id, d.dialog_type || d.chat_type) || '');
+        if (name && pid) state.peerNameCache[pid] = name;
+        if (name && d.id != null) state.peerNameCache[String(d.id)] = name;
+        if (name && d.username) state.peerNameCache['@' + d.username] = name;
       });
       renderDialogs();
     } catch (e) {
@@ -583,7 +672,10 @@
   function renderDialogs() {
     const list = filteredDialogs();
     if (!list.length) {
-      elDialogs.innerHTML = '<div class="text-muted small p-2">No conversations found.</div>';
+      const q = (state.dialogSearch || '').trim();
+      elDialogs.innerHTML = q
+        ? '<div class="text-muted small p-2">No chats found. Use <strong>Join chat</strong> to add one.</div>'
+        : '<div class="text-muted small p-2">No conversations found.</div>';
       return;
     }
     elDialogs.innerHTML = list.map((d) => {
@@ -622,12 +714,48 @@
     });
   }
 
+  function updateWriteState(dialog) {
+    if (!elThreadWrite) return;
+    if (!dialog) {
+      elThreadWrite.classList.add('d-none');
+      elThreadWrite.textContent = '';
+      return;
+    }
+    const reason = sendBlockReason(dialog);
+    const writable = canSendForDialog(dialog);
+    elThreadWrite.classList.remove('d-none', 'msg-write-ok', 'msg-write-no');
+    if (writable) {
+      elThreadWrite.textContent = 'Writable';
+      elThreadWrite.classList.add('msg-write-ok');
+    } else {
+      elThreadWrite.textContent = reason || 'Read only';
+      elThreadWrite.classList.add('msg-write-no');
+    }
+  }
+
+  function friendlyPeerName(peer, peerType, fallback) {
+    const p = String(peer || '');
+    if (state.peerNameCache[p]) return state.peerNameCache[p];
+    const bare = p.replace(/^-100/, '').replace(/^-/, '');
+    if (state.peerNameCache[bare]) return state.peerNameCache[bare];
+    if (state.peerNameCache['-100' + bare]) return state.peerNameCache['-100' + bare];
+    if (fallback && !String(fallback).startsWith('-') && !/^\d+$/.test(String(fallback))) return fallback;
+    const t = (peerType || '').toLowerCase();
+    if (t === 'channel') return 'Channel';
+    if (t === 'group' || t === 'supergroup') return 'Group chat';
+    if (t === 'bot') return 'Bot';
+    return 'Private chat';
+  }
+
   async function selectDialog(dialog) {
     clearAlert();
     state.dialog = dialog;
     state.idempotencyKey = null;
     if (elAiLabel) elAiLabel.classList.add('d-none');
-    elThreadLabel.textContent = dialog.display_name || dialog.peer;
+    const typeLabel = dialog.peer_type || dialog.dialog_type || '';
+    const userBit = dialog.username ? ' · @' + dialog.username : '';
+    elThreadLabel.textContent = (dialog.display_name || dialog.peer || 'Chat') + (typeLabel ? ' · ' + typeLabel : '') + userBit;
+    updateWriteState(dialog);
     setComposerEnabled(true);
     elThread.innerHTML = '<div class="text-muted small p-2">Loading conversation…</div>';
     try {
@@ -700,11 +828,13 @@
       }
       showAlert('info', 'AI draft inserted — review and edit before sending. Nothing was sent.');
     } catch (e) {
-      const msg = (e.data && (e.data.error_message || e.data.message)) || e.message || String(e);
-      showAlert('warning', msg + ' Your message was not sent.');
+      showAlert(
+        'warning',
+        'AI Draft is temporarily unavailable. You can still write and send manually.'
+      );
     } finally {
       if (btnAiDraft) {
-        btnAiDraft.textContent = prevLabel || 'Draft with AI';
+        btnAiDraft.textContent = prevLabel || 'AI Draft';
         setComposerEnabled(!!state.dialog);
       }
     }
@@ -842,7 +972,15 @@
       showAlert('warning', result.error_message || 'This account cannot send Messages.');
       return;
     }
-    showAlert('danger', result.error_message || result.error_code || 'Send failed.');
+    const soft = {
+      UNKNOWN: 'Temporary Telegram error',
+      PEER_INVALID: 'Chat could not be resolved',
+      NO_WRITE_PERMISSION: 'Cannot post in this chat',
+      RATE_LIMITED: 'Rate limit reached — try later',
+      FLOOD_WAIT: 'Telegram rate limit — try later',
+      PEER_FLOOD: 'Telegram rate limit — try later',
+    };
+    showAlert('danger', soft[code] || result.error_message || 'Could not send message.');
     if (status === 'FAILED') loadRecentIntents();
   }
 
@@ -853,25 +991,31 @@
       const rows = data.intents || [];
       if (!rows.length) {
         elRecentBody.innerHTML =
-          '<tr><td colspan="5" class="text-muted small px-3 py-3">No recent Messages sends yet.</td></tr>';
+          '<tr><td colspan="5" class="text-muted small px-3 py-3">No recent messages.</td></tr>';
         return;
       }
       elRecentBody.innerHTML = rows
         .map((row) => {
           const when = row.sent_at || row.created_at || '—';
           const st = row.status || '';
-          const label = STATUS_LABELS[st] || st || '—';
-          const details = [];
-          if (row.telegram_message_id != null) details.push('TG #' + row.telegram_message_id);
-          if (row.error_code) details.push(row.error_code);
-          if (row.intent_id != null) details.push('intent #' + row.intent_id);
+          const label = row.status_label || STATUS_LABELS[st] || st || '—';
+          const chat = friendlyPeerName(row.peer, row.peer_type, row.peer_label || row.peer_display);
+          let details = '—';
+          if (st === 'FAILED' || st === 'UNCERTAIN') {
+            details = esc(row.error_summary || 'Could not send message');
+          } else if (row.telegram_message_id != null || row.intent_id != null) {
+            const bits = [];
+            if (row.telegram_message_id != null) bits.push('Telegram message #' + row.telegram_message_id);
+            if (row.intent_id != null) bits.push('Intent #' + row.intent_id);
+            details = `<details class="msg-tech"><summary>Details</summary>${esc(bits.join(' · '))}</details>`;
+          }
           return (
             '<tr>' +
-            `<td class="text-nowrap">${esc(when)}</td>` +
-            `<td>${esc(row.account_label || ('#' + row.account_id))}</td>` +
-            `<td>${esc(row.peer_display || row.peer || '—')}</td>` +
+            `<td class="text-nowrap">${esc(String(when).replace('T', ' ').slice(0, 19))}</td>` +
+            `<td>${esc(row.account_label || ('Account ' + row.account_id))}</td>` +
+            `<td>${esc(chat)}</td>` +
             `<td><span class="status-pill status-${esc(st)}">${esc(label)}</span></td>` +
-            `<td class="small text-muted">${esc(details.join(' · ') || '—')}</td>` +
+            `<td class="small text-muted">${details}</td>` +
             '</tr>'
           );
         })
@@ -901,6 +1045,7 @@
           const when = row.scheduled_at_local || row.scheduled_at_utc || '—';
           const st = row.status || '';
           const label = row.status_label || st || '—';
+          const chat = friendlyPeerName(row.peer, row.peer_type, row.peer_label || row.peer_display);
           const canCancel = st === 'PENDING' && state.scheduleAvailable;
           const actions = canCancel
             ? `<button type="button" class="btn btn-outline-warning btn-sm btn-cancel-sched" data-job-id="${row.job_id}">Cancel</button>`
@@ -908,8 +1053,8 @@
           return (
             '<tr>' +
             `<td class="text-nowrap">${esc(when)}</td>` +
-            `<td>${esc(row.account_label || ('#' + row.account_id))}</td>` +
-            `<td>${esc(row.peer || '—')}</td>` +
+            `<td>${esc(row.account_label || ('Account ' + row.account_id))}</td>` +
+            `<td>${esc(chat)}</td>` +
             `<td><span class="status-pill status-${esc(st)}">${esc(label)}</span></td>` +
             `<td>${actions}</td>` +
             '</tr>'
@@ -1033,6 +1178,8 @@
       if (!state.scheduleReviewed || state.inFlight) return;
       state.inFlight = true;
       btnScheduleConfirm.disabled = true;
+      const prevSch = btnScheduleConfirm.textContent;
+      btnScheduleConfirm.textContent = 'Scheduling…';
       try {
         const data = await dashboardFetchJson('/api/messages/schedule', {
           method: 'POST',
@@ -1063,6 +1210,7 @@
       } finally {
         state.inFlight = false;
         btnScheduleConfirm.disabled = false;
+        btnScheduleConfirm.textContent = prevSch || 'Confirm schedule';
       }
     });
   }
@@ -1071,6 +1219,8 @@
     if (state.inFlight) return;
     state.inFlight = true;
     btnConfirm.disabled = true;
+    const prevSend = btnConfirm.textContent;
+    btnConfirm.textContent = 'Sending…';
     clearAlert();
     const key = ensureIdempotencyKey();
     try {
@@ -1101,6 +1251,7 @@
     } finally {
       state.inFlight = false;
       btnConfirm.disabled = false;
+      btnConfirm.textContent = prevSend || 'Send message';
     }
   });
 
@@ -1114,6 +1265,12 @@
       renderDialogs();
     });
   });
+  if (elAccountSearch) {
+    elAccountSearch.addEventListener('input', () => {
+      state.accountSearch = elAccountSearch.value || '';
+      renderAccounts();
+    });
+  }
   if (elDialogSearch) {
     elDialogSearch.addEventListener('input', () => {
       state.dialogSearch = elDialogSearch.value || '';
@@ -1203,6 +1360,8 @@
       if (!ok) return;
       state.inFlight = true;
       btnJoinConfirm.disabled = true;
+      const prevJoin = btnJoinConfirm.textContent;
+      btnJoinConfirm.textContent = 'Joining…';
       try {
         const data = await dashboardFetchJson('/api/messages/chat/join', {
           method: 'POST',
@@ -1239,6 +1398,7 @@
       } finally {
         state.inFlight = false;
         btnJoinConfirm.disabled = false;
+        btnJoinConfirm.textContent = prevJoin || 'Confirm join';
       }
     });
   }

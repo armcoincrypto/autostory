@@ -59,8 +59,12 @@ def test_messages_nav_and_template_contracts():
     assert "Delivery could not be confirmed" in tpl
     assert "idempotencyKey" in tpl
     assert "Schedule" in tpl  # Wave 10 — schedule action on composer
-    assert "Check message" in tpl
-    assert "Send now" in tpl or "Review &amp; Send" in tpl or "Review & Send" in tpl
+    assert "AI Draft" in tpl or "Draft with AI" in tpl
+    assert "Send Now" in tpl or "Send now" in tpl or "Review &amp; Send" in tpl or "Review & Send" in tpl
+    assert "btn-check" in tpl
+    assert "Schedule" in tpl
+    assert "account-search" in tpl
+    assert "Search accounts" in tpl
 
 
 def test_messages_routes_auth_and_thin_wiring():

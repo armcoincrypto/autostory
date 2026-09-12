@@ -28,6 +28,12 @@ from src.messaging.chat_policy import evaluate_send_policy, policy_matrix_for_st
 from src.messaging.models import OwnerDmIntent
 from src.messaging.owner_chat_service import OwnerChatService
 from src.messaging.owner_dm_service import OwnerDirectMessageService
+from src.messaging.peer_labels import (
+    account_bucket,
+    owner_safe_error_copy,
+    owner_unavailable_label,
+    resolve_owner_peer_label,
+)
 from src.messaging.scheduled_dm_flags import (
     scheduled_dm_create_allowed,
     scheduled_dm_enabled,
@@ -82,23 +88,42 @@ def _intent_owner_safe(
     *,
     account_label: Optional[str] = None,
     include_ok: bool = True,
+    db: Any = None,
 ) -> dict[str, Any]:
-    peer_display = (intent.peer_username and f"@{intent.peer_username}") or intent.peer_id
+    peer_label = None
+    if db is not None:
+        peer_label = resolve_owner_peer_label(
+            db,
+            intent.peer_id,
+            intent.peer_type,
+            peer_username=intent.peer_username,
+        )
+    peer_display = peer_label or (
+        (intent.peer_username and f"@{intent.peer_username}") or "Chat"
+    )
     row = {
         "intent_id": intent.id,
         "idempotency_key": intent.idempotency_key,
         "status": intent.status,
+        "status_label": {
+            "SENT": "Sent",
+            "FAILED": "Failed",
+            "UNCERTAIN": "Uncertain",
+            "SENDING": "Sending",
+            "CREATED": "Created",
+        }.get(str(intent.status or "").upper(), intent.status),
         "account_id": intent.account_id,
         "account_label": account_label or f"Account #{intent.account_id}",
         "peer": intent.peer_id,
         "peer_display": peer_display,
+        "peer_label": peer_display,
         "peer_type": intent.peer_type,
         "created_at": _dt_iso(intent.created_at),
         "attempted_at": _dt_iso(intent.attempt_started_at),
         "sent_at": _dt_iso(intent.sent_at),
         "telegram_message_id": intent.telegram_message_id,
         "error_code": intent.error_code,
-        "error_summary": intent.error_message,
+        "error_summary": owner_safe_error_copy(intent.error_code, intent.error_message),
         "message_preview": intent.message_preview,
         "retry_after": None,
     }
@@ -166,22 +191,38 @@ def messages_accounts():
         for a in accounts:
             elig = evaluate_dm_account_eligibility(db, int(a.id))
             st = getattr(a.status, "value", a.status)
+            display = (
+                (a.first_name and str(a.first_name).strip())
+                or (a.username and f"@{a.username}")
+                or f"Account #{a.id}"
+            )
+            bucket = account_bucket(bool(elig.eligible), elig.code)
             rows.append(
                 {
                     "id": int(a.id),
                     "username": a.username,
                     "first_name": a.first_name,
-                    "display_name": (
-                        (a.username and f"@{a.username}")
-                        or (a.first_name or f"Account #{a.id}")
-                    ),
+                    "display_name": display,
                     "status": st,
                     "purpose": a.purpose,
                     "eligible": elig.eligible,
                     "eligibility_code": elig.code,
                     "eligibility_reason": elig.reason,
+                    "bucket": bucket,
+                    "unavailable_label": None
+                    if elig.eligible
+                    else owner_unavailable_label(elig.code),
                 }
             )
+        # Eligible first, then attention, then unavailable — still stable by name.
+        order = {"available": 0, "attention": 1, "unavailable": 2}
+        rows.sort(
+            key=lambda r: (
+                order.get(r.get("bucket") or "unavailable", 9),
+                (r.get("display_name") or "").lower(),
+                r.get("id") or 0,
+            )
+        )
     return jsonify({"ok": True, "accounts": rows})
 
 
@@ -354,7 +395,12 @@ def messages_draft():
             status = 429
         elif code == "AI_DRAFT_TIMEOUT":
             status = 504
-        return jsonify(result), status
+        payload = dict(result)
+        payload["error_message"] = owner_safe_error_copy(
+            code, result.get("error_message") or result.get("message")
+        )
+        payload["message"] = payload["error_message"]
+        return jsonify(payload), status
     return jsonify(result)
 
 
@@ -475,14 +521,16 @@ def messages_intents_recent():
         if account_ids:
             for a in db.query(Account).filter(Account.id.in_(account_ids)).all():
                 labels[int(a.id)] = (
-                    (a.username and f"@{a.username}")
-                    or (a.first_name or f"Account #{a.id}")
+                    (a.first_name and str(a.first_name).strip())
+                    or (a.username and f"@{a.username}")
+                    or f"Account #{a.id}"
                 )
         rows = [
             _intent_owner_safe(
                 intent,
                 account_label=labels.get(int(intent.account_id)),
                 include_ok=False,
+                db=db,
             )
             for intent in intents
         ]
@@ -499,10 +547,11 @@ def messages_intent_by_id(intent_id: int):
         label = None
         if account:
             label = (
-                (account.username and f"@{account.username}")
-                or (account.first_name or f"Account #{account.id}")
+                (account.first_name and str(account.first_name).strip())
+                or (account.username and f"@{account.username}")
+                or f"Account #{account.id}"
             )
-        return jsonify(_intent_owner_safe(intent, account_label=label))
+        return jsonify(_intent_owner_safe(intent, account_label=label, db=db))
 
 
 @messages_api.route("/intents/by-key/<idempotency_key>", methods=["GET"])
@@ -518,7 +567,7 @@ def messages_intent_by_key(idempotency_key: str):
         )
         if not intent:
             return jsonify({"ok": False, "error": "NOT_FOUND", "message": "Intent not found"}), 404
-        return jsonify(_intent_owner_safe(intent))
+        return jsonify(_intent_owner_safe(intent, db=db))
 
 
 @messages_api.route("/schedule", methods=["POST"])
@@ -673,11 +722,16 @@ def messages_scheduled_list():
         if account_ids:
             for a in db.query(Account).filter(Account.id.in_(account_ids)).all():
                 labels[int(a.id)] = (
-                    (a.username and f"@{a.username}")
-                    or (a.first_name or f"Account #{a.id}")
+                    (a.first_name and str(a.first_name).strip())
+                    or (a.username and f"@{a.username}")
+                    or f"Account #{a.id}"
                 )
         for r in rows:
             r["account_label"] = labels.get(int(r["account_id"]), f"Account #{r['account_id']}")
+            r["peer_label"] = resolve_owner_peer_label(
+                db, r.get("peer"), r.get("peer_type")
+            )
+            r["peer_display"] = r["peer_label"]
     return jsonify({"ok": True, "jobs": rows, "schedule_available": scheduled_dm_create_allowed()})
 
 
