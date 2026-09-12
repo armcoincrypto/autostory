@@ -89,8 +89,9 @@
   .status-SENT { background: rgba(34,197,94,.2); color: #86efac; }
   .status-FAILED { background: rgba(239,68,68,.2); color: #fca5a5; }
   .status-UNCERTAIN { background: rgba(245,158,11,.2); color: #fcd34d; }
-  .status-SENDING { background: rgba(59,130,246,.2); color: #93c5fd; }
-  .status-CREATED { background: rgba(148,163,184,.15); color: #cbd5e1; }
+  .status-SENDING, .status-RUNNING { background: rgba(59,130,246,.2); color: #93c5fd; }
+  .status-CREATED, .status-PENDING { background: rgba(148,163,184,.15); color: #cbd5e1; }
+  .status-CANCELLED { background: rgba(100,116,139,.25); color: #94a3b8; }
 </style>
 {% endblock %}
 
@@ -385,10 +386,45 @@
   function isPrivateLike(t) {
     return !t || t === 'private' || t === 'bot' || t === 'user';
   }
+  function markedPeerId(id, type) {
+    const t = (type || '').toLowerCase();
+    const s = String(id == null ? '' : id).trim();
+    if (!s || s.startsWith('@') || s.startsWith('-')) return s;
+    if (!/^\d+$/.test(s)) return s;
+    if (t === 'channel' || t === 'supergroup') return '-100' + s;
+    if (t === 'group') return '-' + s;
+    return s;
+  }
+  function dialogDedupeKey(d) {
+    const t = (d.dialog_type || d.chat_type || d.peer_type || '').toLowerCase();
+    const raw = String(d.peer_id || d.id || '').replace(/^-100/, '').replace(/^-/, '');
+    const uname = String(d.username || '').toLowerCase().replace(/^@/, '');
+    return (uname ? 'u:' + uname : 'id:' + raw) + '|' + t;
+  }
   function canSendForDialog(d) {
     if (!d) return false;
-    if (isPrivateLike(d.peer_type || d.dialog_type)) return true;
-    return !!state.groupChannelSendEnabled;
+    const t = (d.peer_type || d.dialog_type || '').toLowerCase();
+    if (isPrivateLike(t)) return true;
+    if (!state.groupChannelSendEnabled) return false;
+    if (d.can_post === false) return false;
+    // Broadcast channels are not writable unless Telegram says can_post.
+    if (t === 'channel' && d.can_post !== true) return false;
+    return true;
+  }
+  function sendBlockReason(d) {
+    if (!d) return 'Select a chat first.';
+    const t = (d.peer_type || d.dialog_type || '').toLowerCase();
+    if (isPrivateLike(t)) return '';
+    if (!state.groupChannelSendEnabled) {
+      return 'Sending to groups and channels is not enabled yet.';
+    }
+    if (t === 'channel' && d.can_post !== true) {
+      return 'Cannot post in this channel.';
+    }
+    if (d.can_post === false) {
+      return 'Cannot send in this chat (read-only).';
+    }
+    return '';
   }
   function currentPeerType() {
     if (!state.dialog) return 'private';
@@ -407,22 +443,24 @@
 
   function setComposerEnabled(on) {
     const sendOk = on && canSendForDialog(state.dialog);
+    const blockReason = sendBlockReason(state.dialog);
     elComposer.disabled = !on;
     if (elAiInstruction) elAiInstruction.disabled = !on;
     btnCheck.disabled = !sendOk;
     btnReview.disabled = !sendOk;
     if (btnSchedule) {
       btnSchedule.disabled = !(sendOk && state.dialog && state.scheduleAvailable);
-      btnSchedule.title = state.scheduleAvailable
-        ? (sendOk ? '' : 'Sending to this chat type is not enabled yet')
-        : 'Scheduling is currently disabled (flags off)';
+      btnSchedule.title = !state.scheduleAvailable
+        ? 'Scheduling is currently disabled'
+        : (sendOk ? '' : (blockReason || 'Cannot schedule here'));
     }
     if (btnAiDraft) {
-      btnAiDraft.disabled = !(on && state.aiDraftAvailable && state.dialog);
+      // Draft only when owner could send (avoid drafting into read-only channels).
+      btnAiDraft.disabled = !(sendOk && state.aiDraftAvailable && state.dialog);
     }
     if (elSendPolicyHint) {
       if (on && state.dialog && !canSendForDialog(state.dialog)) {
-        elSendPolicyHint.textContent = 'Send/Schedule for groups and channels is disabled until certified. You can still read history and draft.';
+        elSendPolicyHint.textContent = blockReason || 'Cannot send here.';
         elSendPolicyHint.classList.remove('d-none');
       } else {
         elSendPolicyHint.classList.add('d-none');
@@ -509,9 +547,17 @@
         `/api/accounts/${accountId}/dialogs?limit=200`
       );
       state.dialogs = Array.isArray(dialogs) ? dialogs : (dialogs.dialogs || []);
+      // Dedupe ±100 / bare id duplicates (same chat shown once).
+      const seen = new Set();
+      state.dialogs = state.dialogs.filter((d) => {
+        const key = dialogDedupeKey(d);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       renderDialogs();
     } catch (e) {
-      elDialogs.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;
+      elDialogs.innerHTML = `<div class="text-danger small p-2">Unable to load chats. Try again.</div>`;
     }
   }
 
@@ -529,14 +575,15 @@
       if (!q) return true;
       const name = String(d.display_name || d.title || '').toLowerCase();
       const user = String(d.username || '').toLowerCase();
-      return name.includes(q) || user.includes(q) || String(d.id).includes(q);
+      const pid = String(d.peer_id || d.id || '');
+      return name.includes(q) || user.includes(q) || pid.includes(q) || String(d.id).includes(q);
     });
   }
 
   function renderDialogs() {
     const list = filteredDialogs();
     if (!list.length) {
-      elDialogs.innerHTML = '<div class="text-muted small p-2">No chats match this filter.</div>';
+      elDialogs.innerHTML = '<div class="text-muted small p-2">No conversations found.</div>';
       return;
     }
     elDialogs.innerHTML = list.map((d) => {
@@ -545,21 +592,29 @@
       const dtype = esc(d.dialog_type || d.chat_type || '');
       const unread = Number(d.unread_count || 0);
       const when = d.last_message_at ? esc(String(d.last_message_at).replace('T', ' ').slice(0, 16)) : '';
-      return `<div class="msg-item" data-peer-id="${esc(d.id)}" data-username="${esc(d.username || '')}" data-name="${name}" data-type="${dtype}">
+      const peerId = esc(d.peer_id || markedPeerId(d.id, d.dialog_type || d.chat_type) || d.id);
+      const canPost = d.can_post === false ? '0' : (d.can_post === true ? '1' : '');
+      return `<div class="msg-item" data-peer-id="${peerId}" data-username="${esc(d.username || '')}" data-name="${name}" data-type="${dtype}" data-can-post="${canPost}">
         <div class="fw-semibold">${name}</div>
         <div class="small text-muted">${dtype}${user ? ' · ' + user : ''}${when ? ' · ' + when : ''}${unread ? ` · unread ${unread}` : ''}</div>
       </div>`;
     }).join('');
     elDialogs.querySelectorAll('.msg-item').forEach((node) => {
       node.addEventListener('click', () => {
-        const peer = node.dataset.username ? ('@' + node.dataset.username) : String(node.dataset.peerId);
+        const dtype = node.dataset.type || 'private';
+        const peer = node.dataset.username
+          ? ('@' + node.dataset.username)
+          : String(node.dataset.peerId);
+        const canPostRaw = node.dataset.canPost;
+        const canPost = canPostRaw === '' ? undefined : canPostRaw === '1';
         selectDialog({
           peer,
           peer_id: String(node.dataset.peerId),
           username: node.dataset.username || '',
           display_name: node.dataset.name || peer,
-          peer_type: node.dataset.type || 'private',
-          dialog_type: node.dataset.type || 'private',
+          peer_type: dtype,
+          dialog_type: dtype,
+          can_post: canPost,
         });
         elDialogs.querySelectorAll('.msg-item').forEach((n) => n.classList.remove('active'));
         node.classList.add('active');
@@ -576,12 +631,13 @@
     setComposerEnabled(true);
     elThread.innerHTML = '<div class="text-muted small p-2">Loading conversation…</div>';
     try {
+      const pt = encodeURIComponent(dialog.peer_type || dialog.dialog_type || 'private');
       const data = await dashboardFetchJson(
-        `/api/messages/history?account_id=${encodeURIComponent(state.accountId)}&peer=${encodeURIComponent(dialog.peer)}&limit=20`
+        `/api/messages/history?account_id=${encodeURIComponent(state.accountId)}&peer=${encodeURIComponent(dialog.peer)}&peer_type=${pt}&limit=20`
       );
       renderThread(data.messages || []);
     } catch (e) {
-      elThread.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;
+      elThread.innerHTML = `<div class="text-danger small p-2">Unable to load conversation history.</div>`;
     }
   }
   function renderThread(messages) {
@@ -679,6 +735,7 @@
         peer: state.dialog.peer,
         message: text,
         peer_type: currentPeerType(),
+        can_post: state.dialog.can_post,
       }),
     });
   }
@@ -751,7 +808,7 @@
   function showResult(result) {
     const status = result.status || '';
     if (status === 'SENT') {
-      showAlert('success', 'Message sent.');
+      showAlert('success', result.replay ? 'Already sent (no duplicate).' : 'Message sent.');
       state.idempotencyKey = null;
       if (state.dialog) selectDialog(state.dialog);
       loadRecentIntents();
@@ -925,7 +982,7 @@
       warn.classList.add('d-none');
       if (!state.scheduleAvailable) {
         warn.textContent =
-          'Scheduling is disabled (SCHEDULED_DM_ENABLED / SCHEDULER_MUTATIONS_ENABLED). Confirm will be blocked.';
+          'Scheduling is disabled. Turn on SCHEDULED_DM_ENABLED to schedule from Messages.';
         warn.classList.remove('d-none');
       }
       scheduleModal.show();
@@ -945,6 +1002,7 @@
             peer: state.dialog.peer,
             message: elComposer.value,
             peer_type: currentPeerType(),
+            can_post: state.dialog.can_post,
             local_date: document.getElementById('schedule-date').value,
             local_time: document.getElementById('schedule-time').value,
             timezone: document.getElementById('schedule-tz').value,
@@ -984,6 +1042,7 @@
             peer: state.dialog.peer,
             message: elComposer.value,
             peer_type: currentPeerType(),
+            can_post: state.dialog.can_post,
             local_date: document.getElementById('schedule-date').value,
             local_time: document.getElementById('schedule-time').value,
             timezone: document.getElementById('schedule-tz').value,
@@ -993,7 +1052,7 @@
         scheduleModal.hide();
         showAlert(
           'success',
-          `Scheduled for ${data.scheduled_at_local || data.scheduled_at_utc || 'later'} (job #${data.job_id}).`
+          `Message scheduled for ${data.scheduled_at_local || data.scheduled_at_utc || 'later'}.`
         );
         loadScheduledJobs();
       } catch (e) {
@@ -1024,6 +1083,7 @@
           message: elComposer.value,
           idempotency_key: key,
           peer_type: currentPeerType(),
+          can_post: state.dialog.can_post,
         }),
       });
       confirmModal.hide();
@@ -1103,7 +1163,10 @@
       document.getElementById('join-prev-type').textContent = data.chat_type || '—';
       document.getElementById('join-prev-access').textContent = data.public ? 'Public' : 'Private / invite';
       document.getElementById('join-prev-account').textContent = state.accountLabel || ('#' + state.accountId);
-      document.getElementById('join-prev-member').textContent = data.already_joined ? 'Already joined' : 'Not a member';
+      let memberLabel = data.already_joined ? 'Already joined' : 'Not a member';
+      if (data.can_post === true) memberLabel += ' · Writable';
+      else if (data.can_post === false) memberLabel += ' · Cannot send in this channel';
+      document.getElementById('join-prev-member').textContent = memberLabel;
       document.getElementById('join-prev-msg').textContent = data.message || '';
       if (data.action_hint === 'open' || data.already_joined) {
         btnJoinConfirm.disabled = true;
@@ -1146,8 +1209,16 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ account_id: state.accountId, ref, confirm: true }),
         });
-        showAlert('success', data.message || 'Join completed');
-        if (data.open_chat && data.peer) {
+        showAlert(
+          data.status === 'join_requested' ? 'warning' : 'success',
+          data.status === 'join_requested'
+            ? (data.message || 'Waiting for admin approval')
+            : (data.message || 'Join completed')
+        );
+        if (data.status === 'join_requested') {
+          document.getElementById('join-prev-member').textContent = 'Waiting for admin approval';
+          btnJoinConfirm.disabled = true;
+        } else if (data.open_chat && data.peer) {
           joinModal.hide();
           await selectAccount(state.accountId);
           await selectDialog({
@@ -1157,6 +1228,7 @@
             display_name: data.title || data.peer,
             peer_type: data.chat_type || 'supergroup',
             dialog_type: data.chat_type || 'supergroup',
+            can_post: data.can_post,
           });
         } else if (data.already_member) {
           btnJoinOpen.classList.remove('d-none');
@@ -1190,6 +1262,7 @@
         display_name: data.title || peer,
         peer_type: data.chat_type || 'supergroup',
         dialog_type: data.chat_type || 'supergroup',
+        can_post: data.can_post,
       });
     });
   }

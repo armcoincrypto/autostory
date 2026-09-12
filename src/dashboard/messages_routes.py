@@ -541,7 +541,13 @@ def messages_schedule():
     if message is None:
         return jsonify({"ok": False, "error": "EMPTY_MESSAGE", "message": "message required"}), 400
 
-    denied = _deny_group_channel_send(peer_type)
+    can_post = data.get("can_post")
+    if can_post is None and peer_type in {"group", "supergroup", "channel"}:
+        can_post = _infer_can_post_for_peer(account_id, peer, peer_type)
+    elif isinstance(can_post, str):
+        can_post = can_post.strip().lower() in {"1", "true", "yes", "on"}
+
+    denied = _deny_group_channel_send(peer_type, can_post=can_post)
     if denied is not None:
         payload, status = denied
         return jsonify(payload), status

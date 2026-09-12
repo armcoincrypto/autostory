@@ -977,6 +977,21 @@ class ClientManager:
                     }
                 if row is None:
                     continue
+                # Owner Messages: marked peer + write hint (never expose Telegram secrets).
+                from src.messaging.peer_ids import marked_peer_id_from_entity
+                from src.clients.joiner import _can_post_heuristic
+
+                dt = row.get("dialog_type") or row.get("chat_type")
+                marked = marked_peer_id_from_entity(row.get("id"), dt)
+                row["peer"] = (
+                    f"@{row['username']}" if row.get("username") else marked
+                )
+                row["peer_id"] = marked
+                if isinstance(e, User):
+                    row["can_post"] = True
+                else:
+                    ok_post, _ = _can_post_heuristic(e)
+                    row["can_post"] = bool(ok_post)
                 if type_filter and row.get("dialog_type") != type_filter:
                     continue
                 result.append(row)

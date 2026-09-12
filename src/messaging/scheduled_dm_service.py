@@ -280,7 +280,7 @@ class ScheduledDirectMessageService:
                 "ok": True,
                 "job_id": job_id,
                 "status": JobStatus.PENDING.value,
-                "status_label": "Scheduled",
+                "status_label": "Upcoming",
                 "type": MessageType.DM.value,
                 "account_id": int(account_id),
                 "peer": job.peer_id,
@@ -385,7 +385,7 @@ class ScheduledDirectMessageService:
 def _owner_status_label(raw: Optional[str]) -> str:
     key = (raw or "").strip().upper()
     return {
-        "PENDING": "Scheduled",
+        "PENDING": "Upcoming",
         "RUNNING": "Sending",
         "SENT": "Sent",
         "FAILED": "Failed",
