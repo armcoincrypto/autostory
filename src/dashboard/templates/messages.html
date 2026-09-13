@@ -286,17 +286,41 @@
   <div class="p-3">
     <ol class="msg-flow-steps" aria-label="Multi-account flow">
       <li>1. Choose chat</li>
-      <li>2. Select accounts</li>
-      <li>3. Write message</li>
-      <li>4. Choose time and spacing</li>
-      <li>5. Review</li>
-      <li>6. Schedule</li>
+      <li>2. Join / refresh if needed</li>
+      <li>3. Select Ready accounts</li>
+      <li>4. Write message</li>
+      <li>5. Time + spacing</li>
+      <li>6. Review · Schedule</li>
     </ol>
 
     <div class="msg-step-title">1. Choose chat</div>
+    <input type="search" id="catalog-search" class="form-control form-control-sm mb-2" placeholder="Search chats…" autocomplete="off">
+    <div class="row g-2 mb-2">
+      <div class="col-md-4">
+        <div class="small text-muted mb-1">Recent</div>
+        <div id="catalog-recent" class="catalog-list small" style="max-height:140px;overflow:auto;border:1px solid rgba(148,163,184,.25);border-radius:10px;padding:.35rem;">
+          <div class="text-muted px-2 py-1">Loading…</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="small text-muted mb-1">Known chats</div>
+        <div id="catalog-known" class="catalog-list small" style="max-height:140px;overflow:auto;border:1px solid rgba(148,163,184,.25);border-radius:10px;padding:.35rem;">
+          <div class="text-muted px-2 py-1">Loading…</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="d-flex justify-content-between align-items-center mb-1 gap-1 flex-wrap">
+          <span class="small text-muted">Joined chats</span>
+          <select id="catalog-joined-account" class="form-select form-select-sm" style="max-width:140px" title="Account for joined list"></select>
+        </div>
+        <div id="catalog-joined" class="catalog-list small" style="max-height:140px;overflow:auto;border:1px solid rgba(148,163,184,.25);border-radius:10px;padding:.35rem;">
+          <div class="text-muted px-2 py-1">Pick an account to list joined chats.</div>
+        </div>
+      </div>
+    </div>
     <div class="row g-2 align-items-end mb-1">
       <div class="col-md-9">
-        <label class="form-label small text-muted" for="chat-mode-ref">Chat</label>
+        <label class="form-label small text-muted" for="chat-mode-ref">Paste link / @username / invite</label>
         <input type="text" class="form-control form-control-sm" id="chat-mode-ref"
           placeholder="@groupname, https://t.me/…, invite link, or known title"
           autocomplete="off">
@@ -311,9 +335,22 @@
 
     <div id="chat-membership-counts" class="msg-chat-summary d-none" aria-live="polite"></div>
     <div id="chat-cannot-post" class="alert alert-warning py-2 small d-none" role="status">Cannot post in this chat</div>
+    <div id="join-result-box" class="msg-chat-summary d-none mt-2" aria-live="polite"></div>
 
     <div class="msg-step-block">
-      <div class="msg-step-title">2. Select accounts</div>
+      <div class="msg-step-title">2. Join / refresh</div>
+      <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+        <button type="button" class="btn btn-outline-info btn-sm" id="btn-select-all-not-joined" disabled>Select all not joined</button>
+        <button type="button" class="btn btn-outline-light btn-sm" id="btn-clear-join-sel" disabled>Clear join selection</button>
+        <button type="button" class="btn btn-outline-warning btn-sm" id="btn-request-join" disabled>Request join for 0 accounts</button>
+        <button type="button" class="btn btn-outline-light btn-sm" id="btn-refresh-matrix" disabled>Refresh status</button>
+        <span id="matrix-join-selected-count" class="msg-selected-count">0 not joined selected</span>
+      </div>
+      <p class="small text-muted mb-2 mb-0">Join does not send or schedule messages. Admin approval only changes readiness — you still schedule explicitly.</p>
+    </div>
+
+    <div class="msg-step-block">
+      <div class="msg-step-title">3. Select Ready accounts</div>
       <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
         <input type="search" id="matrix-account-search" class="form-control form-control-sm" style="max-width:220px" placeholder="Search accounts…" disabled>
         <button type="button" class="btn btn-outline-light btn-sm" id="btn-select-all-ready" disabled>Select all ready</button>
@@ -330,21 +367,21 @@
       </div>
       <div class="table-responsive mb-0" style="max-height:280px;overflow:auto;">
         <table class="table table-dark table-sm mb-0">
-          <thead><tr><th style="width:2rem;"></th><th>Account</th><th>Status</th></tr></thead>
+          <thead><tr><th style="width:2rem;" title="Schedule">Sched</th><th style="width:2rem;" title="Join">Join</th><th>Account</th><th>Status</th></tr></thead>
           <tbody id="matrix-body">
-            <tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see which accounts are ready.</td></tr>
+            <tr><td colspan="4" class="text-muted small px-3 py-3">Load a chat to see which accounts are ready.</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
     <div class="msg-step-block" id="multi-compose-block">
-      <div class="msg-step-title">3. Write message</div>
+      <div class="msg-step-title">4. Write message</div>
       <label class="form-label small text-muted visually-hidden" for="chat-mode-message">Message</label>
       <textarea id="chat-mode-message" class="form-control mb-3" rows="3" maxlength="4096"
         placeholder="One message body → one scheduled job per selected Ready account" disabled></textarea>
 
-      <div class="msg-step-title">4. Choose time and spacing</div>
+      <div class="msg-step-title">5. Choose time and spacing</div>
       <div class="row g-2 mb-2">
         <div class="col-md-3">
           <label class="form-label small text-muted" for="bulk-schedule-date">Date</label>
@@ -371,7 +408,7 @@
     </div>
 
     <div class="msg-step-block">
-      <div class="msg-step-title">5. Review · 6. Schedule</div>
+      <div class="msg-step-title">6. Review · Schedule</div>
       <div class="d-flex gap-2 flex-wrap mb-2">
         <button type="button" class="btn btn-outline-info btn-sm" id="btn-bulk-preview" disabled>Review schedule</button>
         <button type="button" class="btn btn-primary btn-sm" id="btn-bulk-confirm" disabled>Schedule messages</button>
@@ -580,8 +617,12 @@
     mode: 'account',
     matrix: null,
     matrixSelected: {},
+    matrixJoinSelected: {},
     bulkReviewed: false,
     bulkIdempotencyKey: null,
+    catalog: { recent: [], known: [] },
+    catalogJoined: [],
+    catalogJoinedAccountId: null,
     schedFilter: { account_id: '', peer: '', status: '', date: '' },
   };
 
@@ -1340,6 +1381,109 @@
     if (btnC) btnC.classList.toggle('active', state.mode === 'chat');
     if (helpSingle) helpSingle.classList.toggle('d-none', state.mode !== 'account');
     if (helpMulti) helpMulti.classList.toggle('d-none', state.mode !== 'chat');
+    if (state.mode === 'chat') {
+      loadChatCatalog();
+      populateJoinedAccountSelect();
+    }
+  }
+
+  function catalogItemHtml(item) {
+    const title = item.title || item.username || 'Chat';
+    const ref = item.ref || item.invite_link || item.peer_id || '';
+    const meta = chatTypeLabel(item.peer_type);
+    return (
+      `<button type="button" class="msg-item catalog-pick w-100 text-start mb-1" data-ref="${esc(ref)}" data-title="${esc(title)}">` +
+      `<div>${esc(title)}</div>` +
+      `<div class="small text-muted">${esc(meta)}</div>` +
+      `</button>`
+    );
+  }
+
+  function renderCatalogLists() {
+    const q = ((document.getElementById('catalog-search') || {}).value || '').trim().toLowerCase();
+    const filter = (arr) => (arr || []).filter((item) => {
+      if (!q) return true;
+      const hay = [item.title, item.username, item.peer_id, item.ref, item.invite_link].join(' ').toLowerCase();
+      return hay.includes(q) || hay.includes(q.replace(/^@/, ''));
+    });
+    const recentEl = document.getElementById('catalog-recent');
+    const knownEl = document.getElementById('catalog-known');
+    const joinedEl = document.getElementById('catalog-joined');
+    const recent = filter(state.catalog.recent || []);
+    const known = filter(state.catalog.known || []);
+    const joined = filter(state.catalogJoined || []);
+    if (recentEl) {
+      recentEl.innerHTML = recent.length
+        ? recent.map(catalogItemHtml).join('')
+        : '<div class="text-muted px-2 py-1">No recent chats yet.</div>';
+    }
+    if (knownEl) {
+      knownEl.innerHTML = known.length
+        ? known.map(catalogItemHtml).join('')
+        : '<div class="text-muted px-2 py-1">No known chats yet.</div>';
+    }
+    if (joinedEl) {
+      joinedEl.innerHTML = joined.length
+        ? joined.map(catalogItemHtml).join('')
+        : '<div class="text-muted px-2 py-1">No joined chats for this account.</div>';
+    }
+    document.querySelectorAll('.catalog-pick').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const ref = btn.dataset.ref || '';
+        const input = document.getElementById('chat-mode-ref');
+        if (input) input.value = ref;
+        document.getElementById('btn-load-matrix')?.click();
+      });
+    });
+  }
+
+  async function loadChatCatalog() {
+    try {
+      const q = ((document.getElementById('catalog-search') || {}).value || '').trim();
+      const url = '/api/messages/chat-catalog?limit=40' + (q ? ('&q=' + encodeURIComponent(q)) : '');
+      const data = await dashboardFetchJson(url);
+      state.catalog = { recent: data.recent || [], known: data.known || [] };
+      renderCatalogLists();
+    } catch (e) {
+      const recentEl = document.getElementById('catalog-recent');
+      if (recentEl) recentEl.innerHTML = `<div class="text-warning px-2 py-1">${esc(e.message || e)}</div>`;
+    }
+  }
+
+  function populateJoinedAccountSelect() {
+    const sel = document.getElementById('catalog-joined-account');
+    if (!sel) return;
+    const avail = (state.accounts || []).filter((a) => a.eligible || a.bucket === 'available');
+    const list = avail.length ? avail : (state.accounts || []);
+    sel.innerHTML = '<option value="">Account…</option>' + list.slice(0, 40).map((a) =>
+      `<option value="${a.id}">${esc(a.display_name || ('Account ' + a.id))}</option>`
+    ).join('');
+    if (state.catalogJoinedAccountId) sel.value = String(state.catalogJoinedAccountId);
+  }
+
+  async function loadJoinedCatalogForAccount(accountId) {
+    const joinedEl = document.getElementById('catalog-joined');
+    if (!accountId) {
+      state.catalogJoined = [];
+      renderCatalogLists();
+      return;
+    }
+    state.catalogJoinedAccountId = Number(accountId);
+    if (joinedEl) joinedEl.innerHTML = '<div class="text-muted px-2 py-1">Loading joined…</div>';
+    try {
+      const data = await dashboardFetchJson('/api/accounts/' + accountId + '/dialogs?limit=80');
+      const dialogs = data.dialogs || data.items || [];
+      state.catalogJoined = dialogs.map((d) => ({
+        title: d.display_name || d.title || d.peer || 'Chat',
+        peer_id: d.peer_id || d.peer,
+        peer_type: d.dialog_type || d.chat_type || d.peer_type,
+        ref: d.peer_id || d.peer || d.username,
+        username: d.username,
+      }));
+      renderCatalogLists();
+    } catch (e) {
+      if (joinedEl) joinedEl.innerHTML = `<div class="text-warning px-2 py-1">${esc(e.message || e)}</div>`;
+    }
   }
 
   function updateSelectedCount() {
@@ -1347,6 +1491,27 @@
     if (!el) return;
     const n = selectedReadyIds().length;
     el.textContent = n === 1 ? '1 account selected' : `${n} accounts selected`;
+  }
+
+  function selectedJoinIds() {
+    return Object.keys(state.matrixJoinSelected)
+      .filter((k) => state.matrixJoinSelected[k])
+      .map((k) => Number(k))
+      .filter((id) => {
+        const row = (state.matrix && state.matrix.accounts || []).find((a) => a.account_id === id);
+        return row && row.status === 'not_joined' && row.eligible;
+      });
+  }
+
+  function updateJoinSelectedCount() {
+    const el = document.getElementById('matrix-join-selected-count');
+    const btn = document.getElementById('btn-request-join');
+    const n = selectedJoinIds().length;
+    if (el) el.textContent = n === 1 ? '1 not joined selected' : `${n} not joined selected`;
+    if (btn) {
+      btn.disabled = n < 1 || !state.joinEnabled;
+      btn.textContent = `Request join for ${n} account${n === 1 ? '' : 's'}`;
+    }
   }
 
   function chatTypeLabel(t) {
@@ -1375,8 +1540,9 @@
     if (!body) return;
     const matrix = state.matrix;
     if (!matrix || !matrix.accounts) {
-      body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see which accounts are ready.</td></tr>';
+      body.innerHTML = '<tr><td colspan="4" class="text-muted small px-3 py-3">Load a chat to see which accounts are ready.</td></tr>';
       updateSelectedCount();
+      updateJoinSelectedCount();
       return;
     }
     const q = (document.getElementById('matrix-account-search') || {}).value || '';
@@ -1399,7 +1565,7 @@
     const c = matrix.counts || {};
     const readyN = Number(c.ready || 0);
     const writeLabel = readyN > 0 ? 'Writable' : (
-      Number(c.cannot_post || 0) > 0 && readyN === 0 ? 'Cannot post' : 'Check readiness'
+      Number(c.cannot_post || 0) > 0 && readyN === 0 ? 'Read only' : 'Check readiness'
     );
     if (countsEl) {
       countsEl.classList.remove('d-none');
@@ -1408,24 +1574,31 @@
         `<h3>${esc(title)}</h3>` +
         `<div class="meta">${esc(chatTypeLabel(matrix.chat_type))} · ${esc(writeLabel)}</div>` +
         `<div class="counts">` +
-        `<span>Ready: ${esc(String(c.ready || 0))}</span>` +
-        `<span>Not joined: ${esc(String(c.not_joined || 0))}</span>` +
-        `<span>Waiting approval: ${esc(String(c.waiting_approval || 0))}</span>` +
-        `<span>Unavailable: ${esc(String(c.unavailable || 0))}</span>` +
-        (Number(c.cannot_post || 0) ? `<span>Cannot post: ${esc(String(c.cannot_post))}</span>` : '') +
+        `<button type="button" class="btn btn-link btn-sm p-0 count-filter" data-status="ready">Ready: ${esc(String(c.ready || 0))}</button>` +
+        `<button type="button" class="btn btn-link btn-sm p-0 count-filter" data-status="not_joined">Not joined: ${esc(String(c.not_joined || 0))}</button>` +
+        `<button type="button" class="btn btn-link btn-sm p-0 count-filter" data-status="waiting_approval">Waiting approval: ${esc(String(c.waiting_approval || 0))}</button>` +
+        `<button type="button" class="btn btn-link btn-sm p-0 count-filter" data-status="cannot_post">Cannot post: ${esc(String(c.cannot_post || 0))}</button>` +
+        `<button type="button" class="btn btn-link btn-sm p-0 count-filter" data-status="unavailable">Unavailable: ${esc(String(c.unavailable || 0))}</button>` +
         `</div>`;
+      countsEl.querySelectorAll('.count-filter').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sel = document.getElementById('matrix-status-filter');
+          if (sel) sel.value = btn.dataset.status || 'all';
+          renderMatrix();
+        });
+      });
     }
     const blockSchedule = readyN < 1;
     if (cannotEl) {
       cannotEl.classList.toggle('d-none', !blockSchedule);
       if (blockSchedule) {
-        cannotEl.textContent = Number(c.cannot_post || 0) > 0
+        cannotEl.textContent = Number(c.cannot_post || 0) > 0 && Number(c.not_joined || 0) === 0
           ? 'Cannot post in this chat'
-          : 'No Ready accounts for this chat — join or fix account status before scheduling.';
+          : 'No Ready accounts yet — request join / wait for approval / refresh status.';
       }
     }
-    // Always allow searching/filtering the matrix after load; only gate compose/schedule.
-    ['matrix-account-search','btn-select-all-ready','btn-clear-matrix-sel','matrix-status-filter'].forEach((id) => {
+    ['matrix-account-search','btn-select-all-ready','btn-clear-matrix-sel','matrix-status-filter',
+     'btn-select-all-not-joined','btn-clear-join-sel','btn-refresh-matrix'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.disabled = false;
     });
@@ -1443,16 +1616,21 @@
       if (box) box.classList.add('d-none');
     }
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">No accounts match.</td></tr>';
+      body.innerHTML = '<tr><td colspan="4" class="text-muted small px-3 py-3">No accounts match.</td></tr>';
       updateSelectedCount();
+      updateJoinSelectedCount();
       return;
     }
     body.innerHTML = rows.map((r) => {
-      const disabled = !r.ready ? 'disabled' : '';
-      const checked = state.matrixSelected[r.account_id] && r.ready ? 'checked' : '';
+      const schedDisabled = !r.ready ? 'disabled' : '';
+      const schedChecked = state.matrixSelected[r.account_id] && r.ready ? 'checked' : '';
+      const canJoin = r.status === 'not_joined' && r.eligible;
+      const joinDisabled = !canJoin ? 'disabled' : '';
+      const joinChecked = state.matrixJoinSelected[r.account_id] && canJoin ? 'checked' : '';
       return (
         '<tr>' +
-        `<td><input type="checkbox" class="matrix-check" data-aid="${r.account_id}" ${disabled} ${checked} aria-label="${esc(r.display_name)}"></td>` +
+        `<td><input type="checkbox" class="matrix-check" data-aid="${r.account_id}" ${schedDisabled} ${schedChecked} title="Select for schedule"></td>` +
+        `<td><input type="checkbox" class="matrix-join-check" data-aid="${r.account_id}" ${joinDisabled} ${joinChecked} title="Select for join"></td>` +
         `<td>${esc(r.display_name)}</td>` +
         `<td>${esc(r.status_label)}</td>` +
         '</tr>'
@@ -1476,7 +1654,23 @@
         updateSelectedCount();
       });
     });
+    body.querySelectorAll('.matrix-join-check').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const aid = Number(cb.dataset.aid);
+        const row = (state.matrix.accounts || []).find((a) => a.account_id === aid);
+        if (!row || row.status !== 'not_joined' || !row.eligible) {
+          cb.checked = false;
+          delete state.matrixJoinSelected[aid];
+          updateJoinSelectedCount();
+          return;
+        }
+        if (cb.checked) state.matrixJoinSelected[aid] = true;
+        else delete state.matrixJoinSelected[aid];
+        updateJoinSelectedCount();
+      });
+    });
     updateSelectedCount();
+    updateJoinSelectedCount();
   }
 
   function enableChatModeControls(on) {
@@ -1527,6 +1721,7 @@
       });
       state.matrix = data;
       state.matrixSelected = {};
+      state.matrixJoinSelected = {};
       state.bulkReviewed = false;
       defaultBulkScheduleInputs();
       renderMatrix();
@@ -1565,6 +1760,74 @@
     const conf = document.getElementById('btn-bulk-confirm');
     if (conf) conf.disabled = true;
     renderMatrix();
+  });
+  document.getElementById('btn-select-all-not-joined')?.addEventListener('click', () => {
+    (state.matrix && state.matrix.accounts || []).forEach((r) => {
+      if (r.status === 'not_joined' && r.eligible) state.matrixJoinSelected[r.account_id] = true;
+    });
+    renderMatrix();
+  });
+  document.getElementById('btn-clear-join-sel')?.addEventListener('click', () => {
+    state.matrixJoinSelected = {};
+    renderMatrix();
+  });
+  document.getElementById('btn-refresh-matrix')?.addEventListener('click', () => {
+    document.getElementById('btn-load-matrix')?.click();
+  });
+  document.getElementById('btn-request-join')?.addEventListener('click', async () => {
+    const ids = selectedJoinIds();
+    const ref = (document.getElementById('chat-mode-ref') || {}).value || '';
+    if (!ids.length || !ref.trim()) {
+      showAlert('warning', 'Select Not joined accounts and load a chat first.');
+      return;
+    }
+    if (!state.joinEnabled) {
+      showAlert('warning', 'Chat join is disabled.');
+      return;
+    }
+    const btn = document.getElementById('btn-request-join');
+    const prev = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Requesting…'; }
+    try {
+      const data = await dashboardFetchJson('/api/messages/chat/join-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: ref.trim(), account_ids: ids, confirm: true }),
+      });
+      const box = document.getElementById('join-result-box');
+      if (box) {
+        box.classList.remove('d-none');
+        const lines = (data.results || []).map((r) =>
+          `${esc(r.display_name)} — ${esc(r.status_label)}`
+        ).join('<br>');
+        box.innerHTML =
+          `<h3>Join results</h3>` +
+          `<div>${esc(data.message || '')}</div>` +
+          `<div class="mt-2">${lines}</div>` +
+          `<div class="small text-muted mt-2">No messages were sent or scheduled.</div>`;
+      }
+      showAlert('success', data.message || 'Join requests finished.');
+      state.matrixJoinSelected = {};
+      // Refresh readiness — approval does not auto-schedule.
+      document.getElementById('btn-load-matrix')?.click();
+    } catch (e) {
+      showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = prev || 'Request join'; }
+      updateJoinSelectedCount();
+    }
+  });
+  document.getElementById('catalog-search')?.addEventListener('input', () => {
+    // Local filter first; debounce server refresh lightly
+    renderCatalogLists();
+  });
+  let catalogSearchTimer = null;
+  document.getElementById('catalog-search')?.addEventListener('change', () => {
+    clearTimeout(catalogSearchTimer);
+    catalogSearchTimer = setTimeout(() => loadChatCatalog(), 200);
+  });
+  document.getElementById('catalog-joined-account')?.addEventListener('change', (ev) => {
+    loadJoinedCatalogForAccount(ev.target.value);
   });
   document.getElementById('matrix-account-search')?.addEventListener('input', renderMatrix);
   document.getElementById('matrix-status-filter')?.addEventListener('change', renderMatrix);

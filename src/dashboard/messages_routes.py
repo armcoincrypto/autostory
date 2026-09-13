@@ -43,6 +43,8 @@ from src.messaging.multi_account_schedule import (
     MultiAccountScheduleOrchestrator,
     scheduled_ops_summary,
 )
+from src.messaging.multi_account_join import MultiAccountJoinOrchestrator, JOIN_BATCH_CAP
+from src.messaging.chat_catalog import build_owner_chat_catalog
 from src.messaging.transport import TelegramDmTransport
 from src.scheduler.timezone import DEFAULT_OWNER_TIMEZONE
 
@@ -639,6 +641,35 @@ def messages_chat_account_matrix():
     with get_db_context() as db:
         matrix = orch.build_matrix(db, ref=raw, account_ids=ids, probe_telegram=True)
     return jsonify(matrix), (200 if matrix.get("ok") else 400)
+
+
+@messages_api.route("/chat-catalog", methods=["GET"])
+def messages_chat_catalog():
+    """Derived known/recent chats for multi-account picker (DB only)."""
+    limit = request.args.get("limit", 40, type=int)
+    q = (request.args.get("q") or request.args.get("search") or "").strip() or None
+    with get_db_context() as db:
+        return jsonify(build_owner_chat_catalog(db, limit=limit, q=q))
+
+
+@messages_api.route("/chat/join-bulk", methods=["POST"])
+def messages_chat_join_bulk():
+    """Request join for selected accounts via OwnerChatService (bounded). No send/schedule."""
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("ref") or data.get("input") or data.get("chat") or "").strip()
+    confirm = bool(data.get("confirm"))
+    try:
+        account_ids = [int(x) for x in (data.get("account_ids") or [])]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "VALIDATION_ERROR", "message": "account_ids required"}), 400
+    if not raw:
+        return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+    if len(account_ids) > JOIN_BATCH_CAP:
+        account_ids = account_ids[:JOIN_BATCH_CAP]
+    orch = MultiAccountJoinOrchestrator()
+    with get_db_context() as db:
+        result = orch.join_bulk(db, ref=raw, account_ids=account_ids, confirm=confirm)
+    return jsonify(result.payload), result.status_code
 
 
 @messages_api.route("/schedule-bulk", methods=["POST"])

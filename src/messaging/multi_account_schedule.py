@@ -118,7 +118,17 @@ def map_readiness_status(
         return "ready", "Ready", True
 
     message = str(preview.get("message") or "").lower()
-    if "waiting" in message and "admin" in message:
+    status = str(preview.get("status") or "").lower()
+    action = str(preview.get("action_hint") or "").lower()
+    if (
+        status == "join_requested"
+        or action == "waiting"
+        or ("waiting" in message and "admin" in message)
+        or "admin-approved" in message
+        or "admin approval" in message
+        or "join request" in message
+        or "requested access" in message
+    ):
         return "waiting_approval", "Waiting for approval", False
     return "not_joined", "Not joined", False
 
