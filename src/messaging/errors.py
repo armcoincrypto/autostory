@@ -10,6 +10,7 @@ OWNER_ERROR_CODES = frozenset(
     {
         "FLOOD_WAIT",
         "PEER_FLOOD",
+        "SLOW_MODE",
         "USER_PRIVACY_RESTRICTED",
         "CHAT_WRITE_FORBIDDEN",
         "USER_BLOCKED",
@@ -34,6 +35,8 @@ def _normalize_code(raw: str) -> str:
     mapping = {
         "FloodWait": "FLOOD_WAIT",
         "PeerFlood": "PEER_FLOOD",
+        "SlowModeWait": "SLOW_MODE",
+        "SlowModeWaitError": "SLOW_MODE",
         "ChatWriteForbidden": "CHAT_WRITE_FORBIDDEN",
         "UserPrivacyRestricted": "USER_PRIVACY_RESTRICTED",
         "UserPrivacyRestrictedError": "USER_PRIVACY_RESTRICTED",
@@ -60,6 +63,8 @@ def _normalize_code(raw: str) -> str:
         return upper
     # snake / mixed
     compact = upper.replace("ERROR", "").replace(" ", "_")
+    if "SLOWMODE" in compact or compact in {"SLOW_MODE", "SLOWMODEWAIT"}:
+        return "SLOW_MODE"
     if "FLOOD" in compact and "PEER" in compact:
         return "PEER_FLOOD"
     if "FLOOD" in compact:
@@ -95,6 +100,15 @@ def map_dm_error(exc: Exception) -> Tuple[str, str, dict[str, Any]]:
             msg = f"Temporarily rate limited by Telegram — wait {int(seconds)}s."
         else:
             msg = "Temporarily rate limited by Telegram."
+    elif owner == "SLOW_MODE":
+        # Informational wait only — never an automatic retry signal.
+        seconds = getattr(exc, "seconds", None)
+        extras["auto_retry"] = False
+        if seconds is not None:
+            extras["retry_after"] = int(seconds)
+            msg = f"This chat has slow mode enabled. Try again in {int(seconds)} seconds."
+        else:
+            msg = "This chat has slow mode enabled. Try again later."
     elif owner == "USER_PRIVACY_RESTRICTED":
         msg = "This user only accepts messages from contacts."
     elif owner == "USERNAME_NOT_FOUND":

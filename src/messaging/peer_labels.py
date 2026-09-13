@@ -103,6 +103,7 @@ def owner_safe_error_copy(error_code: Optional[str], error_message: Optional[str
         "RATE_LIMITED": "Rate limit reached — try later",
         "FLOOD_WAIT": "Telegram rate limit — try later",
         "PEER_FLOOD": "Telegram rate limit — try later",
+        "SLOW_MODE": "This chat has slow mode enabled. Try again later.",
         "EMPTY_MESSAGE": "Message is empty",
         "MESSAGE_TOO_LONG": "Message is too long",
         "UNCERTAIN": "Delivery uncertain — check chat before retrying",
