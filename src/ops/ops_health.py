@@ -513,14 +513,35 @@ def _check_scheduled_dm() -> Check:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if "scheduled_dm_jobs" not in tables and "owner_dm_schedules" not in tables:
+        if "scheduled_jobs" not in tables:
             con.close()
             return Check(
                 "scheduled_dm",
                 STATE_WARNING,
                 "Scheduled DM enabled but job table not found",
             )
+        row = con.execute(
+            "SELECT "
+            "SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN status='UNCERTAIN' THEN 1 ELSE 0 END) "
+            "FROM scheduled_jobs WHERE upper(type)='DM'"
+        ).fetchone()
         con.close()
+        pending, running, uncertain = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0))
+        if uncertain > 0:
+            return Check(
+                "scheduled_dm",
+                STATE_WARNING,
+                f"Scheduled DM has {uncertain} UNCERTAIN job(s) — check chat before retry",
+                {"pending": pending, "running": running, "uncertain": uncertain},
+            )
+        return Check(
+            "scheduled_dm",
+            STATE_HEALTHY,
+            "Scheduled DM enabled; job table present",
+            {"pending": pending, "running": running, "uncertain": uncertain},
+        )
     except sqlite3.Error:
         return Check("scheduled_dm", STATE_WARNING, "Scheduled DM status unavailable")
     return Check("scheduled_dm", STATE_HEALTHY, "Scheduled DM enabled; no stuck-job signal")
