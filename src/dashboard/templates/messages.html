@@ -1899,6 +1899,7 @@
       await loadScheduledJobs();
       await loadOpsSummary();
       setMode('account');
+    } catch (e) {
       showAlert('danger', e.message || String(e));
       elAccounts.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;
     }
