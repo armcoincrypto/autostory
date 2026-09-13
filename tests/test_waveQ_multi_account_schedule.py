@@ -76,7 +76,11 @@ def test_waveQ_no_new_execution_owners():
     assert "mode-by-chat" in tpl
     assert "Select all ready" in tpl
     assert "btn-bulk-confirm" in tpl
-    assert "No mass Send Now" in tpl
+    assert "Load chat" in tpl
+    assert "Single account" in tpl
+    assert "Multiple accounts" in tpl
+    assert "Schedule to multiple accounts" in tpl
+    assert "no mass Send Now" in tpl
     assert "chat-mode" in tpl
     # Orchestrator must not call ODMS send directly
     assert "send_now" not in orch

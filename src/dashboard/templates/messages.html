@@ -122,6 +122,68 @@
     .msg-pane { max-height: none; min-height: 280px; }
     .recent-panel { overflow-x: auto; }
   }
+  .msg-mode-toggle .btn.active {
+    background: rgba(148,163,184,.22);
+    border-color: rgba(226,232,240,.55);
+    color: #f8fafc;
+  }
+  .msg-mode-helper {
+    color: #94a3b8;
+    font-size: .9rem;
+    margin: 0 0 .85rem;
+  }
+  .msg-flow-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem .65rem;
+    margin: 0 0 1rem;
+    padding: 0;
+    list-style: none;
+    font-size: .78rem;
+    color: #94a3b8;
+  }
+  .msg-flow-steps li {
+    padding: .2rem .55rem;
+    border: 1px solid rgba(148,163,184,.28);
+    border-radius: 999px;
+  }
+  .msg-chat-summary {
+    background: rgba(15,23,42,.55);
+    border: 1px solid rgba(148,163,184,.25);
+    border-radius: 12px;
+    padding: .85rem 1rem;
+    margin-bottom: 1rem;
+  }
+  .msg-chat-summary h3 {
+    font-size: 1.05rem;
+    margin: 0 0 .25rem;
+  }
+  .msg-chat-summary .meta { color: #94a3b8; font-size: .85rem; margin-bottom: .55rem; }
+  .msg-chat-summary .counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem .85rem;
+    font-size: .85rem;
+  }
+  .msg-selected-count { font-size: .85rem; color: #cbd5e1; }
+  .msg-examples {
+    color: #64748b;
+    font-size: .75rem;
+    margin-top: .35rem;
+  }
+  .msg-step-block {
+    border-top: 1px solid rgba(148,163,184,.18);
+    padding-top: 1rem;
+    margin-top: 1rem;
+  }
+  .msg-step-title {
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #94a3b8;
+    font-weight: 600;
+    margin-bottom: .55rem;
+  }
 </style>
 {% endblock %}
 
@@ -129,13 +191,15 @@
 <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
   <div>
     <h2 class="mb-1"><i class="bi bi-chat-dots"></i> Messages</h2>
-    <p class="text-muted mb-0">Choose an account or a chat, then read, draft, send, or schedule.</p>
   </div>
-  <div class="btn-group" role="group" aria-label="Operating mode">
-    <button type="button" class="btn btn-outline-light btn-sm active" id="mode-by-account" data-mode="account">By Account</button>
-    <button type="button" class="btn btn-outline-light btn-sm" id="mode-by-chat" data-mode="chat">By Chat</button>
+  <div class="btn-group msg-mode-toggle" role="group" aria-label="Messages mode">
+    <button type="button" class="btn btn-outline-light btn-sm active" id="mode-by-account" data-mode="account">Single account</button>
+    <button type="button" class="btn btn-outline-light btn-sm" id="mode-by-chat" data-mode="chat">Multiple accounts</button>
   </div>
 </div>
+
+<p id="single-mode-helper" class="msg-mode-helper">Choose one account, choose one chat, then send now or schedule.</p>
+<p id="multi-mode-helper" class="msg-mode-helper d-none">Choose one chat, then select which ready accounts should send there.</p>
 
 <div id="msg-ops-strip" class="d-flex flex-wrap gap-2 mb-3" aria-label="Today ops">
   <button type="button" class="btn btn-outline-light btn-sm ops-chip" data-ops-filter="upcoming_today">Upcoming today <span id="ops-upcoming">—</span></button>
@@ -149,7 +213,7 @@
 
 <div id="by-account-layout" class="msg-layout">
   <section class="msg-pane">
-    <div class="msg-pane-header">1. Account</div>
+    <div class="msg-pane-header">1. Choose account</div>
     <div class="px-2 pt-2">
       <input type="search" id="account-search" class="form-control form-control-sm mb-2" placeholder="Search accounts…" autocomplete="off">
     </div>
@@ -160,7 +224,7 @@
 
   <section class="msg-pane">
     <div class="msg-pane-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-      <span>2. Chats</span>
+      <span>2. Choose chat</span>
       <button type="button" class="btn btn-outline-light btn-sm" id="btn-join-chat" disabled title="Join a group or channel">Join chat</button>
     </div>
     <div class="px-2 pt-2">
@@ -191,6 +255,7 @@
       <div class="text-muted small p-2">Select a chat to load recent messages.</div>
     </div>
     <div class="composer">
+      <div class="msg-step-title">4. Send Now / Schedule</div>
       <div id="ai-draft-label" class="small text-info mb-1 d-none">AI draft — review before sending</div>
       <div id="send-policy-hint" class="small text-warning mb-2 d-none"></div>
       <textarea id="composer-text" class="form-control mb-2" rows="3" maxlength="4096"
@@ -213,73 +278,106 @@
   </section>
 </div>
 
-<section id="by-chat-layout" class="recent-panel d-none mb-3" aria-label="By Chat scheduling">
+<section id="by-chat-layout" class="recent-panel d-none mb-3" aria-label="Schedule to multiple accounts">
   <div class="recent-head">
-    <span>By Chat — multi-account schedule</span>
-    <span class="small text-muted">No mass Send Now · one job per account</span>
+    <span>Schedule to multiple accounts</span>
+    <span class="small text-muted">Schedule only · no mass Send Now</span>
   </div>
   <div class="p-3">
-    <div class="row g-2 align-items-end mb-3">
-      <div class="col-md-8">
-        <label class="form-label small text-muted" for="chat-mode-ref">Chat (link, @username, or known title)</label>
-        <input type="text" class="form-control form-control-sm" id="chat-mode-ref" placeholder="https://t.me/+… or Storyfleet Test Group">
+    <ol class="msg-flow-steps" aria-label="Multi-account flow">
+      <li>1. Choose chat</li>
+      <li>2. Select accounts</li>
+      <li>3. Write message</li>
+      <li>4. Choose time and spacing</li>
+      <li>5. Review</li>
+      <li>6. Schedule</li>
+    </ol>
+
+    <div class="msg-step-title">1. Choose chat</div>
+    <div class="row g-2 align-items-end mb-1">
+      <div class="col-md-9">
+        <label class="form-label small text-muted" for="chat-mode-ref">Chat</label>
+        <input type="text" class="form-control form-control-sm" id="chat-mode-ref"
+          placeholder="@groupname, https://t.me/…, invite link, or known title"
+          autocomplete="off">
+        <div class="msg-examples">
+          Examples: <code>@groupname</code> · <code>https://t.me/groupname</code> · <code>https://t.me/+invite</code> · known chat title
+        </div>
       </div>
-      <div class="col-md-4">
-        <button type="button" class="btn btn-outline-info btn-sm w-100" id="btn-load-matrix">Load account readiness</button>
+      <div class="col-md-3">
+        <button type="button" class="btn btn-primary btn-sm w-100" id="btn-load-matrix">Load chat</button>
       </div>
     </div>
-    <div id="chat-membership-counts" class="small text-muted mb-2 d-none"></div>
-    <div class="d-flex flex-wrap gap-2 mb-2">
-      <input type="search" id="matrix-account-search" class="form-control form-control-sm" style="max-width:220px" placeholder="Search accounts…" disabled>
-      <button type="button" class="btn btn-outline-light btn-sm" id="btn-select-all-ready" disabled>Select all ready</button>
-      <button type="button" class="btn btn-outline-light btn-sm" id="btn-clear-matrix-sel" disabled>Clear all</button>
-      <select id="matrix-status-filter" class="form-select form-select-sm" style="max-width:200px" disabled>
-        <option value="all">All statuses</option>
-        <option value="ready">Ready</option>
-        <option value="not_joined">Not joined</option>
-        <option value="waiting_approval">Waiting for approval</option>
-        <option value="cannot_post">Cannot post</option>
-        <option value="unavailable">Unavailable</option>
-      </select>
-    </div>
-    <div class="table-responsive mb-3" style="max-height:280px;overflow:auto;">
-      <table class="table table-dark table-sm mb-0">
-        <thead><tr><th></th><th>Account</th><th>Status</th></tr></thead>
-        <tbody id="matrix-body">
-          <tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see account readiness.</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <label class="form-label small text-muted" for="chat-mode-message">Message</label>
-    <textarea id="chat-mode-message" class="form-control mb-2" rows="3" maxlength="4096" placeholder="One message body → one scheduled job per selected Ready account" disabled></textarea>
-    <div class="row g-2 mb-2">
-      <div class="col-md-3">
-        <label class="form-label small text-muted" for="bulk-schedule-date">Date</label>
-        <input type="date" class="form-control form-control-sm" id="bulk-schedule-date" disabled>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted" for="bulk-schedule-time">Start time</label>
-        <input type="time" class="form-control form-control-sm" id="bulk-schedule-time" disabled>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted" for="bulk-schedule-tz">Timezone</label>
-        <input type="text" class="form-control form-control-sm" id="bulk-schedule-tz" value="Asia/Yerevan" disabled>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted" for="bulk-spacing">Spacing</label>
-        <select id="bulk-spacing" class="form-select form-select-sm" disabled>
-          <option value="30">30 sec</option>
-          <option value="60" selected>60 sec</option>
-          <option value="120">2 min</option>
-          <option value="300">5 min</option>
+
+    <div id="chat-membership-counts" class="msg-chat-summary d-none" aria-live="polite"></div>
+    <div id="chat-cannot-post" class="alert alert-warning py-2 small d-none" role="status">Cannot post in this chat</div>
+
+    <div class="msg-step-block">
+      <div class="msg-step-title">2. Select accounts</div>
+      <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+        <input type="search" id="matrix-account-search" class="form-control form-control-sm" style="max-width:220px" placeholder="Search accounts…" disabled>
+        <button type="button" class="btn btn-outline-light btn-sm" id="btn-select-all-ready" disabled>Select all ready</button>
+        <button type="button" class="btn btn-outline-light btn-sm" id="btn-clear-matrix-sel" disabled>Clear</button>
+        <select id="matrix-status-filter" class="form-select form-select-sm" style="max-width:200px" disabled>
+          <option value="all">All statuses</option>
+          <option value="ready">Ready</option>
+          <option value="not_joined">Not joined</option>
+          <option value="waiting_approval">Waiting for approval</option>
+          <option value="cannot_post">Cannot post</option>
+          <option value="unavailable">Unavailable</option>
         </select>
+        <span id="matrix-selected-count" class="msg-selected-count">0 accounts selected</span>
+      </div>
+      <div class="table-responsive mb-0" style="max-height:280px;overflow:auto;">
+        <table class="table table-dark table-sm mb-0">
+          <thead><tr><th style="width:2rem;"></th><th>Account</th><th>Status</th></tr></thead>
+          <tbody id="matrix-body">
+            <tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see which accounts are ready.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
-    <div class="d-flex gap-2 flex-wrap">
-      <button type="button" class="btn btn-outline-info btn-sm" id="btn-bulk-preview" disabled>Review schedule</button>
-      <button type="button" class="btn btn-primary btn-sm" id="btn-bulk-confirm" disabled>Schedule messages</button>
+
+    <div class="msg-step-block" id="multi-compose-block">
+      <div class="msg-step-title">3. Write message</div>
+      <label class="form-label small text-muted visually-hidden" for="chat-mode-message">Message</label>
+      <textarea id="chat-mode-message" class="form-control mb-3" rows="3" maxlength="4096"
+        placeholder="One message body → one scheduled job per selected Ready account" disabled></textarea>
+
+      <div class="msg-step-title">4. Choose time and spacing</div>
+      <div class="row g-2 mb-2">
+        <div class="col-md-3">
+          <label class="form-label small text-muted" for="bulk-schedule-date">Date</label>
+          <input type="date" class="form-control form-control-sm" id="bulk-schedule-date" disabled>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small text-muted" for="bulk-schedule-time">Start time</label>
+          <input type="time" class="form-control form-control-sm" id="bulk-schedule-time" disabled>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small text-muted" for="bulk-schedule-tz">Timezone</label>
+          <input type="text" class="form-control form-control-sm" id="bulk-schedule-tz" value="Asia/Yerevan" disabled>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small text-muted" for="bulk-spacing">Spacing</label>
+          <select id="bulk-spacing" class="form-select form-select-sm" disabled>
+            <option value="30">30 sec</option>
+            <option value="60" selected>60 sec</option>
+            <option value="120">2 min</option>
+            <option value="300">5 min</option>
+          </select>
+        </div>
+      </div>
     </div>
-    <div id="bulk-preview-box" class="small mt-3 d-none"></div>
+
+    <div class="msg-step-block">
+      <div class="msg-step-title">5. Review · 6. Schedule</div>
+      <div class="d-flex gap-2 flex-wrap mb-2">
+        <button type="button" class="btn btn-outline-info btn-sm" id="btn-bulk-preview" disabled>Review schedule</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-bulk-confirm" disabled>Schedule messages</button>
+      </div>
+      <div id="bulk-preview-box" class="msg-chat-summary d-none"></div>
+    </div>
   </div>
 </section>
 
@@ -1234,10 +1332,30 @@
     const byChat = document.getElementById('by-chat-layout');
     const btnA = document.getElementById('mode-by-account');
     const btnC = document.getElementById('mode-by-chat');
+    const helpSingle = document.getElementById('single-mode-helper');
+    const helpMulti = document.getElementById('multi-mode-helper');
     if (byAcct) byAcct.classList.toggle('d-none', state.mode === 'chat');
     if (byChat) byChat.classList.toggle('d-none', state.mode !== 'chat');
     if (btnA) btnA.classList.toggle('active', state.mode === 'account');
     if (btnC) btnC.classList.toggle('active', state.mode === 'chat');
+    if (helpSingle) helpSingle.classList.toggle('d-none', state.mode !== 'account');
+    if (helpMulti) helpMulti.classList.toggle('d-none', state.mode !== 'chat');
+  }
+
+  function updateSelectedCount() {
+    const el = document.getElementById('matrix-selected-count');
+    if (!el) return;
+    const n = selectedReadyIds().length;
+    el.textContent = n === 1 ? '1 account selected' : `${n} accounts selected`;
+  }
+
+  function chatTypeLabel(t) {
+    const v = String(t || '').toLowerCase();
+    if (v === 'supergroup') return 'Supergroup';
+    if (v === 'group') return 'Group';
+    if (v === 'channel') return 'Channel';
+    if (v === 'private' || v === 'user' || v === 'bot') return 'Private';
+    return t || 'Chat';
   }
 
   function selectedReadyIds() {
@@ -1253,10 +1371,12 @@
   function renderMatrix() {
     const body = document.getElementById('matrix-body');
     const countsEl = document.getElementById('chat-membership-counts');
+    const cannotEl = document.getElementById('chat-cannot-post');
     if (!body) return;
     const matrix = state.matrix;
     if (!matrix || !matrix.accounts) {
-      body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see account readiness.</td></tr>';
+      body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">Load a chat to see which accounts are ready.</td></tr>';
+      updateSelectedCount();
       return;
     }
     const q = (document.getElementById('matrix-account-search') || {}).value || '';
@@ -1276,16 +1396,55 @@
     } else if (stf !== 'all') {
       rows = rows.filter((r) => r.status === stf);
     }
-    if (countsEl && matrix.counts) {
-      const c = matrix.counts;
+    const c = matrix.counts || {};
+    const readyN = Number(c.ready || 0);
+    const writeLabel = readyN > 0 ? 'Writable' : (
+      Number(c.cannot_post || 0) > 0 && readyN === 0 ? 'Cannot post' : 'Check readiness'
+    );
+    if (countsEl) {
       countsEl.classList.remove('d-none');
       const title = matrix.title || matrix.ref || 'Chat';
-      countsEl.textContent =
-        `${title} · ${c.total} accounts · Ready ${c.ready} · Not joined ${c.not_joined}` +
-        ` · Waiting approval ${c.waiting_approval} · Cannot post ${c.cannot_post} · Unavailable ${c.unavailable}`;
+      countsEl.innerHTML =
+        `<h3>${esc(title)}</h3>` +
+        `<div class="meta">${esc(chatTypeLabel(matrix.chat_type))} · ${esc(writeLabel)}</div>` +
+        `<div class="counts">` +
+        `<span>Ready: ${esc(String(c.ready || 0))}</span>` +
+        `<span>Not joined: ${esc(String(c.not_joined || 0))}</span>` +
+        `<span>Waiting approval: ${esc(String(c.waiting_approval || 0))}</span>` +
+        `<span>Unavailable: ${esc(String(c.unavailable || 0))}</span>` +
+        (Number(c.cannot_post || 0) ? `<span>Cannot post: ${esc(String(c.cannot_post))}</span>` : '') +
+        `</div>`;
+    }
+    const blockSchedule = readyN < 1;
+    if (cannotEl) {
+      cannotEl.classList.toggle('d-none', !blockSchedule);
+      if (blockSchedule) {
+        cannotEl.textContent = Number(c.cannot_post || 0) > 0
+          ? 'Cannot post in this chat'
+          : 'No Ready accounts for this chat — join or fix account status before scheduling.';
+      }
+    }
+    // Always allow searching/filtering the matrix after load; only gate compose/schedule.
+    ['matrix-account-search','btn-select-all-ready','btn-clear-matrix-sel','matrix-status-filter'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = false;
+    });
+    ['chat-mode-message','bulk-schedule-date','bulk-schedule-time','bulk-schedule-tz','bulk-spacing',
+     'btn-bulk-preview'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = blockSchedule;
+    });
+    if (blockSchedule) {
+      state.matrixSelected = {};
+      state.bulkReviewed = false;
+      const conf = document.getElementById('btn-bulk-confirm');
+      if (conf) conf.disabled = true;
+      const box = document.getElementById('bulk-preview-box');
+      if (box) box.classList.add('d-none');
     }
     if (!rows.length) {
       body.innerHTML = '<tr><td colspan="3" class="text-muted small px-3 py-3">No accounts match.</td></tr>';
+      updateSelectedCount();
       return;
     }
     body.innerHTML = rows.map((r) => {
@@ -1293,7 +1452,7 @@
       const checked = state.matrixSelected[r.account_id] && r.ready ? 'checked' : '';
       return (
         '<tr>' +
-        `<td><input type="checkbox" class="matrix-check" data-aid="${r.account_id}" ${disabled} ${checked}></td>` +
+        `<td><input type="checkbox" class="matrix-check" data-aid="${r.account_id}" ${disabled} ${checked} aria-label="${esc(r.display_name)}"></td>` +
         `<td>${esc(r.display_name)}</td>` +
         `<td>${esc(r.status_label)}</td>` +
         '</tr>'
@@ -1306,6 +1465,7 @@
         if (!row || !row.ready) {
           cb.checked = false;
           delete state.matrixSelected[aid];
+          updateSelectedCount();
           return;
         }
         if (cb.checked) state.matrixSelected[aid] = true;
@@ -1313,8 +1473,10 @@
         state.bulkReviewed = false;
         const conf = document.getElementById('btn-bulk-confirm');
         if (conf) conf.disabled = true;
+        updateSelectedCount();
       });
     });
+    updateSelectedCount();
   }
 
   function enableChatModeControls(on) {
@@ -1351,9 +1513,12 @@
   document.getElementById('btn-load-matrix')?.addEventListener('click', async () => {
     const ref = (document.getElementById('chat-mode-ref') || {}).value || '';
     if (!ref.trim()) {
-      showAlert('warning', 'Enter a chat link or name first.');
+      showAlert('warning', 'Enter a chat link or name, then press Load chat.');
       return;
     }
+    const btn = document.getElementById('btn-load-matrix');
+    const prev = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
     try {
       const data = await dashboardFetchJson('/api/messages/chat/account-matrix', {
         method: 'POST',
@@ -1363,12 +1528,25 @@
       state.matrix = data;
       state.matrixSelected = {};
       state.bulkReviewed = false;
-      enableChatModeControls(true);
       defaultBulkScheduleInputs();
       renderMatrix();
-      showAlert('success', `Loaded readiness for ${data.title || ref}. Ready: ${(data.counts || {}).ready || 0}`);
+      const ready = (data.counts && data.counts.ready) || 0;
+      if (ready > 0) {
+        showAlert('success', `Loaded ${data.title || ref}. Ready accounts: ${ready}.`);
+      } else {
+        showAlert('warning', `Loaded ${data.title || ref}. No Ready accounts to schedule.`);
+      }
     } catch (e) {
       showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = prev || 'Load chat'; }
+    }
+  });
+
+  document.getElementById('chat-mode-ref')?.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      document.getElementById('btn-load-matrix')?.click();
     }
   });
 
@@ -1377,13 +1555,15 @@
       if (r.ready) state.matrixSelected[r.account_id] = true;
     });
     state.bulkReviewed = false;
-    document.getElementById('btn-bulk-confirm').disabled = true;
+    const conf = document.getElementById('btn-bulk-confirm');
+    if (conf) conf.disabled = true;
     renderMatrix();
   });
   document.getElementById('btn-clear-matrix-sel')?.addEventListener('click', () => {
     state.matrixSelected = {};
     state.bulkReviewed = false;
-    document.getElementById('btn-bulk-confirm').disabled = true;
+    const conf = document.getElementById('btn-bulk-confirm');
+    if (conf) conf.disabled = true;
     renderMatrix();
   });
   document.getElementById('matrix-account-search')?.addEventListener('input', renderMatrix);
@@ -1421,23 +1601,26 @@
       });
       state.bulkReviewed = true;
       state.bulkIdempotencyKey = (crypto.randomUUID && crypto.randomUUID()) || ('bulk-' + Date.now());
+      const n = data.jobs_to_create || ids.length;
       if (conf) {
         conf.disabled = !state.scheduleAvailable;
-        conf.textContent = `Schedule ${data.jobs_to_create || ids.length} messages`;
+        conf.textContent = `Schedule ${n} messages`;
       }
       if (box) {
         box.classList.remove('d-none');
         const planLines = (data.plan || []).map((p) =>
-          `${p.display_name}: ${p.scheduled_at_local}`
+          `${esc(p.display_name)}: ${esc(p.scheduled_at_local)}`
         ).join('<br>');
+        const spacingLabel = ({30:'30 sec',60:'60 sec',120:'2 min',300:'5 min'})[Number(data.spacing_sec)] || `${data.spacing_sec} sec`;
         box.innerHTML =
+          `<h3>Review schedule</h3>` +
           `<div><strong>Chat:</strong> ${esc(data.chat_title || '')}</div>` +
           `<div><strong>Accounts:</strong> ${esc(String(data.accounts || 0))}</div>` +
           `<div><strong>Message:</strong> ${esc(data.message_preview || '')}</div>` +
           `<div><strong>Starts:</strong> ${esc(data.starts_local || '')}</div>` +
-          `<div><strong>Spacing:</strong> ${esc(String(data.spacing_sec || 60))} sec</div>` +
+          `<div><strong>Spacing:</strong> ${esc(spacingLabel)}</div>` +
           `<div><strong>Last send:</strong> ${esc(data.ends_local || '')}</div>` +
-          `<div><strong>Jobs to create:</strong> ${esc(String(data.jobs_to_create || 0))}</div>` +
+          `<div><strong>Jobs to create:</strong> ${esc(String(n))}</div>` +
           `<div class="mt-2">${planLines}</div>` +
           (data.skipped && data.skipped.length
             ? `<div class="text-warning mt-2">Skipped non-ready: ${data.skipped.length}</div>`
@@ -1455,6 +1638,9 @@
     const ids = selectedReadyIds();
     const msg = (document.getElementById('chat-mode-message') || {}).value || '';
     state.inFlight = true;
+    const conf = document.getElementById('btn-bulk-confirm');
+    const prevLabel = conf ? conf.textContent : '';
+    if (conf) conf.disabled = true;
     try {
       const data = await dashboardFetchJson('/api/messages/schedule-bulk', {
         method: 'POST',
@@ -1473,16 +1659,43 @@
           idempotency_key: state.bulkIdempotencyKey,
         }),
       });
-      showAlert(
-        data.failed ? 'warning' : 'success',
-        `Created: ${data.created || 0}. Failed: ${data.failed || 0}.`
-      );
+      const created = Number(data.created || 0);
+      const failed = Number(data.failed || 0);
+      const errors = data.errors || [];
+      const byId = {};
+      (state.matrix && state.matrix.accounts || []).forEach((a) => { byId[a.account_id] = a.display_name; });
+      if (failed === 0 && created > 0) {
+        showAlert(
+          'success',
+          created === 1
+            ? '1 message scheduled successfully.'
+            : `${created} messages scheduled successfully.`
+        );
+      } else {
+        const failLines = errors.map((err) => {
+          const name = err.display_name || byId[err.account_id] || (`Account ${err.account_id}`);
+          const reason = err.message || err.error || 'Could not schedule';
+          return `${name}: ${reason}`;
+        }).join(' · ');
+        showAlert(
+          'warning',
+          `Scheduled: ${created}. Not scheduled: ${failed}.` +
+            (failLines ? ` ${failLines}` : '')
+        );
+      }
       state.bulkReviewed = false;
-      document.getElementById('btn-bulk-confirm').disabled = true;
+      if (conf) {
+        conf.disabled = true;
+        conf.textContent = 'Schedule messages';
+      }
       loadScheduledJobs();
       loadOpsSummary();
     } catch (e) {
       showAlert('warning', (e.data && e.data.message) || e.message || String(e));
+      if (conf) {
+        conf.disabled = false;
+        conf.textContent = prevLabel || 'Schedule messages';
+      }
     } finally {
       state.inFlight = false;
     }
