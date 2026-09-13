@@ -218,6 +218,21 @@ else
   fail "python -m compileall failed against $NEW_RELEASE/src"
 fi
 
+log "messages page JS syntax check"
+MSG_JS_GATE="$HERE/check_messages_js_syntax.sh"
+if [[ ! -x "$MSG_JS_GATE" ]]; then
+  chmod +x "$MSG_JS_GATE" 2>/dev/null || true
+fi
+if [[ -f "$NEW_RELEASE/scripts/release/check_messages_js_syntax.sh" ]]; then
+  MSG_JS_GATE="$NEW_RELEASE/scripts/release/check_messages_js_syntax.sh"
+  chmod +x "$MSG_JS_GATE" 2>/dev/null || true
+fi
+if bash "$MSG_JS_GATE" "$NEW_RELEASE"; then
+  pc "messages_js_syntax=OK"
+else
+  fail "messages.html inline JS failed syntax check -- refusing cutover (BROKEN_MESSAGES_JS_DEPLOY_BLOCKED)"
+fi
+
 log "secret scan"
 if python3 "$NEW_RELEASE/scripts/audit/check_secret_artifacts.py" "$NEW_RELEASE" --json > "${AUDIT_DIR}/secret_scan.json" 2>&1; then
   pc "secret_scan=PASS (see ${AUDIT_DIR}/secret_scan.json)"

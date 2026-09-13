@@ -21,6 +21,21 @@ from src.messaging.owner_chat_service import OwnerChatService
 
 JOIN_BATCH_CAP = 10
 JOIN_PAUSE_SEC = 1.25
+# Known statuses where another join request must not be sent.
+# temp_unavailable is NOT included — preview failure falls through to one join attempt.
+SKIP_JOIN_STATUSES = frozenset(
+    {
+        "ready",
+        "waiting_approval",
+        "cannot_post",
+        "protected",
+        "reserved",
+        "disabled",
+        "needs_login",
+        "unavailable",
+        "already_joined",
+    }
+)
 
 
 @dataclass
@@ -162,6 +177,49 @@ class MultiAccountJoinOrchestrator:
                 )
                 counts["skipped"] += 1
                 continue
+
+            # Preview first when available — never re-request while Waiting / Ready.
+            preview = None
+            preview_ok = False
+            if hasattr(self._chat, "preview_async"):
+                try:
+                    preview = self._run_async(self._chat.preview_async(int(aid), raw))
+                    preview_ok = bool(isinstance(preview, dict) and preview.get("ok"))
+                except Exception:
+                    preview = None
+                    preview_ok = False
+            if preview_ok:
+                status_key, status_label, ready = map_readiness_status(
+                    eligible=True,
+                    eligibility_code=elig.code,
+                    preview=preview if isinstance(preview, dict) else None,
+                )
+                if ready or status_key in SKIP_JOIN_STATUSES:
+                    if ready:
+                        status_key, status_label = "already_joined", "Already joined"
+                    results.append(
+                        {
+                            "account_id": aid,
+                            "display_name": display,
+                            "status": status_key,
+                            "status_label": status_label,
+                            "ok": True
+                            if ready or status_key == "waiting_approval"
+                            else False,
+                            "skipped": True,
+                            "message": (
+                                "Already waiting for admin approval — not requesting again."
+                                if status_key == "waiting_approval"
+                                else status_label
+                            ),
+                        }
+                    )
+                    counts["skipped"] += 1
+                    if status_key == "waiting_approval":
+                        counts["waiting_approval"] += 1
+                    elif status_key == "already_joined":
+                        counts["already_joined"] += 1
+                    continue
 
             try:
                 outcome = self._run_async(

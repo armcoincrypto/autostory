@@ -35,6 +35,9 @@ logger = structlog.get_logger(__name__)
 
 # Reject schedules already in the past (UTC). Small operational grace only.
 PAST_SCHEDULE_GRACE_SEC = 30
+# After scheduler outage, do not burst-send jobs that are far overdue.
+# Fail closed with a clear owner reason; owner can create a new schedule.
+MAX_OVERDUE_EXECUTE_SEC = 15 * 60
 
 
 def scheduled_dm_idempotency_key(job_id: int) -> str:
@@ -313,7 +316,27 @@ class ScheduledDirectMessageService:
                     "message": "Scheduled DM not found.",
                 },
             )
-        if str(job.status) != JobStatus.PENDING.value:
+        # Atomic cancel: only PENDING rows. Prevents race with claim→RUNNING.
+        now = utc_now_naive()
+        updated = (
+            db.query(ScheduledJob)
+            .filter(ScheduledJob.id == int(job_id))
+            .filter(ScheduledJob.type == MessageType.DM.value)
+            .filter(ScheduledJob.status == JobStatus.PENDING.value)
+            .update(
+                {
+                    "status": JobStatus.CANCELLED.value,
+                    "updated_at": now,
+                    "lease_until": None,
+                    "lease_owner": None,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        if int(updated or 0) != 1:
+            job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
+            st = job.status if job else "missing"
             return ScheduleDmResult(
                 ok=False,
                 status_code=409,
@@ -321,21 +344,20 @@ class ScheduledDirectMessageService:
                     "ok": False,
                     "error": "CANCEL_NOT_ALLOWED",
                     "error_code": "CANCEL_NOT_ALLOWED",
-                    "message": f"Only PENDING scheduled DMs can be cancelled (status={job.status}).",
-                    "status": job.status,
+                    "message": (
+                        "Only PENDING scheduled DMs can be cancelled "
+                        f"(status={st}). If Sending, wait for the result — "
+                        "do not assume cancelled."
+                    ),
+                    "status": st,
                 },
             )
-        job.status = JobStatus.CANCELLED.value
-        job.updated_at = utc_now_naive()
-        job.lease_until = None
-        job.lease_owner = None
-        db.commit()
         return ScheduleDmResult(
             ok=True,
             status_code=200,
             payload={
                 "ok": True,
-                "job_id": int(job.id),
+                "job_id": int(job_id),
                 "status": JobStatus.CANCELLED.value,
                 "status_label": "Cancelled",
             },

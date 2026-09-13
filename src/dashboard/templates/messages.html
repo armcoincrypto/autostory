@@ -843,9 +843,19 @@
   }
 
   async function loadAccounts() {
-    const data = await dashboardFetchJson('/api/messages/accounts');
-    state.accounts = data.accounts || [];
-    renderAccounts();
+    try {
+      const data = await dashboardFetchJson('/api/messages/accounts');
+      state.accounts = data.accounts || [];
+      renderAccounts();
+    } catch (e) {
+      state.accounts = [];
+      elAccounts.innerHTML =
+        `<div class="text-warning small p-2">Accounts failed to load — ` +
+        `<button type="button" class="btn btn-link btn-sm p-0 align-baseline msg-panel-retry" data-retry="accounts">Retry</button></div>` +
+        `<div class="text-muted small px-2">${esc(e.message || e)}</div>`;
+      elAccounts.querySelector('.msg-panel-retry')?.addEventListener('click', () => loadAccounts());
+      throw e;
+    }
   }
 
   async function selectAccount(accountId) {
@@ -1432,6 +1442,12 @@
         const ref = btn.dataset.ref || '';
         const input = document.getElementById('chat-mode-ref');
         if (input) input.value = ref;
+        // Clear prior chat matrix immediately so Chat A never remains visible for Chat B.
+        state.matrix = null;
+        state.matrixSelected = {};
+        state.matrixJoinSelected = {};
+        state.bulkReviewed = false;
+        renderMatrix();
         document.getElementById('btn-load-matrix')?.click();
       });
     });
@@ -1712,6 +1728,12 @@
     }
     const btn = document.getElementById('btn-load-matrix');
     const prev = btn ? btn.textContent : '';
+    // Stale-state guard: drop Chat A matrix before Chat B load completes.
+    state.matrix = null;
+    state.matrixSelected = {};
+    state.matrixJoinSelected = {};
+    state.bulkReviewed = false;
+    renderMatrix();
     if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
     try {
       const data = await dashboardFetchJson('/api/messages/chat/account-matrix', {
@@ -1732,6 +1754,8 @@
         showAlert('warning', `Loaded ${data.title || ref}. No Ready accounts to schedule.`);
       }
     } catch (e) {
+      state.matrix = null;
+      renderMatrix();
       showAlert('warning', (e.data && e.data.message) || e.message || String(e));
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = prev || 'Load chat'; }
@@ -2366,18 +2390,35 @@
     });
   }
 
-  // Initial load: accounts + status + recent intents only (Telegram calls = 0)
+  // Initial load: each panel isolated — one failure must not leave others on Loading…
   (async function init() {
-    try {
-      await loadStatus();
-      await loadAccounts();
-      await loadRecentIntents();
-      await loadScheduledJobs();
-      await loadOpsSummary();
-      setMode('account');
-    } catch (e) {
-      showAlert('danger', e.message || String(e));
-      elAccounts.innerHTML = `<div class="text-danger small p-2">${esc(e.message || e)}</div>`;
+    const panels = [
+      { name: 'status', run: loadStatus },
+      { name: 'accounts', run: loadAccounts },
+      { name: 'recent', run: loadRecentIntents },
+      { name: 'scheduled', run: loadScheduledJobs },
+      { name: 'ops', run: loadOpsSummary },
+    ];
+    const failures = [];
+    for (const p of panels) {
+      try {
+        await p.run();
+      } catch (e) {
+        failures.push(p.name);
+        if (p.name === 'scheduled' && elScheduledBody) {
+          elScheduledBody.innerHTML =
+            `<tr><td colspan="6" class="text-warning small px-3 py-3">Scheduled failed to load — ` +
+            `<button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="retry-scheduled">Retry</button></td></tr>`;
+          document.getElementById('retry-scheduled')?.addEventListener('click', () => loadScheduledJobs());
+        }
+        if (p.name === 'ops') {
+          /* ops strip is optional; ignore */
+        }
+      }
+    }
+    try { setMode('account'); } catch (_) { /* mode UI only */ }
+    if (failures.length) {
+      showAlert('warning', 'Some Messages panels failed to load: ' + failures.join(', ') + '. Use Retry where shown.');
     }
   })();
 })();

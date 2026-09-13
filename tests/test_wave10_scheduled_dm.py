@@ -269,8 +269,8 @@ def test_empty_message_rejected(memory_db):
 async def test_due_job_executes_via_owner_dm_once(memory_db):
     _add_account(memory_db)
     fake = CountingFakeTransport()
-    run_at = datetime(2026, 9, 10, 11, 0, 0)
-    now = run_at + timedelta(minutes=5)
+    now = datetime.utcnow()
+    run_at = now - timedelta(minutes=5)
     job = ScheduledJob(
         account_id=106,
         target_id=None,
@@ -357,12 +357,12 @@ async def test_due_job_executes_via_owner_dm_once(memory_db):
 @pytest.mark.asyncio
 async def test_uncertain_maps_job_status(memory_db):
     _add_account(memory_db)
-    now = datetime(2026, 9, 10, 11, 0, 0)
+    now = datetime.utcnow()
     job = ScheduledJob(
         account_id=106,
         target_id=None,
         type=MessageType.DM.value,
-        run_at=now,
+        run_at=now - timedelta(minutes=2),
         status=JobStatus.RUNNING.value,
         peer_id="8531893204",
         peer_type="private",

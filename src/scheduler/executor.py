@@ -389,7 +389,10 @@ def _finalize_delivery_failed(
 async def _execute_scheduled_dm_job(job_id: int) -> bool:
     """Wave 10: due DM job → OwnerDirectMessageService.send_now (stable idempotency)."""
     from src.messaging.owner_dm_service import OwnerDirectMessageService
-    from src.messaging.scheduled_dm_service import scheduled_dm_idempotency_key
+    from src.messaging.scheduled_dm_service import (
+        MAX_OVERDUE_EXECUTE_SEC,
+        scheduled_dm_idempotency_key,
+    )
 
     with get_db_context() as db:
         job = db.query(ScheduledJob).filter(ScheduledJob.id == int(job_id)).first()
@@ -406,6 +409,30 @@ async def _execute_scheduled_dm_job(job_id: int) -> bool:
         text = job.message_body if job.message_body is not None else ""
         idem = scheduled_dm_idempotency_key(int(job.id))
         lease_owner = job.lease_owner
+        now = utc_now_naive()
+
+        # Outage recovery: skip far-overdue jobs instead of burst-sending.
+        if job.run_at is not None:
+            age = (now - job.run_at).total_seconds()
+            if age > float(MAX_OVERDUE_EXECUTE_SEC):
+                prev_lo, prev_lu = job.lease_owner, job.lease_until
+                job.status = JobStatus.FAILED.value
+                job.attempts = (job.attempts or 0) + 1
+                job.last_error = (
+                    f"OVERDUE_SKIPPED: scheduled time passed by {int(age)}s "
+                    f"(limit {MAX_OVERDUE_EXECUTE_SEC}s). Create a new schedule."
+                )[:2000]
+                job.updated_at = now
+                job.lease_until = None
+                job.lease_owner = None
+                _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="dm_overdue_skipped")
+                logger.warning(
+                    "scheduled_dm_job_overdue_skipped",
+                    job_id=int(job_id),
+                    account_id=account_id,
+                    overdue_sec=int(age),
+                )
+                return False
 
         if not peer_id or not str(text).strip():
             prev_lo, prev_lu = job.lease_owner, job.lease_until
