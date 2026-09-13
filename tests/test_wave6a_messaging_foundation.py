@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -74,14 +74,15 @@ def test_phase0_messaging_module_owners_exist():
 def test_dialogs_include_private_user_branch():
     mgr = (ROOT / "src/clients/manager.py").read_text(encoding="utf-8")
     start = mgr.index("async def get_dialogs")
-    chunk = mgr[start : start + 4500]
-    loop = chunk[chunk.index("for d in dialogs") : chunk.index("return result")]
-    assert "isinstance(e, User)" in loop
-    assert "isinstance(e, Chat)" in loop
-    assert "isinstance(e, Channel)" in loop
-    assert "dialog_type" in loop
+    chunk = mgr[start : start + 12000]
+    assert "for d in dialogs" in chunk
+    assert "isinstance(e, User)" in chunk
+    assert "isinstance(e, Chat)" in chunk
+    assert "isinstance(e, Channel)" in chunk
+    assert "dialog_type" in chunk
+    assert "777000" in chunk  # service peer excluded from normal dialog lists
     for banned in ("access_hash", "session_string", "api_hash", "auth_key", "proxy"):
-        assert banned not in loop
+        assert banned not in chunk[chunk.index("for d in dialogs") : chunk.index("for d in dialogs") + 3500]
 
 
 def test_dialogs_normalize_helper_fields():
@@ -482,7 +483,11 @@ def test_message_validation():
     assert validate_dm_message("x" * 5000)[1] == "MESSAGE_TOO_LONG"
     assert validate_dm_message("hi")[0] is True
     assert validate_peer("", "private")[0] is False
-    assert validate_peer("1", "channel")[0] is False
+    # Channel peer validity follows product flag (not a hard PEER_INVALID).
+    with patch("src.messaging.chat_flags.messages_group_channel_send_enabled", return_value=False):
+        assert validate_peer("1", "channel")[0] is False
+    with patch("src.messaging.chat_flags.messages_group_channel_send_enabled", return_value=True):
+        assert validate_peer("1", "channel")[0] is True
     assert validate_peer("1", "private")[0] is True
 
 
@@ -502,6 +507,8 @@ def test_no_owner_messages_ui():
     assert '@messages_bp.route("/messages")' in msg
 
 
-def test_scheduler_still_has_no_dm_job_type():
+def test_scheduler_dm_job_type_present_for_wave10():
+    """Wave 10 introduced ScheduledJob type=DM for owner scheduled messages."""
     models = (ROOT / "src/core/scheduler_models.py").read_text(encoding="utf-8")
-    assert 'DM = "DM"' not in models
+    assert 'DM = "DM"' in models
+    assert "scheduled private owner DM" in models or "Wave 10" in models

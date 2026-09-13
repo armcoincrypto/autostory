@@ -933,6 +933,9 @@ class ClientManager:
                     last_message_at = last_date.isoformat()
                 row: Optional[Dict[str, Any]] = None
                 if isinstance(e, User):
+                    # Exclude Telegram service / login-code peer from normal dialog lists.
+                    if int(getattr(e, "id", 0) or 0) in {777000}:
+                        continue
                     first = (getattr(e, "first_name", None) or "").strip()
                     last = (getattr(e, "last_name", None) or "").strip()
                     display = " ".join(x for x in (first, last) if x) or (

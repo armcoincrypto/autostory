@@ -67,3 +67,22 @@ class OwnerDmIntent(Base):
         UniqueConstraint("idempotency_key", name="uq_owner_dm_intents_idempotency_key"),
         Index("ix_owner_dm_intents_account_status", "account_id", "status"),
     )
+
+
+class OwnerBulkScheduleIdempotency(Base):
+    """Durable ledger for multi-account schedule-bulk requests (Final P1).
+
+    Stores payload fingerprint + last response so lost-HTTP / two-tab replay
+    cannot create a second logical batch, and conflicting payloads are rejected.
+    """
+
+    __tablename__ = "owner_bulk_schedule_idempotency"
+
+    idempotency_key = Column(String(128), primary_key=True)
+    payload_fingerprint = Column(String(64), nullable=False)
+    response_json = Column(Text, nullable=False)
+    created_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

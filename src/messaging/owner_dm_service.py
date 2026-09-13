@@ -163,6 +163,20 @@ class OwnerDirectMessageService:
     ) -> dict[str, Any]:
         """Non-mutating validation path. Never calls transport.send_message_async."""
         aid = int(account_id)
+        from src.messaging.telegram_service_peers import (
+            deny_sensitive_peer_payload,
+            is_sensitive_telegram_system_chat,
+        )
+
+        if is_sensitive_telegram_system_chat(peer_id, peer_type=peer_type):
+            denied = deny_sensitive_peer_payload(peer_id)
+            return {
+                "dry_run": True,
+                "would_send": False,
+                "ok": False,
+                **denied,
+                "account_id": aid,
+            }
         ok_msg, msg_code, msg_reason = validate_dm_message(text)
         ok_peer, peer_code, peer_reason = validate_peer(peer_id, peer_type)
         eligibility = evaluate_dm_account_eligibility(db, aid)
@@ -315,10 +329,26 @@ class OwnerDirectMessageService:
         _force_post_send_db_failure: bool = False,
     ) -> dict[str, Any]:
         """Live owner DM send with idempotency. Requires MESSAGES_EXECUTION_ENABLED."""
+        from src.messaging.telegram_service_peers import (
+            deny_sensitive_peer_payload,
+            is_sensitive_telegram_system_chat,
+        )
+
         # Idempotent replay first — never re-evaluate rate/guard for an existing key.
         existing = self._load_by_key(db, (idempotency_key or "").strip())
         if existing is not None:
             return self._intent_result(existing, replay=True)
+
+        if is_sensitive_telegram_system_chat(peer_id, peer_type=peer_type):
+            denied = deny_sensitive_peer_payload(peer_id)
+            return {
+                "ok": False,
+                "status": "FAILED",
+                "error_code": denied["error_code"],
+                "error_message": denied["message"],
+                "idempotency_key": idempotency_key,
+                "sensitive": True,
+            }
 
         ok_msg, msg_code, msg_reason = validate_dm_message(text)
         if not ok_msg:

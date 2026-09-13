@@ -1018,6 +1018,18 @@
       const data = await dashboardFetchJson(
         `/api/messages/history?account_id=${encodeURIComponent(state.accountId)}&peer=${encodeURIComponent(dialog.peer)}&peer_type=${pt}&limit=20`
       );
+      if (data.sensitive) {
+        state.dialog = Object.assign({}, dialog, { sensitive: true });
+        elThreadLabel.textContent = 'Sensitive Telegram system chat';
+        setComposerEnabled(false);
+        if (btnAiDraft) btnAiDraft.disabled = true;
+        if (btnSchedule) btnSchedule.disabled = true;
+        if (btnReview) btnReview.disabled = true;
+        if (elSendPolicyHint) {
+          elSendPolicyHint.classList.remove('d-none');
+          elSendPolicyHint.textContent = 'Telegram security / login-code chat — messaging actions disabled.';
+        }
+      }
       renderThread(data.messages || []);
     } catch (e) {
       elThread.innerHTML = `<div class="text-danger small p-2">Unable to load conversation history.</div>`;
@@ -1922,6 +1934,10 @@
 
   document.getElementById('btn-bulk-confirm')?.addEventListener('click', async () => {
     if (!state.bulkReviewed || state.inFlight) return;
+    if (!state.bulkIdempotencyKey) {
+      showAlert('warning', 'Review the schedule again before confirming (idempotency key missing).');
+      return;
+    }
     const ids = selectedReadyIds();
     const msg = (document.getElementById('chat-mode-message') || {}).value || '';
     state.inFlight = true;
@@ -1943,6 +1959,7 @@
           peer_type: (state.matrix && state.matrix.chat_type) || 'supergroup',
           dry_run: false,
           can_post: true,
+          // Stable key minted at Review — reused on HTTP retry / double-click.
           idempotency_key: state.bulkIdempotencyKey,
         }),
       });

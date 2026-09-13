@@ -108,6 +108,14 @@ class MessageDraftService:
         if not peer_s:
             return _fail("PEER_INVALID", "Recipient is required.")
 
+        from src.messaging.telegram_service_peers import is_sensitive_telegram_system_chat
+
+        if is_sensitive_telegram_system_chat(peer_s):
+            return _fail(
+                "SENSITIVE_TELEGRAM_CHAT",
+                "AI Draft is disabled for Telegram security / login-code chats.",
+            )
+
         eligibility = evaluate_dm_account_eligibility(db, aid)
         if not eligibility.eligible:
             return _fail(

@@ -244,6 +244,16 @@ def messages_history():
     if not peer:
         return jsonify({"ok": False, "error": "PEER_INVALID", "message": "peer required"}), 400
 
+    from src.messaging.telegram_service_peers import (
+        is_sensitive_telegram_system_chat,
+        mask_sensitive_message_text,
+    )
+
+    sensitive = is_sensitive_telegram_system_chat(peer, peer_type=peer_type)
+    if sensitive:
+        # History may remain visible for ops, but codes are masked and actions disabled client-side.
+        pass
+
     with get_db_context() as db:
         elig = evaluate_dm_account_eligibility(db, int(account_id))
         if not elig.eligible:
@@ -303,15 +313,29 @@ def messages_history():
 
     messages = []
     for m in raw.get("messages") or []:
+        text = m.get("text") or ""
+        if sensitive:
+            text = mask_sensitive_message_text(str(text))
         messages.append(
             {
                 "message_id": m.get("message_id"),
-                "text": m.get("text") or "",
+                "text": text,
                 "timestamp": m.get("timestamp"),
                 "is_outgoing": bool(m.get("is_outgoing")),
+                "sensitive_masked": bool(sensitive),
             }
         )
-    return jsonify({"ok": True, "account_id": int(account_id), "peer": peer, "messages": messages})
+    return jsonify(
+        {
+            "ok": True,
+            "account_id": int(account_id),
+            "peer": peer,
+            "messages": messages,
+            "sensitive": bool(sensitive),
+            "sensitive_label": "Sensitive Telegram system chat" if sensitive else None,
+            "actions_allowed": not sensitive,
+        }
+    )
 
 
 def _deny_group_channel_send(peer_type: str, *, can_post: bool | None = None):
@@ -393,7 +417,7 @@ def messages_draft():
         status = 503
         if code == "AI_DRAFT_DISABLED":
             status = 423
-        elif code in {"ACCOUNT_INELIGIBLE", "PEER_INVALID", "NO_CONVERSATION_CONTEXT"}:
+        elif code in {"ACCOUNT_INELIGIBLE", "PEER_INVALID", "NO_CONVERSATION_CONTEXT", "SENSITIVE_TELEGRAM_CHAT"}:
             status = 400
         elif code == "AI_DRAFT_NOT_CONFIGURED":
             status = 503
@@ -588,6 +612,13 @@ def messages_schedule():
     message = data.get("message") if data.get("message") is not None else data.get("text")
     peer_type = (data.get("peer_type") or "private").strip().lower()
     local_date = data.get("local_date") or data.get("date")
+    from src.messaging.telegram_service_peers import (
+        deny_sensitive_peer_payload,
+        is_sensitive_telegram_system_chat,
+    )
+
+    if is_sensitive_telegram_system_chat(peer, peer_type=peer_type):
+        return jsonify(deny_sensitive_peer_payload(peer)), 403
     local_time = data.get("local_time") or data.get("time")
     timezone = data.get("timezone")
     dry_run_only = bool(data.get("dry_run"))
@@ -685,6 +716,21 @@ def messages_schedule_bulk():
     spacing_sec = data.get("spacing_sec", 60)
     peer_type = (data.get("peer_type") or data.get("chat_type") or "supergroup").strip().lower()
     idem = (data.get("idempotency_key") or data.get("bulk_key") or "").strip() or None
+    if not dry_run_only and not idem:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "BULK_IDEMPOTENCY_KEY_REQUIRED",
+                    "error_code": "BULK_IDEMPOTENCY_KEY_REQUIRED",
+                    "message": (
+                        "idempotency_key is required for bulk schedule. "
+                        "Reuse the same key on retries; do not omit it."
+                    ),
+                }
+            ),
+            422,
+        )
     try:
         account_ids = [int(x) for x in (data.get("account_ids") or [])]
     except (TypeError, ValueError):
@@ -786,6 +832,14 @@ def messages_chat_join():
     confirm = bool(data.get("confirm"))
     if not raw:
         return jsonify({"ok": False, "error": "PEER_INVALID", "message": "ref required"}), 400
+
+    from src.messaging.telegram_service_peers import (
+        deny_sensitive_peer_payload,
+        is_sensitive_telegram_system_chat,
+    )
+
+    if is_sensitive_telegram_system_chat(raw):
+        return jsonify(deny_sensitive_peer_payload(raw)), 403
 
     svc = OwnerChatService()
     result = _run_async(svc.join_async(account_id, raw, confirm=confirm))

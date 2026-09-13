@@ -457,6 +457,62 @@ async def _execute_scheduled_dm_job(job_id: int) -> bool:
             job.last_error = None
             db.commit()
 
+        # Group/channel: fail-closed membership + write recheck before any send mutation.
+        # Private DMs skip this probe (unchanged path).
+        if peer_type in {"group", "supergroup", "channel"}:
+            from src.messaging.owner_chat_service import OwnerChatService
+            from src.messaging.multi_account_schedule import map_readiness_status
+            from src.messaging.eligibility import evaluate_dm_account_eligibility
+
+            elig = evaluate_dm_account_eligibility(db, account_id)
+            if not elig.eligible:
+                prev_lo, prev_lu = job.lease_owner, job.lease_until
+                job.status = JobStatus.FAILED.value
+                job.attempts = (job.attempts or 0) + 1
+                job.last_error = (
+                    f"ACCOUNT_INELIGIBLE: {elig.reason or elig.code}"
+                )[:2000]
+                job.updated_at = utc_now_naive()
+                job.lease_until = None
+                job.lease_owner = None
+                _maybe_log_lease_released(job_id, prev_lo, prev_lu, reason="dm_elig_recheck")
+                return False
+
+            chat = OwnerChatService()
+            try:
+                preview = await chat.preview_async(account_id, peer_id)
+            except Exception as e:
+                preview = {"ok": False, "message": str(e)[:200] or "Temporarily unavailable"}
+            status_key, status_label, ready = map_readiness_status(
+                eligible=True,
+                eligibility_code=elig.code,
+                preview=preview if isinstance(preview, dict) else None,
+            )
+            if not ready:
+                owner_msg = {
+                    "not_joined": "No longer a member of this chat",
+                    "waiting_approval": "No longer a member of this chat",
+                    "cannot_post": "Cannot post in this chat",
+                    "temp_unavailable": "Account no longer has permission to send here",
+                }.get(status_key, status_label or "Cannot post in this chat")
+                prev_lo, prev_lu = job.lease_owner, job.lease_until
+                job.status = JobStatus.FAILED.value
+                job.attempts = (job.attempts or 0) + 1
+                job.last_error = f"PERMISSION_RECHECK: {owner_msg}"[:2000]
+                job.updated_at = utc_now_naive()
+                job.lease_until = None
+                job.lease_owner = None
+                _maybe_log_lease_released(
+                    job_id, prev_lo, prev_lu, reason="dm_permission_recheck"
+                )
+                logger.warning(
+                    "scheduled_dm_permission_recheck_failed",
+                    job_id=int(job_id),
+                    account_id=account_id,
+                    status_key=status_key,
+                )
+                return False
+
     svc = OwnerDirectMessageService()
     with get_db_context() as db:
         result = await svc.send_now(

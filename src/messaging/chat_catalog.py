@@ -49,6 +49,12 @@ def build_owner_chat_catalog(
         uname = (username or "").strip().lstrip("@") or None
         if not pid and not uname:
             return
+        from src.messaging.telegram_service_peers import is_sensitive_telegram_system_chat
+
+        if is_sensitive_telegram_system_chat(
+            pid or uname, peer_type=peer_type, title=title, username=uname
+        ):
+            return
         key = canonical_peer_key(pid or (f"@{uname}" if uname else ""), peer_type)
         if not key:
             return

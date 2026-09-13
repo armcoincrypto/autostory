@@ -301,8 +301,8 @@ def test_bulk_schedule_n_jobs_spacing_and_idempotent(memory_db):
                         peer_type="supergroup",
                         idempotency_key="waveq-bulk-1",
                     )
+                    assert r2.payload.get("replay") is True
                     assert r2.payload["created"] == 2
-                    assert r2.payload.get("reused") == 2
                     assert memory_db.query(ScheduledJob).filter(ScheduledJob.type == "DM").count() == 2
 
 

@@ -5,6 +5,8 @@ Never sends Telegram itself. Never joins. Readiness uses OwnerChatService.previe
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -15,6 +17,7 @@ from sqlalchemy.orm import Session
 from src.core.models import Account
 from src.core.scheduler_models import JobStatus, MessageType, ScheduledJob
 from src.messaging.eligibility import evaluate_dm_account_eligibility
+from src.messaging.models import OwnerBulkScheduleIdempotency
 from src.messaging.owner_chat_service import OwnerChatService
 from src.messaging.peer_labels import (
     account_bucket,
@@ -30,6 +33,32 @@ from src.scheduler.timezone import (
 
 def _bulk_marker(bulk_key: str) -> str:
     return f"bulk:{bulk_key.strip()}"
+
+
+def bulk_payload_fingerprint(
+    *,
+    ref: str,
+    account_ids: list[int],
+    message: str,
+    local_date: str,
+    local_time: str,
+    timezone_name: str,
+    spacing_sec: int,
+    peer_type: str,
+) -> str:
+    """Stable hash of the logical bulk schedule request (order-independent accounts)."""
+    body = {
+        "ref": (ref or "").strip(),
+        "account_ids": sorted(int(a) for a in account_ids),
+        "message": message if message is not None else "",
+        "local_date": (local_date or "").strip(),
+        "local_time": (local_time or "").strip(),
+        "timezone": (timezone_name or "").strip(),
+        "spacing_sec": int(spacing_sec),
+        "peer_type": (peer_type or "").strip().lower(),
+    }
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _find_bulk_job_for_account(
@@ -428,8 +457,121 @@ class MultiAccountScheduleOrchestrator:
             return preview
 
         bulk_key = (idempotency_key or "").strip()
+        if not bulk_key:
+            return BulkScheduleResult(
+                False,
+                422,
+                {
+                    "ok": False,
+                    "error": "BULK_IDEMPOTENCY_KEY_REQUIRED",
+                    "error_code": "BULK_IDEMPOTENCY_KEY_REQUIRED",
+                    "message": (
+                        "idempotency_key is required for bulk schedule. "
+                        "Reuse the same key on retries; do not omit it."
+                    ),
+                },
+            )
+
         payload = preview.payload
         chat_type = (peer_type or payload.get("chat_type") or "supergroup").strip().lower()
+        tz_name = str(payload.get("timezone") or timezone_name or DEFAULT_OWNER_TIMEZONE)
+        fp = bulk_payload_fingerprint(
+            ref=ref,
+            account_ids=list(account_ids),
+            message=message,
+            local_date=str(local_date),
+            local_time=str(local_time),
+            timezone_name=tz_name,
+            spacing_sec=int(payload.get("spacing_sec") or spacing_sec),
+            peer_type=chat_type,
+        )
+
+        # Ensure ledger table exists on long-lived DBs.
+        try:
+            OwnerBulkScheduleIdempotency.__table__.create(bind=db.get_bind(), checkfirst=True)
+        except Exception:
+            pass
+
+        existing_ledger = (
+            db.query(OwnerBulkScheduleIdempotency)
+            .filter(OwnerBulkScheduleIdempotency.idempotency_key == bulk_key)
+            .first()
+        )
+        if existing_ledger is not None:
+            if str(existing_ledger.payload_fingerprint) != fp:
+                return BulkScheduleResult(
+                    False,
+                    409,
+                    {
+                        "ok": False,
+                        "error": "IDEMPOTENCY_KEY_CONFLICT",
+                        "error_code": "IDEMPOTENCY_KEY_CONFLICT",
+                        "message": (
+                            "This idempotency_key was already used with a different "
+                            "bulk schedule payload. Use a new key for a new batch."
+                        ),
+                    },
+                )
+            try:
+                stored = json.loads(existing_ledger.response_json or "{}")
+            except json.JSONDecodeError:
+                stored = {}
+            if isinstance(stored, dict) and stored.get("pending"):
+                # In-flight claim from a parallel tab — fall through and reuse jobs.
+                pass
+            elif isinstance(stored, dict) and stored.get("ok") is not None:
+                out = dict(stored)
+                out["replay"] = True
+                out["idempotency_key"] = bulk_key
+                return BulkScheduleResult(bool(out.get("ok")), 200 if out.get("ok") else 400, out)
+        else:
+            # Atomic claim: first writer wins the key (two-tab / lost-response safety).
+            claim = OwnerBulkScheduleIdempotency(
+                idempotency_key=bulk_key,
+                payload_fingerprint=fp,
+                response_json=json.dumps({"pending": True, "ok": None}),
+                created_count=0,
+                failed_count=0,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            db.add(claim)
+            try:
+                db.commit()
+                existing_ledger = claim
+            except Exception:
+                db.rollback()
+                existing_ledger = (
+                    db.query(OwnerBulkScheduleIdempotency)
+                    .filter(OwnerBulkScheduleIdempotency.idempotency_key == bulk_key)
+                    .first()
+                )
+                if existing_ledger is None:
+                    raise
+                if str(existing_ledger.payload_fingerprint) != fp:
+                    return BulkScheduleResult(
+                        False,
+                        409,
+                        {
+                            "ok": False,
+                            "error": "IDEMPOTENCY_KEY_CONFLICT",
+                            "error_code": "IDEMPOTENCY_KEY_CONFLICT",
+                            "message": (
+                                "This idempotency_key was already used with a different "
+                                "bulk schedule payload. Use a new key for a new batch."
+                            ),
+                        },
+                    )
+                try:
+                    stored = json.loads(existing_ledger.response_json or "{}")
+                except json.JSONDecodeError:
+                    stored = {}
+                if isinstance(stored, dict) and stored.get("ok") is not None and not stored.get("pending"):
+                    out = dict(stored)
+                    out["replay"] = True
+                    out["idempotency_key"] = bulk_key
+                    return BulkScheduleResult(bool(out.get("ok")), 200 if out.get("ok") else 400, out)
+
         created: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
         reused = 0
@@ -454,27 +596,26 @@ class MultiAccountScheduleOrchestrator:
                 except ValueError:
                     run_at_naive = None
 
-            if bulk_key:
-                existing = _find_bulk_job_for_account(
-                    db,
-                    bulk_key=bulk_key,
-                    account_id=int(item["account_id"]),
-                    peer_id=str(peer),
-                    message=message,
-                    run_at_utc_naive=run_at_naive,
+            existing = _find_bulk_job_for_account(
+                db,
+                bulk_key=bulk_key,
+                account_id=int(item["account_id"]),
+                peer_id=str(peer),
+                message=message,
+                run_at_utc_naive=run_at_naive,
+            )
+            if existing is not None:
+                reused += 1
+                created.append(
+                    {
+                        "account_id": item["account_id"],
+                        "display_name": item.get("display_name"),
+                        "job_id": int(existing.id),
+                        "scheduled_at_local": item.get("scheduled_at_local"),
+                        "reused": True,
+                    }
                 )
-                if existing is not None:
-                    reused += 1
-                    created.append(
-                        {
-                            "account_id": item["account_id"],
-                            "display_name": item.get("display_name"),
-                            "job_id": int(existing.id),
-                            "scheduled_at_local": item.get("scheduled_at_local"),
-                            "reused": True,
-                        }
-                    )
-                    continue
+                continue
 
             result = self._sched.schedule(
                 db,
@@ -489,11 +630,10 @@ class MultiAccountScheduleOrchestrator:
             )
             if result.ok and result.payload.get("job_id"):
                 jid = int(result.payload["job_id"])
-                if bulk_key:
-                    job = db.query(ScheduledJob).filter(ScheduledJob.id == jid).first()
-                    if job and str(job.status) == JobStatus.PENDING.value:
-                        job.last_error = _bulk_marker(bulk_key)
-                        db.commit()
+                job = db.query(ScheduledJob).filter(ScheduledJob.id == jid).first()
+                if job and str(job.status) == JobStatus.PENDING.value:
+                    job.last_error = _bulk_marker(bulk_key)
+                    db.commit()
                 created.append(
                     {
                         "account_id": item["account_id"],
@@ -515,23 +655,39 @@ class MultiAccountScheduleOrchestrator:
                 )
 
         ok = len(created) > 0
-        return BulkScheduleResult(
-            ok,
-            200 if ok else 400,
-            {
-                "ok": ok,
-                "created": len(created),
-                "failed": len(failed),
-                "reused": reused,
-                "replay": reused > 0 and reused == len(created) and not failed,
-                "jobs": created,
-                "errors": failed,
-                "skipped": payload.get("skipped") or [],
-                "chat_title": payload.get("chat_title"),
-                "spacing_sec": payload.get("spacing_sec"),
-                "preview": payload,
-            },
+        response = {
+            "ok": ok,
+            "created": len(created),
+            "failed": len(failed),
+            "reused": reused,
+            "replay": reused > 0 and reused == len(created) and not failed,
+            "idempotency_key": bulk_key,
+            "jobs": created,
+            "errors": failed,
+            "skipped": payload.get("skipped") or [],
+            "chat_title": payload.get("chat_title"),
+            "spacing_sec": payload.get("spacing_sec"),
+            "preview": payload,
+        }
+
+        # Persist ledger after attempting creates (partial results are replayable).
+        row = (
+            db.query(OwnerBulkScheduleIdempotency)
+            .filter(OwnerBulkScheduleIdempotency.idempotency_key == bulk_key)
+            .first()
         )
+        if row is None:
+            row = OwnerBulkScheduleIdempotency(idempotency_key=bulk_key)
+            db.add(row)
+            row.created_at = datetime.utcnow()
+        row.payload_fingerprint = fp
+        row.response_json = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+        row.created_count = int(len(created))
+        row.failed_count = int(len(failed))
+        row.updated_at = datetime.utcnow()
+        db.commit()
+
+        return BulkScheduleResult(ok, 200 if ok else 400, response)
 
     def cancel_bulk(self, db: Session, *, job_ids: list[int]) -> BulkScheduleResult:
         cancelled: list[int] = []

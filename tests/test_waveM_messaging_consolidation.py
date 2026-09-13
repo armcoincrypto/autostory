@@ -126,10 +126,14 @@ def test_private_dm_validate_peer_unchanged():
     assert "private" in SUPPORTED_PEER_TYPES
     ok, code, _ = validate_peer("@alice", "private")
     assert ok and code == "OK"
-    ok2, code2, msg2 = validate_peer("@alice", "channel")
-    assert not ok2
-    # Flag-off group/channel deny (still blocks; private path unchanged)
-    assert code2 in {"PEER_INVALID", "GROUP_CHANNEL_SEND_DISABLED"}
+    # Group/channel peers are product-flag gated (Wave M / group send enablement).
+    with patch("src.messaging.chat_flags.messages_group_channel_send_enabled", return_value=False):
+        ok2, code2, _ = validate_peer("@alice", "channel")
+        assert not ok2
+        assert code2 == "GROUP_CHANNEL_SEND_DISABLED"
+    with patch("src.messaging.chat_flags.messages_group_channel_send_enabled", return_value=True):
+        ok3, code3, _ = validate_peer("1", "channel")
+        assert ok3 and code3 == "OK"
 
 
 def test_discovery_join_delegates_to_canonical():
